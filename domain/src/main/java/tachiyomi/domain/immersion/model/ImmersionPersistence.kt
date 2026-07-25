@@ -71,6 +71,7 @@ data class ImmersionSourceUnit(
     val ocrEngineId: String? = null,
     val ocrVersion: Int? = null,
     val ocrConfidence: Double? = null,
+    val ocrQuality: CapabilityState? = null,
     val tokenizerVersion: Int = 0,
     val rawText: String? = null,
     val firstExposedAtEpochMillis: Long,

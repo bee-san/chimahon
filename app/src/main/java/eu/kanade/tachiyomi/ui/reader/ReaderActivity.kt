@@ -541,6 +541,7 @@ class ReaderActivity : BaseActivity() {
                     sessionCharacters = viewModel.mangaStatsSessionCharacters,
                     sessionTimeMs = viewModel.mangaStatsSessionTimeMs,
                     estimate = viewModel.mangaStatsEstimate,
+                    ocrCoverage = viewModel.mangaOcrCoverage,
                     isTracking = viewModel.mangaStatsTracking,
                     onToggleTracking = viewModel::toggleMangaStatsTracking,
                     onDismiss = viewModel::closeMangaStatsSheet,
@@ -1093,6 +1094,7 @@ class ReaderActivity : BaseActivity() {
     }
 
     override fun onPause() {
+        viewModel.onReaderBackgrounded(true)
         lifecycleScope.launchNonCancellable {
             viewModel.updateHistory()
         }
@@ -1110,6 +1112,7 @@ class ReaderActivity : BaseActivity() {
      */
     override fun onResume() {
         super.onResume()
+        viewModel.onReaderBackgrounded(false)
         viewModel.restartReadTimer()
 
         // AM (DISCORD) -->
@@ -1918,8 +1921,9 @@ class ReaderActivity : BaseActivity() {
      * Called from the viewer whenever a [page] is marked as active. It updates the values of the
      * bottom menu and delegates the change to the presenter.
      */
-    fun onPageSelected(page: ReaderPage, hasExtraPage: Boolean = false) {
+    fun onPageSelected(page: ReaderPage, extraPage: ReaderPage? = null) {
         // SY -->
+        val hasExtraPage = extraPage != null
         val currentPageText = if (hasExtraPage) {
             val invertDoublePage = (viewModel.state.value.viewer as? PagerViewer)?.config?.invertDoublePages ?: false
             if ((resources.configuration.layoutDirection == View.LAYOUT_DIRECTION_LTR) xor
@@ -1933,7 +1937,7 @@ class ReaderActivity : BaseActivity() {
             "${page.number}"
         }
         // SY <--
-        viewModel.onPageSelected(page, /* SY --> */ currentPageText, hasExtraPage /* SY <-- */)
+        viewModel.onPageSelected(page, /* SY --> */ currentPageText, extraPage /* SY <-- */)
     }
 
     /**

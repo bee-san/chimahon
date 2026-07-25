@@ -504,6 +504,10 @@ class OcrCacheManager(
             chimahon.ocr.OcrLineGeometry(lg.xmin, lg.ymin, lg.xmax, lg.ymax, lg.rotation)
         },
         language = language,
+        engineId = engineId,
+        engineVersion = engineVersion,
+        confidence = confidence,
+        blockId = blockId,
     )
 
     private fun OcrBlockData.toTextBlock() = OcrTextBlock(
@@ -517,6 +521,10 @@ class OcrCacheManager(
             chimahon.ocr.OcrLineGeometry(lg.xmin, lg.ymin, lg.xmax, lg.ymax, lg.rotation)
         },
         language = language,
+        engineId = engineId,
+        engineVersion = engineVersion,
+        confidence = confidence,
+        blockId = blockId,
     )
 
     // Legacy methods for backward compatibility during migration

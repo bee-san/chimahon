@@ -260,4 +260,7 @@
     <string name="pref_dict_content">Content</string>
     <string name="pref_dict_active_profile">Active profile</string>
     <string name="pref_dict_profile_language">Language</string>
+    <string name="stats_manga_ocr_coverage">OCR coverage</string>
+    <string name="stats_manga_ocr_coverage_value">%1$d of %2$d pages (%3$d%%)</string>
+    <string name="stats_manga_characters_unavailable">Unavailable</string>
 </resources>

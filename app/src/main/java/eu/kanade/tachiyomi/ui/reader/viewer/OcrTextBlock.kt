@@ -26,6 +26,10 @@ data class OcrTextBlock(
     val vertical: Boolean = false,
     val lineGeometries: List<OcrLineGeometry>? = null,
     val language: String = "",
+    val engineId: String = "legacy-cache",
+    val engineVersion: Int = 1,
+    val confidence: Double? = null,
+    val blockId: String? = null,
 )
 
 /**

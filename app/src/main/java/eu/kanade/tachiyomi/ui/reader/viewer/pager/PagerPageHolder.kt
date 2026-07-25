@@ -573,6 +573,8 @@ class PagerPageHolder(
                 logcat { "OCR merge-mode: page=${page.index} extra=${ep.index}" }
                 val rawBlocks1 = viewModel.getOcrBlocks(page)
                 val rawBlocks2 = viewModel.getOcrBlocks(ep)
+                viewModel.onVisibleOcrResult(page, rawBlocks1)
+                viewModel.onVisibleOcrResult(ep, rawBlocks2)
                 var merged = OcrCoordinateMapper.mapToMerged(
                     blocks1 = rawBlocks1,
                     page1W = mergedPage1W,
@@ -649,10 +651,12 @@ class PagerPageHolder(
                 logcat { "OCR crop-remap done: ${blocks.size} blocks" }
             }
 
+            viewModel.onVisibleOcrResult(page, blocks)
             setOcrBlocks(blocks)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
+            viewer.activity.viewModel.onVisibleOcrResult(page, emptyList())
             logcat(LogPriority.ERROR, e) { "OCR loadOcrWithTransform failed" }
         }
     }

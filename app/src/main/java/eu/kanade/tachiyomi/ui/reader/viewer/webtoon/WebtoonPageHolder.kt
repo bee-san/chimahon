@@ -345,6 +345,7 @@ class WebtoonPageHolder(
             var blocks = viewModel.getOcrBlocks(targetPage)
 
             if (blocks.isEmpty()) {
+                viewModel.onVisibleOcrResult(targetPage, blocks)
                 frame.setOcrBlocks(blocks)
                 return
             }
@@ -389,10 +390,12 @@ class WebtoonPageHolder(
                 logcat { "OCR crop-remap done (webtoon): ${blocks.size} blocks" }
             }
 
+            viewModel.onVisibleOcrResult(targetPage, blocks)
             frame.setOcrBlocks(blocks)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
+            viewer.activity.viewModel.onVisibleOcrResult(targetPage, emptyList())
             logcat(LogPriority.ERROR, e) { "OCR loadOcrWithTransform failed" }
         }
     }
