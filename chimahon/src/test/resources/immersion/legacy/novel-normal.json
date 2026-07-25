@@ -1,0 +1,28 @@
+[
+  {
+    "title": "Fixture Novel",
+    "dateKey": "2026-07-23",
+    "charactersRead": 1250,
+    "readingTime": 600.5,
+    "minReadingSpeed": 6500,
+    "altMinReadingSpeed": 7000,
+    "lastReadingSpeed": 7493,
+    "maxReadingSpeed": 8000,
+    "lastStatisticModified": 1784800000000,
+    "completedBook": null,
+    "completedData": null
+  },
+  {
+    "title": "Fixture Novel",
+    "dateKey": "2026-07-24",
+    "charactersRead": 750,
+    "readingTime": 300.0,
+    "minReadingSpeed": 7000,
+    "altMinReadingSpeed": 8000,
+    "lastReadingSpeed": 9000,
+    "maxReadingSpeed": 9000,
+    "lastStatisticModified": 1784886400000,
+    "completedBook": 1,
+    "completedData": null
+  }
+]
