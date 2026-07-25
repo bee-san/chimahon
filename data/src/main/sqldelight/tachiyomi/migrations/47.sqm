@@ -1,0 +1,582 @@
+CREATE TABLE immersion_title(
+    id TEXT NOT NULL PRIMARY KEY,
+    media_kind TEXT NOT NULL,
+    source_key TEXT NOT NULL,
+    profile_id TEXT NOT NULL DEFAULT '',
+    language_tag TEXT,
+    display_title TEXT NOT NULL,
+    library_id INTEGER,
+    tracker_id TEXT,
+    media_id TEXT,
+    difficulty REAL,
+    release_date INTEGER,
+    status TEXT,
+    total_units INTEGER,
+    total_character_estimate INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    UNIQUE(media_kind, source_key, profile_id),
+    CHECK(total_units IS NULL OR total_units >= 0),
+    CHECK(total_character_estimate IS NULL OR total_character_estimate >= 0)
+);
+
+CREATE INDEX immersion_title_updated_index
+ON immersion_title(updated_at DESC, id DESC);
+
+CREATE TABLE immersion_session(
+    id TEXT NOT NULL PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    title_id TEXT NOT NULL,
+    media_kind TEXT NOT NULL,
+    language_tag TEXT,
+    profile_id TEXT NOT NULL DEFAULT '',
+    started_at INTEGER NOT NULL,
+    ended_at INTEGER,
+    start_zone_id TEXT NOT NULL,
+    start_offset_seconds INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    active_duration_ms INTEGER NOT NULL DEFAULT 0,
+    elapsed_duration_ms INTEGER NOT NULL DEFAULT 0,
+    paused_duration_ms INTEGER NOT NULL DEFAULT 0,
+    idle_duration_ms INTEGER NOT NULL DEFAULT 0,
+    buffering_duration_ms INTEGER NOT NULL DEFAULT 0,
+    gross_characters INTEGER NOT NULL DEFAULT 0,
+    unique_source_characters INTEGER NOT NULL DEFAULT 0,
+    net_characters INTEGER NOT NULL DEFAULT 0,
+    word_count INTEGER NOT NULL DEFAULT 0,
+    source_unit_count INTEGER NOT NULL DEFAULT 0,
+    lookup_count INTEGER NOT NULL DEFAULT 0,
+    cards_created INTEGER NOT NULL DEFAULT 0,
+    cards_updated INTEGER NOT NULL DEFAULT 0,
+    last_sequence INTEGER NOT NULL DEFAULT 0,
+    last_heartbeat_at INTEGER,
+    capture_version INTEGER NOT NULL,
+    schema_version INTEGER NOT NULL,
+    legacy_import INTEGER NOT NULL DEFAULT 0,
+    sync_origin TEXT,
+    FOREIGN KEY(title_id) REFERENCES immersion_title(id) ON DELETE RESTRICT,
+    CHECK(status IN ('ACTIVE', 'COMPLETED', 'ABANDONED', 'DELETED')),
+    CHECK(active_duration_ms >= 0),
+    CHECK(elapsed_duration_ms >= 0),
+    CHECK(paused_duration_ms >= 0),
+    CHECK(idle_duration_ms >= 0),
+    CHECK(buffering_duration_ms >= 0),
+    CHECK(gross_characters >= 0),
+    CHECK(unique_source_characters >= 0),
+    CHECK(word_count >= 0),
+    CHECK(source_unit_count >= 0),
+    CHECK(lookup_count >= 0),
+    CHECK(cards_created >= 0),
+    CHECK(cards_updated >= 0),
+    CHECK(last_sequence >= 0)
+);
+
+CREATE INDEX immersion_session_title_time_index
+ON immersion_session(title_id, started_at DESC, id DESC);
+
+CREATE INDEX immersion_session_time_index
+ON immersion_session(started_at DESC, id DESC);
+
+CREATE INDEX immersion_session_status_time_index
+ON immersion_session(status, started_at DESC, id DESC);
+
+CREATE INDEX immersion_session_device_time_index
+ON immersion_session(device_id, started_at DESC, id DESC);
+
+CREATE INDEX immersion_session_profile_language_time_index
+ON immersion_session(profile_id, language_tag, started_at DESC, id DESC);
+
+CREATE TABLE immersion_source_unit(
+    id TEXT NOT NULL PRIMARY KEY,
+    title_id TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    canonical_locator TEXT NOT NULL,
+    chapter_or_section_id TEXT,
+    episode_or_media_id TEXT,
+    page_or_cue_index INTEGER,
+    track_id TEXT,
+    source_start INTEGER,
+    source_end INTEGER,
+    normalized_text_hash TEXT NOT NULL,
+    parser_version INTEGER,
+    ocr_engine_id TEXT,
+    ocr_version INTEGER,
+    ocr_confidence REAL,
+    tokenizer_version INTEGER NOT NULL DEFAULT 0,
+    indexed_version INTEGER NOT NULL DEFAULT 0,
+    indexing_status TEXT NOT NULL DEFAULT 'PENDING',
+    index_error_code TEXT,
+    raw_text BLOB,
+    raw_text_encoding TEXT,
+    first_exposed_at INTEGER NOT NULL,
+    last_exposed_at INTEGER NOT NULL,
+    countable_characters INTEGER NOT NULL DEFAULT 0,
+    han_characters INTEGER NOT NULL DEFAULT 0,
+    hiragana_characters INTEGER NOT NULL DEFAULT 0,
+    katakana_characters INTEGER NOT NULL DEFAULT 0,
+    hangul_characters INTEGER NOT NULL DEFAULT 0,
+    latin_characters INTEGER NOT NULL DEFAULT 0,
+    other_characters INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY(title_id) REFERENCES immersion_title(id) ON DELETE CASCADE,
+    UNIQUE(title_id, source_kind, canonical_locator, normalized_text_hash),
+    CHECK(source_start IS NULL OR source_start >= 0),
+    CHECK(source_end IS NULL OR source_end >= 0),
+    CHECK(source_start IS NULL OR source_end IS NULL OR source_end > source_start),
+    CHECK(parser_version IS NULL OR parser_version > 0),
+    CHECK(ocr_version IS NULL OR ocr_version > 0),
+    CHECK(tokenizer_version >= 0),
+    CHECK(indexed_version >= 0),
+    CHECK(indexing_status IN ('PENDING', 'IN_PROGRESS', 'INDEXED', 'FAILED', 'UNAVAILABLE')),
+    CHECK(countable_characters >= 0),
+    CHECK(han_characters >= 0),
+    CHECK(hiragana_characters >= 0),
+    CHECK(katakana_characters >= 0),
+    CHECK(hangul_characters >= 0),
+    CHECK(latin_characters >= 0),
+    CHECK(other_characters >= 0)
+);
+
+CREATE INDEX immersion_source_unit_title_time_index
+ON immersion_source_unit(title_id, last_exposed_at DESC, id DESC);
+
+CREATE INDEX immersion_source_unit_index_work_index
+ON immersion_source_unit(indexing_status, indexed_version, first_exposed_at, id);
+
+CREATE TABLE immersion_event(
+    id TEXT NOT NULL PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    occurred_at INTEGER NOT NULL,
+    timezone_offset_seconds INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    source_unit_id TEXT,
+    word_id TEXT,
+    anki_operation_id TEXT,
+    active_duration_delta_ms INTEGER NOT NULL DEFAULT 0,
+    gross_character_delta INTEGER NOT NULL DEFAULT 0,
+    unique_source_character_delta INTEGER NOT NULL DEFAULT 0,
+    net_character_delta INTEGER NOT NULL DEFAULT 0,
+    lookup_delta INTEGER NOT NULL DEFAULT 0,
+    cards_created_delta INTEGER NOT NULL DEFAULT 0,
+    cards_updated_delta INTEGER NOT NULL DEFAULT 0,
+    metadata_version INTEGER NOT NULL DEFAULT 1,
+    metadata_payload BLOB,
+    payload_hash TEXT NOT NULL,
+    FOREIGN KEY(session_id) REFERENCES immersion_session(id) ON DELETE CASCADE,
+    FOREIGN KEY(source_unit_id) REFERENCES immersion_source_unit(id) ON DELETE SET NULL,
+    UNIQUE(session_id, sequence),
+    CHECK(sequence > 0),
+    CHECK(active_duration_delta_ms >= 0),
+    CHECK(gross_character_delta >= 0),
+    CHECK(unique_source_character_delta >= 0),
+    CHECK(lookup_delta >= 0),
+    CHECK(cards_created_delta >= 0),
+    CHECK(cards_updated_delta >= 0),
+    CHECK(metadata_version > 0)
+);
+
+CREATE INDEX immersion_event_session_time_index
+ON immersion_event(session_id, occurred_at, sequence);
+
+CREATE INDEX immersion_event_type_time_index
+ON immersion_event(type, occurred_at DESC, id DESC);
+
+CREATE INDEX immersion_event_source_index
+ON immersion_event(source_unit_id, occurred_at DESC, id DESC);
+
+CREATE TABLE immersion_source_exposure(
+    event_id TEXT NOT NULL PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    source_unit_id TEXT NOT NULL,
+    replay_ordinal INTEGER NOT NULL DEFAULT 0,
+    exposure_policy TEXT NOT NULL,
+    gross_characters INTEGER NOT NULL,
+    unique_source_characters INTEGER NOT NULL,
+    active_duration_ms INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY(event_id) REFERENCES immersion_event(id) ON DELETE CASCADE,
+    FOREIGN KEY(session_id) REFERENCES immersion_session(id) ON DELETE CASCADE,
+    FOREIGN KEY(source_unit_id) REFERENCES immersion_source_unit(id) ON DELETE RESTRICT,
+    CHECK(replay_ordinal >= 0),
+    CHECK(gross_characters >= 0),
+    CHECK(unique_source_characters >= 0),
+    CHECK(active_duration_ms >= 0)
+);
+
+CREATE INDEX immersion_source_exposure_source_time_index
+ON immersion_source_exposure(source_unit_id, event_id);
+
+CREATE TABLE immersion_word(
+    id TEXT NOT NULL PRIMARY KEY,
+    language_tag TEXT NOT NULL,
+    normalized_headword TEXT NOT NULL,
+    normalized_reading TEXT NOT NULL DEFAULT '',
+    display_headword TEXT NOT NULL,
+    display_reading TEXT,
+    part_of_speech TEXT,
+    tokenization_confidence REAL,
+    frequency_corpus TEXT,
+    frequency_rank INTEGER,
+    jlpt_level INTEGER,
+    grade_level INTEGER,
+    first_seen_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    excluded INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(language_tag, normalized_headword, normalized_reading),
+    CHECK(frequency_rank IS NULL OR frequency_rank > 0)
+);
+
+CREATE INDEX immersion_word_seen_index
+ON immersion_word(last_seen_at DESC, id DESC);
+
+CREATE INDEX immersion_word_frequency_index
+ON immersion_word(frequency_rank, id);
+
+CREATE TABLE immersion_word_occurrence(
+    word_id TEXT NOT NULL,
+    source_unit_id TEXT NOT NULL,
+    token_ordinal INTEGER NOT NULL,
+    surface_text TEXT,
+    source_start INTEGER,
+    source_end INTEGER,
+    deinflection_rule TEXT,
+    tokenizer_version INTEGER NOT NULL,
+    PRIMARY KEY(source_unit_id, token_ordinal, word_id),
+    FOREIGN KEY(word_id) REFERENCES immersion_word(id) ON DELETE CASCADE,
+    FOREIGN KEY(source_unit_id) REFERENCES immersion_source_unit(id) ON DELETE CASCADE,
+    CHECK(token_ordinal >= 0),
+    CHECK(source_start IS NULL OR source_start >= 0),
+    CHECK(source_end IS NULL OR source_end >= 0),
+    CHECK(tokenizer_version > 0)
+);
+
+CREATE INDEX immersion_word_occurrence_word_index
+ON immersion_word_occurrence(word_id, source_unit_id);
+
+CREATE TABLE immersion_character(
+    code_point INTEGER NOT NULL PRIMARY KEY,
+    rendered TEXT NOT NULL,
+    unicode_name TEXT,
+    unicode_category TEXT NOT NULL,
+    unicode_script TEXT NOT NULL,
+    japanese_readings TEXT,
+    grade_level INTEGER,
+    jlpt_level INTEGER,
+    frequency_rank INTEGER,
+    first_seen_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    CHECK(code_point >= 0 AND code_point <= 1114111),
+    CHECK(code_point < 55296 OR code_point > 57343)
+);
+
+CREATE INDEX immersion_character_script_frequency_index
+ON immersion_character(unicode_script, frequency_rank, code_point);
+
+CREATE TABLE immersion_character_occurrence(
+    character_code_point INTEGER NOT NULL,
+    source_unit_id TEXT NOT NULL,
+    occurrence_count INTEGER NOT NULL,
+    first_ordinal INTEGER NOT NULL,
+    PRIMARY KEY(character_code_point, source_unit_id),
+    FOREIGN KEY(character_code_point) REFERENCES immersion_character(code_point) ON DELETE CASCADE,
+    FOREIGN KEY(source_unit_id) REFERENCES immersion_source_unit(id) ON DELETE CASCADE,
+    CHECK(occurrence_count > 0),
+    CHECK(first_ordinal >= 0)
+);
+
+CREATE INDEX immersion_character_occurrence_source_index
+ON immersion_character_occurrence(source_unit_id, first_ordinal, character_code_point);
+
+CREATE TABLE immersion_lookup(
+    id TEXT NOT NULL PRIMARY KEY,
+    event_id TEXT NOT NULL UNIQUE,
+    session_id TEXT NOT NULL,
+    source_unit_id TEXT,
+    raw_query TEXT,
+    word_id TEXT,
+    dictionary_id TEXT,
+    result_id TEXT,
+    status TEXT NOT NULL,
+    occurred_at INTEGER NOT NULL,
+    FOREIGN KEY(event_id) REFERENCES immersion_event(id) ON DELETE CASCADE,
+    FOREIGN KEY(session_id) REFERENCES immersion_session(id) ON DELETE CASCADE,
+    FOREIGN KEY(source_unit_id) REFERENCES immersion_source_unit(id) ON DELETE SET NULL,
+    FOREIGN KEY(word_id) REFERENCES immersion_word(id) ON DELETE SET NULL
+);
+
+CREATE INDEX immersion_lookup_session_time_index
+ON immersion_lookup(session_id, occurred_at DESC, id DESC);
+
+CREATE INDEX immersion_lookup_word_time_index
+ON immersion_lookup(word_id, occurred_at DESC, id DESC);
+
+CREATE TABLE immersion_anki_operation(
+    id TEXT NOT NULL PRIMARY KEY,
+    event_id TEXT UNIQUE,
+    session_id TEXT,
+    source_unit_id TEXT,
+    word_id TEXT,
+    note_id INTEGER,
+    card_id INTEGER,
+    deck_id INTEGER,
+    type TEXT NOT NULL,
+    success INTEGER NOT NULL,
+    occurred_at INTEGER NOT NULL,
+    error_code TEXT,
+    FOREIGN KEY(event_id) REFERENCES immersion_event(id) ON DELETE CASCADE,
+    FOREIGN KEY(session_id) REFERENCES immersion_session(id) ON DELETE SET NULL,
+    FOREIGN KEY(source_unit_id) REFERENCES immersion_source_unit(id) ON DELETE SET NULL,
+    FOREIGN KEY(word_id) REFERENCES immersion_word(id) ON DELETE SET NULL
+);
+
+CREATE UNIQUE INDEX immersion_anki_operation_note_success_index
+ON immersion_anki_operation(note_id, type)
+WHERE success = 1 AND note_id IS NOT NULL AND type IN ('CREATE', 'UPDATE');
+
+CREATE TABLE immersion_anki_snapshot(
+    id TEXT NOT NULL PRIMARY KEY,
+    profile_id TEXT NOT NULL,
+    deck_scope TEXT,
+    requested_at INTEGER NOT NULL,
+    completed_at INTEGER,
+    capability_version INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    error_code TEXT,
+    is_complete INTEGER NOT NULL DEFAULT 0,
+    is_partial INTEGER NOT NULL DEFAULT 0,
+    is_stale INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX immersion_anki_snapshot_profile_time_index
+ON immersion_anki_snapshot(profile_id, requested_at DESC, id DESC);
+
+CREATE TABLE immersion_anki_item(
+    snapshot_id TEXT NOT NULL,
+    note_id INTEGER NOT NULL,
+    card_id INTEGER NOT NULL,
+    normalized_word TEXT,
+    normalized_reading TEXT,
+    character_code_point INTEGER,
+    card_type INTEGER,
+    queue INTEGER,
+    interval_days INTEGER,
+    due INTEGER,
+    lapses INTEGER,
+    ease INTEGER,
+    maturity_tier TEXT NOT NULL,
+    first_mature_at INTEGER,
+    PRIMARY KEY(snapshot_id, card_id),
+    FOREIGN KEY(snapshot_id) REFERENCES immersion_anki_snapshot(id) ON DELETE CASCADE,
+    CHECK(interval_days IS NULL OR interval_days >= 0),
+    CHECK(lapses IS NULL OR lapses >= 0)
+);
+
+CREATE INDEX immersion_anki_item_word_index
+ON immersion_anki_item(normalized_word, normalized_reading, snapshot_id);
+
+CREATE INDEX immersion_anki_item_character_index
+ON immersion_anki_item(character_code_point, snapshot_id);
+
+CREATE INDEX immersion_anki_item_maturity_index
+ON immersion_anki_item(maturity_tier, snapshot_id);
+
+CREATE TABLE immersion_daily_rollup(
+    scope_key TEXT NOT NULL PRIMARY KEY,
+    local_date INTEGER NOT NULL,
+    profile_id TEXT NOT NULL DEFAULT '',
+    language_tag TEXT NOT NULL DEFAULT '',
+    media_kind TEXT NOT NULL DEFAULT '',
+    title_id TEXT NOT NULL DEFAULT '',
+    active_duration_ms INTEGER NOT NULL DEFAULT 0,
+    gross_characters INTEGER NOT NULL DEFAULT 0,
+    unique_source_characters INTEGER NOT NULL DEFAULT 0,
+    net_characters INTEGER NOT NULL DEFAULT 0,
+    source_units INTEGER NOT NULL DEFAULT 0,
+    words INTEGER NOT NULL DEFAULT 0,
+    unique_words INTEGER NOT NULL DEFAULT 0,
+    new_words INTEGER NOT NULL DEFAULT 0,
+    distinct_characters INTEGER NOT NULL DEFAULT 0,
+    new_characters INTEGER NOT NULL DEFAULT 0,
+    sessions INTEGER NOT NULL DEFAULT 0,
+    lookups INTEGER NOT NULL DEFAULT 0,
+    cards_created INTEGER NOT NULL DEFAULT 0,
+    cards_updated INTEGER NOT NULL DEFAULT 0,
+    rollup_version INTEGER NOT NULL,
+    last_applied_event_at INTEGER,
+    CHECK(active_duration_ms >= 0),
+    CHECK(gross_characters >= 0),
+    CHECK(unique_source_characters >= 0),
+    CHECK(source_units >= 0),
+    CHECK(words >= 0),
+    CHECK(unique_words >= 0),
+    CHECK(new_words >= 0),
+    CHECK(distinct_characters >= 0),
+    CHECK(new_characters >= 0),
+    CHECK(sessions >= 0),
+    CHECK(lookups >= 0),
+    CHECK(cards_created >= 0),
+    CHECK(cards_updated >= 0)
+);
+
+CREATE INDEX immersion_daily_rollup_date_index
+ON immersion_daily_rollup(local_date DESC, scope_key);
+
+CREATE INDEX immersion_daily_rollup_title_date_index
+ON immersion_daily_rollup(title_id, local_date DESC, scope_key);
+
+CREATE TABLE immersion_lifetime_rollup(
+    scope_key TEXT NOT NULL PRIMARY KEY,
+    profile_id TEXT NOT NULL DEFAULT '',
+    language_tag TEXT NOT NULL DEFAULT '',
+    media_kind TEXT NOT NULL DEFAULT '',
+    title_id TEXT NOT NULL DEFAULT '',
+    active_duration_ms INTEGER NOT NULL DEFAULT 0,
+    gross_characters INTEGER NOT NULL DEFAULT 0,
+    unique_source_characters INTEGER NOT NULL DEFAULT 0,
+    net_characters INTEGER NOT NULL DEFAULT 0,
+    source_units INTEGER NOT NULL DEFAULT 0,
+    words INTEGER NOT NULL DEFAULT 0,
+    unique_words INTEGER NOT NULL DEFAULT 0,
+    distinct_characters INTEGER NOT NULL DEFAULT 0,
+    sessions INTEGER NOT NULL DEFAULT 0,
+    lookups INTEGER NOT NULL DEFAULT 0,
+    cards_created INTEGER NOT NULL DEFAULT 0,
+    cards_updated INTEGER NOT NULL DEFAULT 0,
+    provenance_state TEXT NOT NULL,
+    rollup_version INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE immersion_applied_event(
+    event_id TEXT NOT NULL PRIMARY KEY,
+    rollup_version INTEGER NOT NULL,
+    applied_at INTEGER NOT NULL,
+    FOREIGN KEY(event_id) REFERENCES immersion_event(id) ON DELETE CASCADE
+);
+
+CREATE TABLE immersion_goal(
+    id TEXT NOT NULL PRIMARY KEY,
+    type TEXT NOT NULL,
+    metric TEXT NOT NULL,
+    target REAL NOT NULL,
+    period TEXT NOT NULL,
+    start_date INTEGER,
+    end_date INTEGER,
+    media_kind TEXT,
+    profile_id TEXT,
+    language_tag TEXT,
+    title_id TEXT,
+    weekday_multipliers TEXT,
+    rest_day_policy TEXT,
+    state TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    CHECK(target >= 0)
+);
+
+CREATE INDEX immersion_goal_state_time_index
+ON immersion_goal(state, updated_at DESC, id DESC);
+
+CREATE TABLE immersion_goal_check_in(
+    goal_id TEXT NOT NULL,
+    local_date INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    note TEXT,
+    occurred_at INTEGER NOT NULL,
+    PRIMARY KEY(goal_id, local_date),
+    FOREIGN KEY(goal_id) REFERENCES immersion_goal(id) ON DELETE CASCADE
+);
+
+CREATE TABLE immersion_goal_achievement(
+    id TEXT NOT NULL PRIMARY KEY,
+    goal_id TEXT NOT NULL,
+    milestone_key TEXT NOT NULL,
+    earned_at INTEGER NOT NULL,
+    target_snapshot REAL NOT NULL,
+    UNIQUE(goal_id, milestone_key),
+    FOREIGN KEY(goal_id) REFERENCES immersion_goal(id) ON DELETE CASCADE
+);
+
+CREATE TABLE immersion_import_ledger(
+    source_key TEXT NOT NULL,
+    source_version INTEGER NOT NULL,
+    content_hash TEXT NOT NULL,
+    imported_at INTEGER NOT NULL,
+    result TEXT NOT NULL,
+    imported_count INTEGER NOT NULL DEFAULT 0,
+    skipped_count INTEGER NOT NULL DEFAULT 0,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    error_code TEXT,
+    PRIMARY KEY(source_key, source_version, content_hash),
+    CHECK(imported_count >= 0),
+    CHECK(skipped_count >= 0),
+    CHECK(failed_count >= 0)
+);
+
+CREATE TABLE immersion_rollup_state(
+    scope_key TEXT NOT NULL PRIMARY KEY,
+    schema_version INTEGER NOT NULL,
+    capture_version INTEGER NOT NULL,
+    normalization_version INTEGER NOT NULL,
+    tokenizer_version INTEGER NOT NULL,
+    rollup_version INTEGER NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0,
+    repair_cursor TEXT,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    CHECK(schema_version > 0),
+    CHECK(capture_version > 0),
+    CHECK(normalization_version > 0),
+    CHECK(tokenizer_version > 0),
+    CHECK(rollup_version > 0),
+    CHECK(revision >= 0)
+);
+
+INSERT INTO immersion_rollup_state(
+    scope_key,
+    schema_version,
+    capture_version,
+    normalization_version,
+    tokenizer_version,
+    rollup_version
+)
+VALUES ('global', 1, 1, 1, 1, 1);
+
+CREATE TABLE immersion_sync_peer(
+    peer_id TEXT NOT NULL PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    display_name TEXT,
+    last_event_at INTEGER,
+    last_event_id TEXT,
+    high_water_sequence INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    CHECK(high_water_sequence >= 0)
+);
+
+CREATE TABLE immersion_tombstone(
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    deleted_at INTEGER NOT NULL,
+    device_id TEXT NOT NULL,
+    PRIMARY KEY(entity_type, entity_id)
+);
+
+CREATE INDEX immersion_tombstone_time_index
+ON immersion_tombstone(deleted_at, entity_type, entity_id);
+
+CREATE TABLE immersion_exclusion(
+    id TEXT NOT NULL PRIMARY KEY,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    scope_key TEXT NOT NULL DEFAULT '',
+    reason TEXT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(entity_type, entity_id, scope_key)
+);
+
+CREATE TABLE immersion_retention_state(
+    scope_key TEXT NOT NULL PRIMARY KEY,
+    cleanup_cursor TEXT,
+    last_success_at INTEGER,
+    last_error_code TEXT,
+    updated_at INTEGER NOT NULL
+);

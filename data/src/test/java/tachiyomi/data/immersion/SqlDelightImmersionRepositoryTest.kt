@@ -1,0 +1,496 @@
+package tachiyomi.data.immersion
+
+import app.cash.sqldelight.db.QueryResult
+import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
+import io.kotest.matchers.collections.shouldContainExactly
+import io.kotest.matchers.collections.shouldNotBeEmpty
+import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.test.runTest
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.parallel.Execution
+import org.junit.jupiter.api.parallel.ExecutionMode
+import tachiyomi.data.AndroidDatabaseHandler
+import tachiyomi.data.Chapters
+import tachiyomi.data.Database
+import tachiyomi.data.DateColumnAdapter
+import tachiyomi.data.History
+import tachiyomi.data.MangaUpdateStrategyColumnAdapter
+import tachiyomi.data.Mangas
+import tachiyomi.data.MemoColumnAdapter
+import tachiyomi.data.Reading_sessions
+import tachiyomi.data.StringListColumnAdapter
+import tachiyomi.domain.immersion.model.CharacterVolume
+import tachiyomi.domain.immersion.model.EventId
+import tachiyomi.domain.immersion.model.ExposureEvent
+import tachiyomi.domain.immersion.model.ImmersionDataException
+import tachiyomi.domain.immersion.model.ImmersionSessionStart
+import tachiyomi.domain.immersion.model.ImmersionSourceUnit
+import tachiyomi.domain.immersion.model.ImmersionTitle
+import tachiyomi.domain.immersion.model.LanguageTag
+import tachiyomi.domain.immersion.model.MediaKind
+import tachiyomi.domain.immersion.model.MillisecondDuration
+import tachiyomi.domain.immersion.model.NetCharacterProgress
+import tachiyomi.domain.immersion.model.NonNegativeCounter
+import tachiyomi.domain.immersion.model.PersistenceErrorCode
+import tachiyomi.domain.immersion.model.PersistenceResult
+import tachiyomi.domain.immersion.model.SessionId
+import tachiyomi.domain.immersion.model.SessionStatus
+import tachiyomi.domain.immersion.model.SourceKind
+import tachiyomi.domain.immersion.model.SourceUnitId
+import tachiyomi.domain.immersion.model.TitleId
+
+@Execution(ExecutionMode.SAME_THREAD)
+class SqlDelightImmersionRepositoryTest {
+
+    private lateinit var driver: JdbcSqliteDriver
+    private lateinit var repository: SqlDelightImmersionRepository
+
+    @BeforeEach
+    fun setUp() {
+        driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        Database.Schema.create(driver).value
+        driver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+        val database = createDatabase(driver)
+        repository = SqlDelightImmersionRepository(
+            AndroidDatabaseHandler(
+                db = database,
+                driver = driver,
+                queryDispatcher = Dispatchers.IO,
+                transactionDispatcher = Dispatchers.IO,
+            ),
+        )
+    }
+
+    @AfterEach
+    fun tearDown() {
+        driver.close()
+    }
+
+    @Test
+    fun `fresh schema contains every immersion foundation table and metadata row`() {
+        val expectedTables = setOf(
+            "immersion_title",
+            "immersion_session",
+            "immersion_source_unit",
+            "immersion_event",
+            "immersion_source_exposure",
+            "immersion_word",
+            "immersion_word_occurrence",
+            "immersion_character",
+            "immersion_character_occurrence",
+            "immersion_lookup",
+            "immersion_anki_operation",
+            "immersion_anki_snapshot",
+            "immersion_anki_item",
+            "immersion_daily_rollup",
+            "immersion_lifetime_rollup",
+            "immersion_applied_event",
+            "immersion_goal",
+            "immersion_goal_check_in",
+            "immersion_goal_achievement",
+            "immersion_import_ledger",
+            "immersion_rollup_state",
+            "immersion_sync_peer",
+            "immersion_tombstone",
+            "immersion_exclusion",
+            "immersion_retention_state",
+        )
+
+        queryStrings(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'immersion_%'",
+        ).toSet() shouldBe expectedTables
+        queryLong("SELECT count(*) FROM immersion_rollup_state WHERE scope_key = 'global'") shouldBe 1
+    }
+
+    @Test
+    fun `migration 47 is additive and preserves an existing database`() {
+        val migrationDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        try {
+            migrationDriver.execute(null, "CREATE TABLE preexisting_sentinel(value TEXT NOT NULL)", 0).value
+            migrationDriver.execute(null, "INSERT INTO preexisting_sentinel VALUES ('kept')", 0).value
+
+            Database.Schema.migrate(
+                driver = migrationDriver,
+                oldVersion = 47,
+                newVersion = Database.Schema.version,
+            ).value
+
+            queryStrings(migrationDriver, "SELECT value FROM preexisting_sentinel") shouldContainExactly listOf("kept")
+            queryLong(migrationDriver, "SELECT count(*) FROM immersion_rollup_state") shouldBe 1
+            queryLong(
+                migrationDriver,
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'immersion_event'",
+            ) shouldBe 1
+            queryImmersionSchema(migrationDriver) shouldContainExactly queryImmersionSchema(driver)
+        } finally {
+            migrationDriver.close()
+        }
+    }
+
+    @Test
+    fun `session and exposure retries are idempotent`() = runTest {
+        prepareSession()
+        val event = exposure(sequence = 1, eventNumber = 1)
+
+        repository.createSession(sessionStart()) shouldBe PersistenceResult.AlreadyApplied
+        repository.appendExposure(event) shouldBe PersistenceResult.Applied
+        repository.appendExposure(event) shouldBe PersistenceResult.AlreadyApplied
+
+        repository.getSession(SESSION_ID)?.let { session ->
+            session.lastSequence shouldBe 1
+            session.activeDuration shouldBe MillisecondDuration(1_000)
+            session.grossCharacters shouldBe NonNegativeCounter(100)
+            session.uniqueSourceCharacters shouldBe NonNegativeCounter(90)
+            session.sourceUnitCount shouldBe NonNegativeCounter(1)
+        } shouldNotBe null
+        queryLong("SELECT count(*) FROM immersion_event") shouldBe 1
+        queryLong("SELECT count(*) FROM immersion_source_exposure") shouldBe 1
+    }
+
+    @Test
+    fun `event identity conflict is typed and leaves totals unchanged`() = runTest {
+        prepareSession()
+        repository.appendExposure(exposure(sequence = 1, eventNumber = 1)) shouldBe PersistenceResult.Applied
+
+        val error = runCatching {
+            repository.appendExposure(
+                exposure(sequence = 1, eventNumber = 1).copy(
+                    grossCharacters = NonNegativeCounter(999),
+                ),
+            )
+        }.exceptionOrNull()
+
+        error shouldNotBe null
+        (error as ImmersionDataException).code shouldBe PersistenceErrorCode.IDENTITY_CONFLICT
+        repository.getSession(SESSION_ID)?.grossCharacters shouldBe NonNegativeCounter(100)
+        queryLong("SELECT count(*) FROM immersion_event") shouldBe 1
+    }
+
+    @Test
+    fun `exposure append rolls back source event and counters after a simulated crash`() = runTest {
+        prepareSession()
+        driver.execute(
+            null,
+            """
+            CREATE TRIGGER simulate_exposure_crash
+            BEFORE INSERT ON immersion_source_exposure
+            BEGIN
+                SELECT RAISE(ABORT, 'simulated crash');
+            END
+            """.trimIndent(),
+            0,
+        ).value
+
+        runCatching { repository.appendExposure(exposure(sequence = 1, eventNumber = 1)) }
+            .exceptionOrNull() shouldNotBe null
+
+        queryLong("SELECT count(*) FROM immersion_source_unit") shouldBe 0
+        queryLong("SELECT count(*) FROM immersion_event") shouldBe 0
+        repository.getSession(SESSION_ID)?.let { session ->
+            session.lastSequence shouldBe 0
+            session.grossCharacters shouldBe NonNegativeCounter.ZERO
+        } shouldNotBe null
+    }
+
+    @Test
+    fun `session deletion cascades events and exposures but retains reusable source`() = runTest {
+        prepareSession()
+        repository.appendExposure(exposure(sequence = 1, eventNumber = 1))
+
+        repository.deleteSession(SESSION_ID) shouldBe true
+
+        queryLong("SELECT count(*) FROM immersion_session") shouldBe 0
+        queryLong("SELECT count(*) FROM immersion_event") shouldBe 0
+        queryLong("SELECT count(*) FROM immersion_source_exposure") shouldBe 0
+        queryLong("SELECT count(*) FROM immersion_source_unit") shouldBe 1
+    }
+
+    @Test
+    fun `title deletion is restricted while a session exists`() = runTest {
+        prepareSession()
+
+        runCatching {
+            driver.execute(
+                null,
+                "DELETE FROM immersion_title WHERE id = '${TITLE_ID.value}'",
+                0,
+            ).value
+        }.exceptionOrNull() shouldNotBe null
+
+        queryLong("SELECT count(*) FROM immersion_title") shouldBe 1
+    }
+
+    @Test
+    fun `pagination remains stable when every session has the same timestamp`() = runTest {
+        repository.upsertTitle(title())
+        val ids = (1..5).map { number -> sessionId(number) }
+        ids.forEach { id ->
+            repository.createSession(sessionStart(id = id, startedAt = 10_000))
+        }
+
+        val first = repository.sessionsPage(limit = 2)
+        val second = repository.sessionsPage(cursor = first.nextCursor, limit = 2)
+        val third = repository.sessionsPage(cursor = second.nextCursor, limit = 2)
+
+        val expected = ids.sortedByDescending { it.value }
+        (first.items + second.items + third.items).map { it.id } shouldContainExactly expected
+        third.nextCursor shouldBe null
+    }
+
+    @Test
+    fun `abandoned recovery only finalizes sessions before the heartbeat cutoff`() = runTest {
+        repository.upsertTitle(title())
+        val stale = sessionId(1)
+        val current = sessionId(2)
+        repository.createSession(sessionStart(id = stale, startedAt = 100))
+        repository.createSession(sessionStart(id = current, startedAt = 1_000))
+
+        repository.recoverAbandonedSessions(500) shouldBe 1
+
+        repository.getSession(stale)?.status shouldBe SessionStatus.ABANDONED
+        repository.getSession(current)?.status shouldBe SessionStatus.ACTIVE
+    }
+
+    @Test
+    fun `finalization is idempotent`() = runTest {
+        prepareSession()
+
+        repository.finalizeSession(
+            sessionId = SESSION_ID,
+            status = SessionStatus.COMPLETED,
+            endedAtEpochMillis = 2_000,
+            elapsedDuration = MillisecondDuration(1_000),
+        ) shouldBe PersistenceResult.Applied
+        repository.finalizeSession(
+            sessionId = SESSION_ID,
+            status = SessionStatus.COMPLETED,
+            endedAtEpochMillis = 2_000,
+            elapsedDuration = MillisecondDuration(1_000),
+        ) shouldBe PersistenceResult.AlreadyApplied
+    }
+
+    @Test
+    fun `concurrent reads never observe a partially applied batch`() = runTest {
+        prepareSession()
+        val batch = listOf(
+            exposure(sequence = 1, eventNumber = 1),
+            exposure(sequence = 2, eventNumber = 2),
+        )
+
+        val observedSequences = coroutineScope {
+            val write = async(Dispatchers.IO) { repository.appendExposureBatch(batch) }
+            val reads = List(32) {
+                async(Dispatchers.IO) { repository.getSession(SESSION_ID)?.lastSequence ?: -1 }
+            }
+            write.await() shouldContainExactly listOf(PersistenceResult.Applied, PersistenceResult.Applied)
+            reads.awaitAll()
+        }
+
+        observedSequences.toSet().all { it == 0L || it == 2L } shouldBe true
+        repository.getSession(SESSION_ID)?.lastSequence shouldBe 2
+    }
+
+    @Test
+    fun `invalid persisted enum is reported as typed corruption`() = runTest {
+        prepareSession()
+        driver.execute(
+            null,
+            "UPDATE immersion_session SET media_kind = 'BROKEN' WHERE id = '${SESSION_ID.value}'",
+            0,
+        ).value
+
+        val error = runCatching { repository.getSession(SESSION_ID) }.exceptionOrNull()
+
+        error shouldNotBe null
+        (error as ImmersionDataException).code shouldBe PersistenceErrorCode.CORRUPT_VALUE
+    }
+
+    @Test
+    fun `integrity report is healthy for valid event backed data`() = runTest {
+        prepareSession()
+        repository.appendExposure(exposure(sequence = 1, eventNumber = 1))
+        repository.finalizeSession(
+            sessionId = SESSION_ID,
+            status = SessionStatus.COMPLETED,
+            endedAtEpochMillis = 2_000,
+            elapsedDuration = MillisecondDuration(1_000),
+        )
+
+        repository.validateInvariants(expectedRollupVersion = 1).isHealthy shouldBe true
+    }
+
+    @Test
+    fun `primary session list uses its stable ordering index`() {
+        val details = queryStrings(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT *
+            FROM immersion_session
+            WHERE status != 'DELETED'
+            ORDER BY started_at DESC, id DESC
+            LIMIT 20
+            """.trimIndent(),
+            column = 3,
+        )
+
+        details.shouldNotBeEmpty()
+        details.any { "immersion_session_time_index" in it } shouldBe true
+    }
+
+    private suspend fun prepareSession() {
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        repository.createSession(sessionStart()) shouldBe PersistenceResult.Applied
+    }
+
+    private fun title() = ImmersionTitle(
+        id = TITLE_ID,
+        mediaKind = MediaKind.NOVEL,
+        sourceKey = "novel:test",
+        languageTag = LanguageTag("ja"),
+        displayTitle = "Test title",
+        createdAtEpochMillis = 1_000,
+        updatedAtEpochMillis = 1_000,
+    )
+
+    private fun sessionStart(
+        id: SessionId = SESSION_ID,
+        startedAt: Long = 1_000,
+    ) = ImmersionSessionStart(
+        id = id,
+        deviceId = "test-device",
+        titleId = TITLE_ID,
+        mediaKind = MediaKind.NOVEL,
+        languageTag = LanguageTag("ja"),
+        startedAtEpochMillis = startedAt,
+        startZoneId = "UTC",
+        startOffsetSeconds = 0,
+        captureVersion = 1,
+        schemaVersion = 1,
+    )
+
+    private fun exposure(
+        sequence: Long,
+        eventNumber: Int,
+    ) = ExposureEvent(
+        id = eventId(eventNumber),
+        sessionId = SESSION_ID,
+        sequence = sequence,
+        occurredAtEpochMillis = 1_000 + sequence * 100,
+        timezoneOffsetSeconds = 0,
+        source = source(lastExposedAt = 1_000 + sequence * 100),
+        activeDuration = MillisecondDuration(1_000),
+        grossCharacters = NonNegativeCounter(100),
+        uniqueSourceCharacters = NonNegativeCounter(90),
+        netCharacters = NetCharacterProgress(80),
+        exposurePolicy = "COUNT_ONCE_PER_SOURCE",
+    )
+
+    private fun source(lastExposedAt: Long) = ImmersionSourceUnit(
+        id = SOURCE_ID,
+        titleId = TITLE_ID,
+        sourceKind = SourceKind.NOVEL_RANGE,
+        canonicalLocator = "novel:test:chapter-1:0-100",
+        normalizedTextHash = "sha256:test",
+        chapterOrSectionId = "chapter-1",
+        sourceStart = 0,
+        sourceEnd = 100,
+        firstExposedAtEpochMillis = 1_000,
+        lastExposedAtEpochMillis = lastExposedAt,
+        characterCounts = CharacterVolume(
+            gross = NonNegativeCounter(100),
+            uniqueSource = NonNegativeCounter(90),
+            netProgress = NetCharacterProgress(80),
+        ),
+    )
+
+    private fun queryLong(sql: String): Long = queryLong(driver, sql)
+
+    private fun queryStrings(
+        sql: String,
+        column: Int = 0,
+    ): List<String> = queryStrings(driver, sql, column)
+
+    companion object {
+        private val TITLE_ID = TitleId("00000000-0000-0000-0000-000000000001")
+        private val SESSION_ID = sessionId(1)
+        private val SOURCE_ID = SourceUnitId("00000000-0000-0000-0000-000000000101")
+
+        private fun sessionId(number: Int) =
+            SessionId("00000000-0000-0000-0000-${number.toString().padStart(12, '0')}")
+
+        private fun eventId(number: Int) =
+            EventId("00000000-0000-0000-0001-${number.toString().padStart(12, '0')}")
+
+        private fun createDatabase(driver: JdbcSqliteDriver) =
+            Database(
+                driver = driver,
+                historyAdapter = History.Adapter(last_readAdapter = DateColumnAdapter),
+                mangasAdapter = Mangas.Adapter(
+                    genreAdapter = StringListColumnAdapter,
+                    update_strategyAdapter = MangaUpdateStrategyColumnAdapter,
+                    memoAdapter = MemoColumnAdapter,
+                ),
+                chaptersAdapter = Chapters.Adapter(memoAdapter = MemoColumnAdapter),
+                reading_sessionsAdapter = Reading_sessions.Adapter(read_atAdapter = DateColumnAdapter),
+            )
+
+        private fun queryLong(
+            driver: JdbcSqliteDriver,
+            sql: String,
+        ): Long = driver.executeQuery(
+            identifier = null,
+            sql = sql,
+            mapper = { cursor ->
+                check(cursor.next().value)
+                QueryResult.Value(cursor.getLong(0)!!)
+            },
+            parameters = 0,
+        ).value
+
+        private fun queryStrings(
+            driver: JdbcSqliteDriver,
+            sql: String,
+            column: Int = 0,
+        ): List<String> = driver.executeQuery(
+            identifier = null,
+            sql = sql,
+            mapper = { cursor ->
+                val result = mutableListOf<String>()
+                while (cursor.next().value) {
+                    result += cursor.getString(column)!!
+                }
+                QueryResult.Value(result)
+            },
+            parameters = 0,
+        ).value
+
+        private fun queryImmersionSchema(driver: JdbcSqliteDriver): List<String> = driver.executeQuery(
+            identifier = null,
+            sql = """
+                SELECT type, name, sql
+                FROM sqlite_master
+                WHERE name LIKE 'immersion_%'
+                    AND sql IS NOT NULL
+                ORDER BY type, name
+            """.trimIndent(),
+            mapper = { cursor ->
+                val result = mutableListOf<String>()
+                while (cursor.next().value) {
+                    val sql = cursor.getString(2)!!
+                        .replace(Regex("\\s+"), " ")
+                        .trim()
+                    result += "${cursor.getString(0)}|${cursor.getString(1)}|$sql"
+                }
+                QueryResult.Value(result)
+            },
+            parameters = 0,
+        ).value
+    }
+}
