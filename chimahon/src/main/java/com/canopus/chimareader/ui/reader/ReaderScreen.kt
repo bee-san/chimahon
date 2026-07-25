@@ -137,7 +137,9 @@ fun ReaderScreen(
                 ReaderViewModel(
                     document = document,
                     rootUrl = rootUrl,
+                    book = book,
                     settings = settings,
+                    settingsNamespace = settingsNamespace,
                     scope = scope,
                 ),
             )
@@ -222,12 +224,13 @@ fun ReaderScreen(
 
                     DisposableEffect(Unit) {
                         onDispose {
-                            viewModel.flushReaderState()
+                            viewModel.closeReader()
                             viewModel.flushSyncExport()
                         }
                     }
 
                     LaunchedEffect(isPopupActive) {
+                        viewModel.setLookupOverlayVisible(isPopupActive)
                         if (!isPopupActive) {
                             viewModel.bridge.send(WebViewCommand.ClearSelection)
                         }
@@ -253,7 +256,9 @@ fun ReaderScreen(
                             viewModel.sasayakiPlayer?.prepareTransition()
                             viewModel.previousChapter()
                         },
-                        onProgressChanged = { viewModel.saveBookmark(it) },
+                        onProgressChanged = viewModel::onReaderProgress,
+                        onVisibleRangesChanged = viewModel::onVisibleRangesChanged,
+                        onPositionRestored = viewModel::onReaderPositionRestored,
                         onLoadFailed = { },
                         onTap = { if (focusMode) focusMode = false },
                         onTapTop = { onShowHudChanged(!showHud) },
@@ -302,6 +307,10 @@ fun ReaderScreen(
             }
             lifecycleOwner.lifecycle.addObserver(observer)
             onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        }
+
+        LaunchedEffect(readyVm, tappedImageUri) {
+            readyVm?.setImageViewerVisible(tappedImageUri != null)
         }
 
         if (readyVm != null) {

@@ -176,6 +176,11 @@ class SqlDelightImmersionRepository(
         }
     }
 
+    override suspend fun sourceUnitExists(sourceUnitId: SourceUnitId): Boolean =
+        handler.await {
+            immersionQueries.selectImmersionSourceUnitById(sourceUnitId.value).executeAsOneOrNull() != null
+        }
+
     override suspend fun getSession(sessionId: SessionId): ImmersionSession? =
         handler.await {
             immersionQueries.selectImmersionSessionById(sessionId.value).executeAsOneOrNull()?.toDomain()
@@ -711,11 +716,12 @@ class SqlDelightImmersionRepository(
             activeDurationDeltaMs = event.activeDuration.value,
             grossCharacterDelta = 0,
             uniqueSourceCharacterDelta = 0,
-            netCharacterDelta = 0,
+            netCharacterDelta = event.netCharacters.value,
             payloadHash = payloadHash,
         )
         immersionQueries.advanceImmersionSessionForEvent(
             activeDurationDeltaMs = event.activeDuration.value,
+            netCharacterDelta = event.netCharacters.value,
             sequence = event.sequence,
             occurredAt = event.occurredAtEpochMillis,
             sessionId = event.sessionId.value,
@@ -921,6 +927,7 @@ private fun SessionEvent.payloadHash(): String {
     output.writeLong(timezoneOffsetSeconds.toLong())
     output.writeField(type.name)
     output.writeLong(activeDuration.value)
+    output.writeLong(netCharacters.value)
     return MessageDigest.getInstance("SHA-256")
         .digest(output.toByteArray())
         .joinToString("") { "%02x".format(it) }

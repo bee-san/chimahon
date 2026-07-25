@@ -41,6 +41,8 @@ fun ReaderWebView(
     onNextChapter: () -> Boolean,
     onPreviousChapter: () -> Boolean,
     onProgressChanged: (Double) -> Unit,
+    onVisibleRangesChanged: (chapterUrl: String, rangesJson: String) -> Unit = { _, _ -> },
+    onPositionRestored: (chapterUrl: String, progress: Double, recordSeek: Boolean) -> Unit = { _, _, _ -> },
     onLoadFailed: (String) -> Unit,
     onTap: () -> Unit = {},
     onTapTop: () -> Unit = {},
@@ -103,6 +105,8 @@ fun ReaderWebView(
                 onNextChapter = onNextChapter,
                 onPreviousChapter = onPreviousChapter,
                 onProgressChanged = onProgressChanged,
+                onVisibleRangesChanged = onVisibleRangesChanged,
+                onPositionRestored = onPositionRestored,
                 onLoadFailed = onLoadFailed,
                 onTap = onTap,
                 onTapTop = { if (!isPopupActive) onTapTop() },
@@ -192,7 +196,11 @@ fun ReaderWebView(
                                         if (el) el.scrollIntoView({ behavior: 'instant', block: 'start' });
                                     })();
                                 """.trimIndent()
-                                post { evaluateJavascript(js, null) }
+                                post {
+                                    evaluateJavascript(js) {
+                                        reportRestoredPosition(recordSeek = true)
+                                    }
+                                }
                             }
                             return true // always intercept – no full reload
                         }
@@ -298,6 +306,7 @@ fun ReaderWebView(
                         } else {
                             v.applySettings(new)
                         }
+                        v.postDelayed(v::reportVisibleRanges, 100L)
                     }
                     is WebViewCommand.ChangeFocusMode -> {
                         v.focusMode = command.focusMode
@@ -307,6 +316,9 @@ fun ReaderWebView(
                     }
                     is WebViewCommand.JumpToFragment -> {
                         v.jumpToFragment(command.fragment)
+                    }
+                    WebViewCommand.CaptureVisibleRanges -> {
+                        v.reportVisibleRanges()
                     }
                     is WebViewCommand.ClearSelection -> {
                         v.evaluateJavascript("if(window.hoshiReader && window.hoshiReader.clearSelection) { window.hoshiReader.clearSelection(); }", null)
@@ -352,6 +364,8 @@ private class ReaderAndroidWebView(
     private val onNextChapter: () -> Boolean,
     private val onPreviousChapter: () -> Boolean,
     private val onProgressChanged: (Double) -> Unit,
+    private val onVisibleRangesChanged: (chapterUrl: String, rangesJson: String) -> Unit,
+    private val onPositionRestored: (chapterUrl: String, progress: Double, recordSeek: Boolean) -> Unit,
     private val onLoadFailed: (String) -> Unit,
     private val onTap: () -> Unit = {},
     private val onTapTop: () -> Unit = {},
@@ -389,6 +403,7 @@ private class ReaderAndroidWebView(
                 p?.trim()?.trim('"')?.toDoubleOrNull()?.let {
                     pendingProgress = it
                     onProgressChanged(it)
+                    reportVisibleRanges()
                 }
             }
         }
@@ -458,6 +473,7 @@ private class ReaderAndroidWebView(
                     visibility = View.VISIBLE
                     animate().cancel()
                     animate().alpha(1f).setDuration(160).start()
+                    reportVisibleRanges()
                 }
             }
         },
@@ -558,7 +574,40 @@ private class ReaderAndroidWebView(
                 if (el) el.scrollIntoView({ behavior: 'instant', block: 'start' });
             })();
         """.trimIndent()
-        evaluateJavascript(js, null)
+        evaluateJavascript(js) {
+            postDelayed(
+                { reportRestoredPosition(recordSeek = false) },
+                VISIBILITY_SETTLE_MILLIS,
+            )
+        }
+    }
+
+    fun reportRestoredPosition(recordSeek: Boolean) {
+        val chapterUrl = currentUrl ?: return
+        evaluateJavascript(
+            "(function() { return window.hoshiReader.calculateProgress(); })()",
+        ) { result ->
+            result
+                ?.trim()
+                ?.trim('"')
+                ?.toDoubleOrNull()
+                ?.let { progress ->
+                    pendingProgress = progress
+                    onPositionRestored(chapterUrl, progress, recordSeek)
+                    reportVisibleRanges()
+                }
+        }
+    }
+
+    fun reportVisibleRanges() {
+        val chapterUrl = currentUrl ?: return
+        if (isImageOnly || visibility != View.VISIBLE) return
+        evaluateJavascript(
+            "(function() { try { return window.hoshiReader.captureVisibleRanges(64, 0.5); } catch (_) { return []; } })()",
+        ) { result ->
+            val value = result?.takeIf { it.startsWith("[") } ?: return@evaluateJavascript
+            onVisibleRangesChanged(chapterUrl, value)
+        }
     }
 
     private fun buildBaseCSS(): String = buildString {
@@ -1353,6 +1402,7 @@ private class ReaderAndroidWebView(
                         ?.let {
                             pendingProgress = it
                             onProgressChanged(it)
+                            reportVisibleRanges()
                         }
                 }
             } else {
@@ -1364,6 +1414,10 @@ private class ReaderAndroidWebView(
             }
         }
         return true
+    }
+
+    private companion object {
+        const val VISIBILITY_SETTLE_MILLIS = 100L
     }
 }
 

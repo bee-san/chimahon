@@ -60,8 +60,10 @@ dependencies {
 
     // Mihon core
     implementation(projects.core.common)
+    implementation(projects.domain)
     implementation(libs.unifile)
 
     testImplementation(libs.bundles.test)
+    testImplementation(kotlinx.coroutines.test)
     testRuntimeOnly(libs.junit.platform.launcher)
 }

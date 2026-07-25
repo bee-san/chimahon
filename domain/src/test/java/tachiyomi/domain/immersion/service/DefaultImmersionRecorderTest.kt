@@ -27,6 +27,7 @@ import tachiyomi.domain.immersion.model.NonNegativeCounter
 import tachiyomi.domain.immersion.model.PersistenceErrorCode
 import tachiyomi.domain.immersion.model.PersistenceResult
 import tachiyomi.domain.immersion.model.RecordedImmersionEvent
+import tachiyomi.domain.immersion.model.SessionEvent
 import tachiyomi.domain.immersion.model.SessionId
 import tachiyomi.domain.immersion.model.SessionStatus
 import tachiyomi.domain.immersion.model.SourceKind
@@ -151,6 +152,37 @@ class DefaultImmersionRecorderTest {
             SessionStatus.COMPLETED,
             SessionStatus.COMPLETED,
         )
+    }
+
+    @Test
+    fun `stale session handles cannot mutate or finalize the replacement reader`() = runTest {
+        val fixture = recorderFixture()
+        val first = fixture.recorder.startSession(fixture.context)
+            .shouldBeInstanceOf<SessionStartResult.Started>()
+            .handle
+        val second = fixture.recorder.startSession(
+            fixture.context.copy(title = title("Replacement")),
+        ).shouldBeInstanceOf<SessionStartResult.Started>().handle
+
+        fixture.recorder.record(first, CaptureCommand.Progress(NetCharacterProgress(500))) shouldBe
+            RecordResult.Rejected(ImmersionSessionState.ACTIVE)
+        fixture.recorder.pause(first, PauseReason.USER)
+        fixture.recorder.finalize(first, FinalizeReason.NORMAL) shouldBe null
+        fixture.recorder.state.value.let {
+            it.sessionId shouldBe second.sessionId
+            it.state shouldBe ImmersionSessionState.ACTIVE
+        }
+
+        fixture.recorder.record(second, CaptureCommand.Progress(NetCharacterProgress(-25))) shouldBe
+            RecordResult.Enqueued(1)
+        fixture.recorder.finalize(second, FinalizeReason.NORMAL)
+
+        fixture.repository.sessions.values.map { it.status } shouldContainExactly listOf(
+            SessionStatus.COMPLETED,
+            SessionStatus.COMPLETED,
+        )
+        fixture.repository.sessions.getValue(second.sessionId).netCharacters shouldBe
+            NetCharacterProgress(-25)
     }
 
     @Test
@@ -387,6 +419,7 @@ class DefaultImmersionRecorderTest {
     private class FakeImmersionRecorderRepository : ImmersionRecorderRepository {
         val starts = mutableListOf<ImmersionSessionStart>()
         val events = mutableListOf<RecordedImmersionEvent>()
+        val sourceUnits = mutableListOf<ImmersionSourceUnit>()
         val sessions = linkedMapOf<SessionId, ImmersionSession>()
         val attemptedBatches = mutableListOf<List<RecordedImmersionEvent>>()
         var busyFailuresRemaining = 0
@@ -403,7 +436,10 @@ class DefaultImmersionRecorderTest {
             return PersistenceResult.Applied
         }
 
-        override suspend fun upsertSourceUnit(source: ImmersionSourceUnit) = PersistenceResult.Applied
+        override suspend fun upsertSourceUnit(source: ImmersionSourceUnit): PersistenceResult {
+            sourceUnits += source
+            return PersistenceResult.Applied
+        }
 
         override suspend fun appendExposure(event: ExposureEvent): PersistenceResult =
             appendEventBatch(listOf(event)).single()
@@ -454,6 +490,9 @@ class DefaultImmersionRecorderTest {
 
         override suspend fun recoverAbandonedSessions(heartbeatCutoffEpochMillis: Long) = recoveredSessions
 
+        override suspend fun sourceUnitExists(sourceUnitId: SourceUnitId): Boolean =
+            sourceUnits.any { it.id == sourceUnitId }
+
         override suspend fun getSession(sessionId: SessionId): ImmersionSession? {
             val value = sessions[sessionId] ?: return null
             return if (skewCountersOnRead) {
@@ -468,6 +507,7 @@ class DefaultImmersionRecorderTest {
         private fun apply(event: RecordedImmersionEvent) {
             val current = sessions.getValue(event.sessionId)
             val exposure = event as? ExposureEvent
+            val progress = event as? SessionEvent
             sessions[event.sessionId] = current.copy(
                 activeDuration = current.activeDuration + event.activeDuration,
                 grossCharacters = current.grossCharacters +
@@ -475,7 +515,7 @@ class DefaultImmersionRecorderTest {
                 uniqueSourceCharacters = current.uniqueSourceCharacters +
                     (exposure?.uniqueSourceCharacters ?: NonNegativeCounter.ZERO),
                 netCharacters = current.netCharacters +
-                    (exposure?.netCharacters ?: NetCharacterProgress.ZERO),
+                    (exposure?.netCharacters ?: progress?.netCharacters ?: NetCharacterProgress.ZERO),
                 sourceUnitCount = NonNegativeCounter(
                     events.filterIsInstance<ExposureEvent>()
                         .filter { it.sessionId == event.sessionId }
