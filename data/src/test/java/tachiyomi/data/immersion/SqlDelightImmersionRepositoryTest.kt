@@ -26,6 +26,7 @@ import tachiyomi.data.Mangas
 import tachiyomi.data.MemoColumnAdapter
 import tachiyomi.data.Reading_sessions
 import tachiyomi.data.StringListColumnAdapter
+import tachiyomi.domain.immersion.model.AnalyticsSort
 import tachiyomi.domain.immersion.model.AnkiInventoryFailure
 import tachiyomi.domain.immersion.model.AnkiMatchConfidence
 import tachiyomi.domain.immersion.model.AnkiOperationEvent
@@ -41,6 +42,7 @@ import tachiyomi.domain.immersion.model.ExposureEvent
 import tachiyomi.domain.immersion.model.ImmersionAnkiItem
 import tachiyomi.domain.immersion.model.ImmersionAnkiSnapshot
 import tachiyomi.domain.immersion.model.ImmersionDataException
+import tachiyomi.domain.immersion.model.ImmersionLocalDate
 import tachiyomi.domain.immersion.model.ImmersionReindexRequest
 import tachiyomi.domain.immersion.model.ImmersionSessionStart
 import tachiyomi.domain.immersion.model.ImmersionSourceUnit
@@ -54,6 +56,7 @@ import tachiyomi.domain.immersion.model.LegacyImportBatch
 import tachiyomi.domain.immersion.model.LegacyImportIdentity
 import tachiyomi.domain.immersion.model.LegacyImportResultState
 import tachiyomi.domain.immersion.model.LegacyImportSourceKind
+import tachiyomi.domain.immersion.model.LocalDateRange
 import tachiyomi.domain.immersion.model.LookupEvent
 import tachiyomi.domain.immersion.model.LookupStatus
 import tachiyomi.domain.immersion.model.MaturityTier
@@ -68,10 +71,12 @@ import tachiyomi.domain.immersion.model.SessionId
 import tachiyomi.domain.immersion.model.SessionStatus
 import tachiyomi.domain.immersion.model.SourceKind
 import tachiyomi.domain.immersion.model.SourceUnitId
+import tachiyomi.domain.immersion.model.StatsFilter
 import tachiyomi.domain.immersion.model.TitleId
 import tachiyomi.domain.immersion.model.UnicodeCodePoint
 import tachiyomi.domain.immersion.service.AnkiOperationToken
 import tachiyomi.domain.immersion.service.PendingAnkiOperation
+import java.time.Instant
 import java.util.UUID
 
 @Execution(ExecutionMode.SAME_THREAD)
@@ -126,6 +131,7 @@ class SqlDelightImmersionRepositoryTest {
             "immersion_goal_achievement",
             "immersion_import_ledger",
             "immersion_rollup_state",
+            "immersion_rollup_dirty",
             "immersion_sync_peer",
             "immersion_tombstone",
             "immersion_exclusion",
@@ -176,6 +182,18 @@ class SqlDelightImmersionRepositoryTest {
             queryLong(
                 migrationDriver,
                 "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'immersion_anki_character'",
+            ) shouldBe 1
+            queryLong(
+                migrationDriver,
+                "SELECT count(*) FROM pragma_table_info('immersion_daily_rollup') WHERE name IN ('provenance_state', 'replay_state')",
+            ) shouldBe 2
+            queryLong(
+                migrationDriver,
+                "SELECT count(*) FROM pragma_table_info('immersion_lifetime_rollup') WHERE name = 'replay_state'",
+            ) shouldBe 1
+            queryLong(
+                migrationDriver,
+                "SELECT count(*) FROM pragma_table_info('immersion_event') WHERE name = 'local_date'",
             ) shouldBe 1
             queryImmersionSchema(migrationDriver) shouldContainExactly queryImmersionSchema(driver)
             assertLegacySessionConstraints(migrationDriver)
@@ -849,6 +867,136 @@ class SqlDelightImmersionRepositoryTest {
     }
 
     @Test
+    fun `rollup rebuild splits midnight and serves deterministic analytics pages`() = runTest {
+        val midnight = Instant.parse("2026-07-02T00:00:00Z").toEpochMilli()
+        val range = LocalDateRange(
+            ImmersionLocalDate.parse("2026-07-01"),
+            ImmersionLocalDate.parse("2026-07-02"),
+        )
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        repository.createSession(
+            sessionStart(startedAt = midnight - 30 * 60 * 1_000),
+        ) shouldBe PersistenceResult.Applied
+        val source = source(midnight + 30 * 60 * 1_000).copy(
+            firstExposedAtEpochMillis = midnight + 30 * 60 * 1_000,
+            lastExposedAtEpochMillis = midnight + 30 * 60 * 1_000,
+        )
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = 501).copy(
+                occurredAtEpochMillis = midnight + 30 * 60 * 1_000,
+                activeDuration = MillisecondDuration(60 * 60 * 1_000),
+                source = source,
+            ),
+        ) shouldBe PersistenceResult.Applied
+        repository.appendExposure(
+            exposure(sequence = 2, eventNumber = 502).copy(
+                occurredAtEpochMillis = midnight + 40 * 60 * 1_000,
+                activeDuration = MillisecondDuration(10 * 60 * 1_000),
+                grossCharacters = NonNegativeCounter(50),
+                uniqueSourceCharacters = NonNegativeCounter.ZERO,
+                netCharacters = NetCharacterProgress.ZERO,
+                replayOrdinal = 1,
+                source = source.copy(lastExposedAtEpochMillis = midnight + 40 * 60 * 1_000),
+            ),
+        ) shouldBe PersistenceResult.Applied
+        repository.storeIndexResult(
+            sourceUnitId = SOURCE_ID,
+            tokenizerId = "test",
+            tokenizerVersion = 1,
+            normalizationVersion = 1,
+            indexedVersion = 1,
+            indexedAtEpochMillis = midnight + 41 * 60 * 1_000,
+            tokenizationConfidence = 1.0,
+            terminalReason = null,
+            words = listOf(indexedWord("word-rollup", "猫", "ねこ", 0)),
+            characters = listOf(indexedCharacter('猫', 2)),
+        )
+        repository.finalizeSession(
+            SESSION_ID,
+            SessionStatus.COMPLETED,
+            midnight + 41 * 60 * 1_000,
+            MillisecondDuration(71 * 60 * 1_000),
+        )
+
+        repository.dirtyRollupRanges(20).map { it.start }.toSet() shouldBe
+            setOf(range.start, range.endInclusive)
+        repository.rebuildRollups(range, 2, midnight + 60 * 60 * 1_000).let {
+            it.eventCount shouldBe 2
+            it.sessionCount shouldBe 1
+            it.rowCount shouldBe 3
+        }
+
+        val daily = repository.dailyRollups(range)
+        daily.size shouldBe 3
+        daily.sumOf { it.metrics.activeTime.value } shouldBe 70 * 60 * 1_000L
+        daily.single { it.date == range.start && !it.replay }.let {
+            it.metrics.activeTime.value shouldBe 30 * 60 * 1_000L
+            it.metrics.sessions.value shouldBe 1
+            it.metrics.characters.gross.value shouldBe 0
+        }
+        daily.single { it.date == range.endInclusive && !it.replay }.let {
+            it.metrics.activeTime.value shouldBe 30 * 60 * 1_000L
+            it.metrics.characters.gross.value shouldBe 100
+            it.metrics.wordsEncountered.value shouldBe 1
+            it.metrics.uniqueWords.value shouldBe 1
+            it.metrics.distinctCharacters.value shouldBe 1
+            it.metrics.sourceUnits.value shouldBe 1
+        }
+        daily.single { it.replay }.let {
+            it.metrics.activeTime.value shouldBe 10 * 60 * 1_000L
+            it.metrics.characters.gross.value shouldBe 50
+            it.metrics.wordsEncountered.value shouldBe 1
+        }
+        repository.availableDateRange(StatsFilter()) shouldBe range
+        repository.vocabularyPage(
+            StatsFilter(dateRange = range),
+            AnalyticsSort.MOST_OCCURRENCES,
+            0,
+            100,
+        ).items.single().let {
+            it.headword shouldBe "猫"
+            it.occurrenceCount shouldBe 2
+            it.maturity shouldBe MaturityTier.UNKNOWN
+        }
+        repository.vocabularyPage(
+            StatsFilter(dateRange = range, includeRereadsAndReplays = false),
+            AnalyticsSort.MOST_OCCURRENCES,
+            0,
+            100,
+        ).items.single().occurrenceCount shouldBe 1
+        repository.vocabularyPage(
+            StatsFilter(dateRange = range, maturityTiers = setOf(MaturityTier.MATURE)),
+            AnalyticsSort.MOST_OCCURRENCES,
+            0,
+            100,
+        ).items shouldBe emptyList()
+        repository.vocabularyPage(
+            StatsFilter(dateRange = range, maturityTiers = setOf(MaturityTier.UNKNOWN)),
+            AnalyticsSort.MOST_OCCURRENCES,
+            0,
+            100,
+        ).items.single().headword shouldBe "猫"
+        repository.characterPage(
+            StatsFilter(dateRange = range),
+            AnalyticsSort.MOST_OCCURRENCES,
+            0,
+            100,
+        ).items.single().let {
+            it.rendered shouldBe "猫"
+            it.occurrenceCount shouldBe 4
+        }
+        repository.characterPage(
+            StatsFilter(dateRange = range, includeRereadsAndReplays = false),
+            AnalyticsSort.MOST_OCCURRENCES,
+            0,
+            100,
+        ).items.single().occurrenceCount shouldBe 2
+        repository.dirtyRollupRanges(1) shouldBe emptyList()
+        queryLong("SELECT count(*) FROM immersion_lifetime_rollup") shouldBe 2
+        queryLong("SELECT count(*) FROM immersion_applied_event") shouldBe 2
+    }
+
+    @Test
     fun `primary session list uses its stable ordering index`() {
         val details = queryStrings(
             """
@@ -864,6 +1012,69 @@ class SqlDelightImmersionRepositoryTest {
 
         details.shouldNotBeEmpty()
         details.any { "immersion_session_time_index" in it } shouldBe true
+    }
+
+    @Test
+    fun `date-filtered analytics use the materialized local-date index`() {
+        val details = queryStrings(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT *
+            FROM immersion_event
+            WHERE local_date BETWEEN 20000 AND 20365
+            ORDER BY local_date, session_id, id
+            """.trimIndent(),
+            column = 3,
+        )
+
+        details.shouldNotBeEmpty()
+        details.any { "immersion_event_local_date_scope_index" in it } shouldBe true
+    }
+
+    @Test
+    fun `one-year multi-title rollup fixture remains range bounded`() = runTest {
+        val start = ImmersionLocalDate.parse("2025-01-01")
+        driver.execute(
+            null,
+            """
+            WITH RECURSIVE
+                dates(day) AS (
+                    SELECT ${start.epochDay}
+                    UNION ALL
+                    SELECT day + 1 FROM dates WHERE day < ${start.epochDay + 364}
+                ),
+                titles(number) AS (
+                    SELECT 1
+                    UNION ALL
+                    SELECT number + 1 FROM titles WHERE number < 100
+                )
+            INSERT INTO immersion_daily_rollup(
+                scope_key,
+                local_date,
+                media_kind,
+                title_id,
+                gross_characters,
+                rollup_version
+            )
+            SELECT
+                day || ':' || number,
+                day,
+                'NOVEL',
+                printf('00000000-0000-0000-0000-%012d', number),
+                100,
+                2
+            FROM dates
+            CROSS JOIN titles
+            """.trimIndent(),
+            0,
+        ).value
+
+        repository.dailyRollups(
+            LocalDateRange(start, ImmersionLocalDate(start.epochDay + 364)),
+        ).let {
+            it.size shouldBe 36_500
+            it.sumOf { row -> row.metrics.characters.gross.value } shouldBe 3_650_000
+        }
     }
 
     private suspend fun prepareSession() {
@@ -1129,7 +1340,10 @@ class SqlDelightImmersionRepositoryTest {
                                 'immersion_session',
                                 'immersion_source_unit',
                                 'immersion_anki_snapshot',
-                                'immersion_anki_item'
+                                'immersion_anki_item',
+                                'immersion_daily_rollup',
+                                'immersion_lifetime_rollup',
+                                'immersion_event'
                             )
                         )
                     ORDER BY type, name

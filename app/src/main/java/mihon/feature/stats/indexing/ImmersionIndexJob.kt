@@ -11,6 +11,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import exh.log.xLogE
 import kotlinx.coroutines.CancellationException
+import mihon.feature.stats.rollup.ImmersionRollupJob
 import tachiyomi.domain.immersion.service.ImmersionIndexingEngine
 import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
 import uy.kohesive.injekt.Injekt
@@ -34,6 +35,7 @@ class ImmersionIndexJob(
                 processed += batch.claimed
                 failures += batch.failed
                 if (batch.claimed < ImmersionIndexingEngine.DEFAULT_BATCH_SIZE) {
+                    ImmersionRollupJob.start(applicationContext)
                     return Result.success(
                         androidx.work.workDataOf(
                             "processed" to processed,

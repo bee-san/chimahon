@@ -1,13 +1,23 @@
 package tachiyomi.domain.immersion.repository
 
 import kotlinx.coroutines.flow.Flow
+import tachiyomi.domain.immersion.model.AnalyticsAnkiSummary
+import tachiyomi.domain.immersion.model.AnalyticsCharacterRow
+import tachiyomi.domain.immersion.model.AnalyticsDataQuality
+import tachiyomi.domain.immersion.model.AnalyticsPage
+import tachiyomi.domain.immersion.model.AnalyticsSort
+import tachiyomi.domain.immersion.model.AnalyticsTitleMetadata
+import tachiyomi.domain.immersion.model.AnalyticsWordRow
 import tachiyomi.domain.immersion.model.ExposureEvent
 import tachiyomi.domain.immersion.model.ImmersionAnkiItem
 import tachiyomi.domain.immersion.model.ImmersionAnkiSnapshot
+import tachiyomi.domain.immersion.model.ImmersionDailyRollup
 import tachiyomi.domain.immersion.model.ImmersionGoal
 import tachiyomi.domain.immersion.model.ImmersionIntegrityReport
 import tachiyomi.domain.immersion.model.ImmersionOverview
 import tachiyomi.domain.immersion.model.ImmersionReindexRequest
+import tachiyomi.domain.immersion.model.ImmersionRollupDirtyRange
+import tachiyomi.domain.immersion.model.ImmersionRollupRebuildResult
 import tachiyomi.domain.immersion.model.ImmersionSession
 import tachiyomi.domain.immersion.model.ImmersionSessionStart
 import tachiyomi.domain.immersion.model.ImmersionSourceUnit
@@ -25,6 +35,8 @@ import tachiyomi.domain.immersion.model.SessionId
 import tachiyomi.domain.immersion.model.SessionPage
 import tachiyomi.domain.immersion.model.SessionStatus
 import tachiyomi.domain.immersion.model.SourceUnitId
+import tachiyomi.domain.immersion.model.StatsFilter
+import tachiyomi.domain.immersion.model.TitleId
 import tachiyomi.domain.immersion.model.UnicodeCodePoint
 import tachiyomi.domain.immersion.service.AnkiCoverage
 
@@ -98,6 +110,51 @@ interface ImmersionStatsRepository {
     ): SessionPage
 
     fun observeRevision(): Flow<Long>
+}
+
+interface ImmersionAnalyticsRepository {
+    suspend fun availableDateRange(filter: StatsFilter): tachiyomi.domain.immersion.model.LocalDateRange?
+
+    suspend fun dailyRollups(
+        range: tachiyomi.domain.immersion.model.LocalDateRange,
+    ): List<ImmersionDailyRollup>
+
+    suspend fun titleMetadata(titleIds: Set<TitleId>): List<AnalyticsTitleMetadata>
+
+    suspend fun dataQuality(
+        filter: StatsFilter,
+        nowEpochMillis: Long,
+    ): AnalyticsDataQuality
+
+    suspend fun vocabularyPage(
+        filter: StatsFilter,
+        sort: AnalyticsSort,
+        offset: Long,
+        limit: Int,
+    ): AnalyticsPage<AnalyticsWordRow>
+
+    suspend fun characterPage(
+        filter: StatsFilter,
+        sort: AnalyticsSort,
+        offset: Long,
+        limit: Int,
+    ): AnalyticsPage<AnalyticsCharacterRow>
+
+    suspend fun filteredSessionsPage(
+        filter: StatsFilter,
+        cursor: SessionCursor?,
+        limit: Int,
+    ): SessionPage
+
+    suspend fun ankiSummary(filter: StatsFilter): AnalyticsAnkiSummary
+
+    suspend fun dirtyRollupRanges(limit: Int): List<ImmersionRollupDirtyRange>
+
+    suspend fun rebuildRollups(
+        range: tachiyomi.domain.immersion.model.LocalDateRange,
+        rollupVersion: Int,
+        nowEpochMillis: Long,
+    ): ImmersionRollupRebuildResult
 }
 
 interface ImmersionMaintenanceRepository {

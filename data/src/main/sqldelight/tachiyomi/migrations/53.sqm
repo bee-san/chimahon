@@ -1,0 +1,52 @@
+ALTER TABLE immersion_daily_rollup
+ADD COLUMN provenance_state TEXT NOT NULL DEFAULT 'AVAILABLE';
+
+ALTER TABLE immersion_daily_rollup
+ADD COLUMN replay_state TEXT NOT NULL DEFAULT 'PRIMARY';
+
+ALTER TABLE immersion_lifetime_rollup
+ADD COLUMN replay_state TEXT NOT NULL DEFAULT 'PRIMARY';
+
+ALTER TABLE immersion_event
+ADD COLUMN local_date INTEGER NOT NULL DEFAULT 0;
+
+UPDATE immersion_event
+SET local_date = (occurred_at + timezone_offset_seconds * 1000) / 86400000;
+
+CREATE INDEX immersion_event_local_date_scope_index
+ON immersion_event(local_date, session_id, id);
+
+CREATE TABLE immersion_rollup_dirty(
+    local_date INTEGER NOT NULL,
+    title_id TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(local_date, title_id, reason)
+);
+
+CREATE INDEX immersion_rollup_dirty_time_index
+ON immersion_rollup_dirty(local_date, title_id, reason);
+
+INSERT INTO immersion_rollup_dirty(local_date, title_id, reason, updated_at)
+SELECT DISTINCT
+    coalesce(
+        legacy_local_date,
+        (started_at + start_offset_seconds * 1000) / 86400000
+    ),
+    title_id,
+    'MIGRATION',
+    max(coalesce(ended_at, started_at))
+FROM immersion_session
+GROUP BY 1, 2;
+
+INSERT INTO immersion_rollup_dirty(local_date, title_id, reason, updated_at)
+SELECT
+    event.local_date,
+    session.title_id,
+    'MIGRATION_EVENT',
+    max(event.occurred_at)
+FROM immersion_event AS event
+JOIN immersion_session AS session ON session.id = event.session_id
+GROUP BY event.local_date, session.title_id
+ON CONFLICT(local_date, title_id, reason) DO UPDATE SET
+    updated_at = max(updated_at, excluded.updated_at);

@@ -6,6 +6,7 @@ import mihon.feature.stats.indexing.ImmersionIndexJob
 import mihon.feature.stats.indexing.SqlImmersionIndexExclusionPolicy
 import mihon.feature.stats.legacy.LegacyStatsImporter
 import mihon.feature.stats.recorder.ImmersionRecorderLifecycleCoordinator
+import mihon.feature.stats.rollup.ImmersionRollupJob
 import tachiyomi.data.immersion.SqlDelightImmersionRepository
 import tachiyomi.data.libraryUpdateError.LibraryUpdateErrorRepositoryImpl
 import tachiyomi.data.libraryUpdateError.LibraryUpdateErrorWithRelationsRepositoryImpl
@@ -14,6 +15,7 @@ import tachiyomi.domain.immersion.interactor.GetLegacyAggregateTotals
 import tachiyomi.domain.immersion.model.AnkiOperationEvent
 import tachiyomi.domain.immersion.model.ExposureEvent
 import tachiyomi.domain.immersion.repository.FeatureFlaggedImmersionRecorderRepository
+import tachiyomi.domain.immersion.repository.ImmersionAnalyticsRepository
 import tachiyomi.domain.immersion.repository.ImmersionAnkiRepository
 import tachiyomi.domain.immersion.repository.ImmersionGoalRepository
 import tachiyomi.domain.immersion.repository.ImmersionIndexRepository
@@ -32,6 +34,7 @@ import tachiyomi.domain.immersion.service.DefaultAnkiOperationRecorder
 import tachiyomi.domain.immersion.service.DefaultImmersionRecorder
 import tachiyomi.domain.immersion.service.DefaultLookupTelemetry
 import tachiyomi.domain.immersion.service.DefaultSourceTextNormalizer
+import tachiyomi.domain.immersion.service.ImmersionAnalyticsService
 import tachiyomi.domain.immersion.service.ImmersionDeviceIdProvider
 import tachiyomi.domain.immersion.service.ImmersionEventPersistenceObserver
 import tachiyomi.domain.immersion.service.ImmersionIndexExclusionPolicy
@@ -81,9 +84,11 @@ class KMKDomainModule : InjektModule {
         addSingletonFactory<ImmersionIndexRepository> { get<SqlDelightImmersionRepository>() }
         addSingletonFactory<ImmersionLegacyImportRepository> { get<SqlDelightImmersionRepository>() }
         addSingletonFactory<ImmersionStatsRepository> { get<SqlDelightImmersionRepository>() }
+        addSingletonFactory<ImmersionAnalyticsRepository> { get<SqlDelightImmersionRepository>() }
         addSingletonFactory<ImmersionMaintenanceRepository> { get<SqlDelightImmersionRepository>() }
         addSingletonFactory<ImmersionGoalRepository> { get<SqlDelightImmersionRepository>() }
         addSingletonFactory<ImmersionAnkiRepository> { get<SqlDelightImmersionRepository>() }
+        addSingletonFactory { ImmersionAnalyticsService(get(), get()) }
         addSingletonFactory<AnkiInventoryProvider> { AnkiDroidInventoryProvider(get()) }
         addSingletonFactory { AnkiInventorySynchronizer(get(), get()) }
         addSingletonFactory { AnkiKnownnessResolver(get()) }
@@ -125,6 +130,9 @@ class KMKDomainModule : InjektModule {
                         preferences.indexingEnabled().get()
                     ) {
                         ImmersionIndexJob.start(get())
+                    }
+                    if (events.isNotEmpty()) {
+                        ImmersionRollupJob.start(get())
                     }
                 },
                 configuration = ImmersionRecorderConfiguration(

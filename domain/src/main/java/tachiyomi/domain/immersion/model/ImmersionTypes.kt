@@ -297,9 +297,9 @@ value class NetCharacterProgress(val value: Long) {
 
 @Serializable
 data class LocalDateRange(
-    val start: ImmersionLocalDate,
-    val endInclusive: ImmersionLocalDate,
-) {
+    override val start: ImmersionLocalDate,
+    override val endInclusive: ImmersionLocalDate,
+) : ClosedRange<ImmersionLocalDate> {
     init {
         require(start <= endInclusive) { "Date range start must not be after its end" }
     }

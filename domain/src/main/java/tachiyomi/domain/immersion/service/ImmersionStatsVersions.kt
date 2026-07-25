@@ -7,5 +7,5 @@ object ImmersionStatsVersions {
     const val TOKENIZER = 1
     const val INDEX = 1
     const val ANKI_CAPABILITY = 1
-    const val ROLLUP = 1
+    const val ROLLUP = 2
 }
