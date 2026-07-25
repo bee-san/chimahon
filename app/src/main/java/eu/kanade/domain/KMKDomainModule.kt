@@ -1,8 +1,17 @@
 package eu.kanade.domain
 
+import tachiyomi.data.immersion.SqlDelightImmersionRepository
 import tachiyomi.data.libraryUpdateError.LibraryUpdateErrorRepositoryImpl
 import tachiyomi.data.libraryUpdateError.LibraryUpdateErrorWithRelationsRepositoryImpl
 import tachiyomi.data.libraryUpdateErrorMessage.LibraryUpdateErrorMessageRepositoryImpl
+import tachiyomi.domain.immersion.repository.FeatureFlaggedImmersionRecorderRepository
+import tachiyomi.domain.immersion.repository.ImmersionAnkiRepository
+import tachiyomi.domain.immersion.repository.ImmersionGoalRepository
+import tachiyomi.domain.immersion.repository.ImmersionIndexRepository
+import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
+import tachiyomi.domain.immersion.repository.ImmersionRecorderRepository
+import tachiyomi.domain.immersion.repository.ImmersionStatsRepository
+import tachiyomi.domain.immersion.repository.NoOpImmersionRecorderRepository
 import tachiyomi.domain.immersion.service.ImmersionStatsDiagnosticsStore
 import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
 import tachiyomi.domain.libraryUpdateError.interactor.DeleteLibraryUpdateErrors
@@ -26,6 +35,22 @@ class KMKDomainModule : InjektModule {
     override fun InjektRegistrar.registerInjectables() {
         addSingletonFactory { ImmersionStatsPreferences(get()) }
         addSingletonFactory { ImmersionStatsDiagnosticsStore() }
+        addSingletonFactory { SqlDelightImmersionRepository(get()) }
+        addSingletonFactory { NoOpImmersionRecorderRepository() }
+        addSingletonFactory<ImmersionRecorderRepository> {
+            val preferences = get<ImmersionStatsPreferences>()
+            FeatureFlaggedImmersionRecorderRepository(
+                delegate = get<SqlDelightImmersionRepository>(),
+                disabledDelegate = get<NoOpImmersionRecorderRepository>(),
+                isEnabled = { preferences.captureEnabled().get() },
+                diagnostics = get(),
+            )
+        }
+        addSingletonFactory<ImmersionIndexRepository> { get<SqlDelightImmersionRepository>() }
+        addSingletonFactory<ImmersionStatsRepository> { get<SqlDelightImmersionRepository>() }
+        addSingletonFactory<ImmersionMaintenanceRepository> { get<SqlDelightImmersionRepository>() }
+        addSingletonFactory<ImmersionGoalRepository> { get<SqlDelightImmersionRepository>() }
+        addSingletonFactory<ImmersionAnkiRepository> { get<SqlDelightImmersionRepository>() }
 
         addSingletonFactory<LibraryUpdateErrorWithRelationsRepository> {
             LibraryUpdateErrorWithRelationsRepositoryImpl(get())
