@@ -66,6 +66,24 @@ enum class AnkiOperationType {
 }
 
 @Serializable
+enum class LookupStatus {
+    SUCCESS,
+    EMPTY,
+    CANCELLED,
+    FAILED,
+}
+
+@Serializable
+enum class AnkiOperationStatus {
+    SUCCESS,
+    DUPLICATE,
+    OPENED,
+    FAILED,
+    PERMISSION_DENIED,
+    NOT_CONFIGURED,
+}
+
+@Serializable
 enum class MaturityTier {
     UNKNOWN,
     NEW,

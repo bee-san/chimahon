@@ -163,6 +163,75 @@ data class ExposureEvent(
 }
 
 @Serializable
+data class LookupEvent(
+    override val id: EventId,
+    override val sessionId: SessionId,
+    override val sequence: Long,
+    override val occurredAtEpochMillis: Long,
+    override val timezoneOffsetSeconds: Int,
+    override val type: EventType = EventType.LOOKUP,
+    override val activeDuration: MillisecondDuration = MillisecondDuration(0),
+    val lookupId: String,
+    val sourceUnitId: SourceUnitId?,
+    val queryHash: String,
+    val rawQuery: String?,
+    val normalizedHeadword: String?,
+    val normalizedReading: String?,
+    val partOfSpeech: String?,
+    val dictionaryId: String?,
+    val resultId: String?,
+    val status: LookupStatus,
+) : RecordedImmersionEvent {
+    init {
+        require(sequence > 0) { "Event sequence must be positive" }
+        require(occurredAtEpochMillis >= 0) { "Event timestamp cannot be negative" }
+        require(timezoneOffsetSeconds in MIN_ZONE_OFFSET_SECONDS..MAX_ZONE_OFFSET_SECONDS) {
+            "Event offset is outside the valid UTC offset range"
+        }
+        require(lookupId.isNotBlank()) { "Lookup ID cannot be blank" }
+        require(queryHash.isNotBlank()) { "Lookup query hash cannot be blank" }
+        require(type == EventType.LOOKUP) { "Lookup events must use the lookup event type" }
+    }
+}
+
+@Serializable
+data class AnkiOperationEvent(
+    override val id: EventId,
+    override val sessionId: SessionId,
+    override val sequence: Long,
+    override val occurredAtEpochMillis: Long,
+    override val timezoneOffsetSeconds: Int,
+    override val type: EventType = EventType.ANKI_OPERATION,
+    override val activeDuration: MillisecondDuration = MillisecondDuration(0),
+    val operationId: AnkiOperationId,
+    val sourceUnitId: SourceUnitId?,
+    val expressionHash: String,
+    val normalizedExpression: String?,
+    val normalizedReading: String?,
+    val operationType: AnkiOperationType,
+    val status: AnkiOperationStatus,
+    val noteId: Long?,
+    val cardId: Long? = null,
+    val deckId: Long? = null,
+    val errorCode: String? = null,
+) : RecordedImmersionEvent {
+    init {
+        require(sequence > 0) { "Event sequence must be positive" }
+        require(occurredAtEpochMillis >= 0) { "Event timestamp cannot be negative" }
+        require(timezoneOffsetSeconds in MIN_ZONE_OFFSET_SECONDS..MAX_ZONE_OFFSET_SECONDS) {
+            "Event offset is outside the valid UTC offset range"
+        }
+        require(expressionHash.isNotBlank()) { "Anki expression hash cannot be blank" }
+        require(noteId == null || noteId >= 0) { "Anki note ID cannot be negative" }
+        require(cardId == null || cardId >= 0) { "Anki card ID cannot be negative" }
+        require(deckId == null || deckId >= 0) { "Anki deck ID cannot be negative" }
+        require(type == EventType.ANKI_OPERATION) {
+            "Anki operation events must use the Anki operation event type"
+        }
+    }
+}
+
+@Serializable
 data class ImmersionSession(
     val id: SessionId,
     val deviceId: String,

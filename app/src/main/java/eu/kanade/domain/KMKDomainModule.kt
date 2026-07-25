@@ -7,6 +7,7 @@ import tachiyomi.data.libraryUpdateError.LibraryUpdateErrorRepositoryImpl
 import tachiyomi.data.libraryUpdateError.LibraryUpdateErrorWithRelationsRepositoryImpl
 import tachiyomi.data.libraryUpdateErrorMessage.LibraryUpdateErrorMessageRepositoryImpl
 import tachiyomi.domain.immersion.interactor.GetLegacyAggregateTotals
+import tachiyomi.domain.immersion.model.AnkiOperationEvent
 import tachiyomi.domain.immersion.repository.FeatureFlaggedImmersionRecorderRepository
 import tachiyomi.domain.immersion.repository.ImmersionAnkiRepository
 import tachiyomi.domain.immersion.repository.ImmersionGoalRepository
@@ -16,13 +17,20 @@ import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
 import tachiyomi.domain.immersion.repository.ImmersionRecorderRepository
 import tachiyomi.domain.immersion.repository.ImmersionStatsRepository
 import tachiyomi.domain.immersion.repository.NoOpImmersionRecorderRepository
+import tachiyomi.domain.immersion.service.AnkiOperationRecorder
+import tachiyomi.domain.immersion.service.AnkiOperationRepairWriter
+import tachiyomi.domain.immersion.service.DefaultAnkiOperationRecorder
 import tachiyomi.domain.immersion.service.DefaultImmersionRecorder
+import tachiyomi.domain.immersion.service.DefaultLookupTelemetry
 import tachiyomi.domain.immersion.service.ImmersionDeviceIdProvider
+import tachiyomi.domain.immersion.service.ImmersionEventPersistenceObserver
 import tachiyomi.domain.immersion.service.ImmersionRecorder
 import tachiyomi.domain.immersion.service.ImmersionRecorderConfiguration
 import tachiyomi.domain.immersion.service.ImmersionShadowMonitor
 import tachiyomi.domain.immersion.service.ImmersionStatsDiagnosticsStore
 import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
+import tachiyomi.domain.immersion.service.LookupTelemetry
+import tachiyomi.domain.immersion.service.PreferenceAnkiOperationRepairStore
 import tachiyomi.domain.libraryUpdateError.interactor.DeleteLibraryUpdateErrors
 import tachiyomi.domain.libraryUpdateError.interactor.GetLibraryUpdateErrorWithRelations
 import tachiyomi.domain.libraryUpdateError.interactor.GetLibraryUpdateErrors
@@ -62,16 +70,41 @@ class KMKDomainModule : InjektModule {
         addSingletonFactory<ImmersionMaintenanceRepository> { get<SqlDelightImmersionRepository>() }
         addSingletonFactory<ImmersionGoalRepository> { get<SqlDelightImmersionRepository>() }
         addSingletonFactory<ImmersionAnkiRepository> { get<SqlDelightImmersionRepository>() }
+        addSingletonFactory {
+            PreferenceAnkiOperationRepairStore(get())
+        }
         addSingletonFactory<ImmersionRecorder> {
             val preferences = get<ImmersionStatsPreferences>()
+            val ankiRepairStore = get<PreferenceAnkiOperationRepairStore>()
             DefaultImmersionRecorder(
                 repository = get<SqlDelightImmersionRepository>(),
                 deviceIdProvider = ImmersionDeviceIdProvider { get<eu.kanade.domain.sync.SyncPreferences>().uniqueDeviceID() },
                 captureEnabled = { preferences.captureEnabled().get() },
                 diagnostics = get(),
+                eventPersistenceObserver = ImmersionEventPersistenceObserver { events ->
+                    events.filterIsInstance<AnkiOperationEvent>().forEach {
+                        ankiRepairStore.remove(it.operationId)
+                    }
+                },
                 configuration = ImmersionRecorderConfiguration(
                     idleTimeoutMillis = preferences.readerIdleTimeoutSeconds().get() * 1_000L,
                 ),
+            )
+        }
+        addSingletonFactory<LookupTelemetry> {
+            val preferences = get<ImmersionStatsPreferences>()
+            DefaultLookupTelemetry(
+                recorder = get(),
+                rawTextRetention = { preferences.rawTextRetention().get() },
+            )
+        }
+        addSingletonFactory<AnkiOperationRecorder> {
+            DefaultAnkiOperationRecorder(
+                recorder = get(),
+                repairStore = get<PreferenceAnkiOperationRepairStore>(),
+                repairWriter = AnkiOperationRepairWriter {
+                    get<SqlDelightImmersionRepository>().storeUnlinkedAnkiOperation(it)
+                },
             )
         }
         addSingletonFactory {
@@ -79,6 +112,7 @@ class KMKDomainModule : InjektModule {
                 recorder = get(),
                 basePreferences = get(),
                 statsPreferences = get(),
+                ankiOperationRecorder = get(),
             )
         }
         addFactory { GetLegacyAggregateTotals(get()) }

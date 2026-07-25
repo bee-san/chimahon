@@ -68,6 +68,9 @@ import tachiyomi.domain.history.interactor.DeleteSearchHistory
 import tachiyomi.domain.history.interactor.GetSearchHistory
 import tachiyomi.domain.history.interactor.UpsertSearchHistory
 import tachiyomi.domain.history.model.SearchHistory
+import tachiyomi.domain.immersion.model.LookupStatus
+import tachiyomi.domain.immersion.service.LookupIntentToken
+import tachiyomi.domain.immersion.service.LookupTelemetry
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.i18n.stringResource
 import tachiyomi.presentation.core.util.collectAsState
@@ -77,6 +80,7 @@ import java.io.File
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.util.LinkedHashMap
+import java.util.UUID
 
 /** One entry in the recursive-lookup history stack (shared by tab and popup). */
 private data class TabLookupFrame(
@@ -203,6 +207,7 @@ data object DictionaryTab : Tab {
         var hasSearched by remember { mutableStateOf(false) }
         var shouldMountWebView by remember { mutableStateOf(false) }
         var searchJob by remember { mutableStateOf<Job?>(null) }
+        var activeLookupToken by remember { mutableStateOf<LookupIntentToken?>(null) }
         var retainedWebView by remember { mutableStateOf<WebView?>(null) }
         val focusManager = LocalFocusManager.current
         val focusRequester = remember { FocusRequester() }
@@ -215,6 +220,7 @@ data object DictionaryTab : Tab {
         }
 
         val dictionaryPreferences = remember { Injekt.get<DictionaryPreferences>() }
+        val lookupTelemetry = remember { Injekt.get<LookupTelemetry>() }
         val rawProfiles by dictionaryPreferences.rawProfiles().collectAsState()
         val rawActiveProfileId by dictionaryPreferences.rawActiveProfileId().collectAsState()
         val profileStore = dictionaryPreferences.profileStore
@@ -258,8 +264,19 @@ data object DictionaryTab : Tab {
         }
 
         /** Push a lookup onto the stack; cancels any in-flight search first. */
-        fun stackLookup(rawQuery: String, type: String? = null) {
+        fun stackLookup(
+            rawQuery: String,
+            type: String? = null,
+            recordIntent: Boolean = true,
+        ) {
+            activeLookupToken?.let { lookupTelemetry.complete(it, LookupStatus.CANCELLED) }
             searchJob?.cancel()
+            val lookupToken = if (recordIntent) {
+                lookupTelemetry.begin(UUID.randomUUID().toString(), rawQuery)
+            } else {
+                null
+            }
+            activeLookupToken = lookupToken
             shouldMountWebView = true
             searchJob = scope.launch {
                 isLoading = true
@@ -271,6 +288,8 @@ data object DictionaryTab : Tab {
                 if (type == "kanji") {
                     val paths = getDictionaryPaths(context, activeProfile)
                     if (paths.kanjiPaths.isEmpty()) {
+                        lookupToken?.let { lookupTelemetry.complete(it, LookupStatus.FAILED) }
+                        activeLookupToken = null
                         errorMessage = "No kanji dictionaries available"
                         isLoading = false
                         return@launch
@@ -307,6 +326,26 @@ data object DictionaryTab : Tab {
                     )
                     lookupError = lookupResult.error
                 }
+
+                val selectedResult = initialFrame.results.firstOrNull()
+                lookupToken?.let {
+                    lookupTelemetry.complete(
+                        token = it,
+                        status = when {
+                            lookupError != null -> LookupStatus.FAILED
+                            selectedResult == null && initialFrame.entryJsons.isNullOrEmpty() -> LookupStatus.EMPTY
+                            else -> LookupStatus.SUCCESS
+                        },
+                        normalizedHeadword = selectedResult?.term?.expression,
+                        normalizedReading = selectedResult?.term?.reading,
+                        partOfSpeech = selectedResult?.term?.rules,
+                        dictionaryId = selectedResult?.term?.glossaries?.firstOrNull()?.dictName,
+                        resultId = selectedResult?.let { result ->
+                            "${result.term.expression}\u0000${result.term.reading}"
+                        },
+                    )
+                }
+                if (activeLookupToken == lookupToken) activeLookupToken = null
 
                 // Truncate forward history, then push initial results IMMEDIATELY
                 while (lookupStack.size > activeTabIndex + 1) lookupStack.removeAt(lookupStack.size - 1)
@@ -391,7 +430,7 @@ data object DictionaryTab : Tab {
             if (currentFrame?.query != trimmed) {
                 lookupStack.clear()
                 activeTabIndex = 0
-                stackLookup(trimmed)
+                stackLookup(trimmed, recordIntent = false)
             }
         }
 
@@ -400,7 +439,7 @@ data object DictionaryTab : Tab {
             if (trimmed.isNotEmpty() && hasSearched) {
                 lookupStack.clear()
                 activeTabIndex = 0
-                stackLookup(trimmed)
+                stackLookup(trimmed, recordIntent = false)
             }
         }
 
@@ -469,6 +508,7 @@ data object DictionaryTab : Tab {
 
         DisposableEffect(Unit) {
             onDispose {
+                activeLookupToken?.let { lookupTelemetry.complete(it, LookupStatus.CANCELLED) }
                 searchJob?.cancel()
                 sessionManager.close()
                 retainedWebView?.runCatching {
