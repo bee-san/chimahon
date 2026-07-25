@@ -1,0 +1,16 @@
+[
+  {
+    "dateKey": "2026-07-23",
+    "mangaCards": 2,
+    "novelCards": 3,
+    "profileId": "default",
+    "titleId": "fixture-title"
+  },
+  {
+    "dateKey": "2026-07-24",
+    "mangaCards": 1,
+    "novelCards": 4,
+    "profileId": "",
+    "titleId": null
+  }
+]
