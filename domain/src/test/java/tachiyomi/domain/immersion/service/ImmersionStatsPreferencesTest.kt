@@ -16,6 +16,7 @@ class ImmersionStatsPreferencesTest {
         preferences.uiEnabled().get() shouldBe false
         preferences.ankiSyncEnabled().get() shouldBe false
         preferences.goalsEnabled().get() shouldBe false
+        preferences.includeLegacyAggregates().get() shouldBe true
     }
 
     @Test

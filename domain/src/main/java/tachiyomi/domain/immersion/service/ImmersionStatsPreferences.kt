@@ -18,6 +18,8 @@ class ImmersionStatsPreferences(
 
     fun goalsEnabled() = preferenceStore.getBoolean(GOALS_ENABLED, false)
 
+    fun includeLegacyAggregates() = preferenceStore.getBoolean(INCLUDE_LEGACY_AGGREGATES, true)
+
     fun readerIdleTimeoutSeconds() = preferenceStore.getInt(
         READER_IDLE_TIMEOUT_SECONDS,
         DEFAULT_READER_IDLE_TIMEOUT_SECONDS,
@@ -47,6 +49,7 @@ class ImmersionStatsPreferences(
         const val UI_ENABLED = "immersion_stats_ui_enabled"
         const val ANKI_SYNC_ENABLED = "immersion_stats_anki_sync_enabled"
         const val GOALS_ENABLED = "immersion_stats_goals_enabled"
+        const val INCLUDE_LEGACY_AGGREGATES = "immersion_stats_include_legacy_aggregates"
         const val READER_IDLE_TIMEOUT_SECONDS = "immersion_stats_reader_idle_timeout_seconds"
         const val VIDEO_BUFFERING_GRACE_SECONDS = "immersion_stats_video_buffering_grace_seconds"
         const val RAW_TEXT_RETENTION = "immersion_stats_raw_text_retention"

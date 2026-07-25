@@ -245,6 +245,9 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
         // Chimahon -->
         com.canopus.chimareader.data.NovelMigration.migrateOldBooks(this)
         chimahon.DictionaryRepository.migrateFlatDictionaries(File(getExternalFilesDir(null), "dictionaries"))
+        if (Injekt.get<tachiyomi.domain.immersion.service.ImmersionStatsPreferences>().uiEnabled().get()) {
+            mihon.feature.stats.legacy.LegacyStatsImportJob.start(this)
+        }
         // Chimahon <--
     }
 
