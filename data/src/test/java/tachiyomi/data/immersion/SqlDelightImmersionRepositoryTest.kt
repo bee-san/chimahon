@@ -26,6 +26,7 @@ import tachiyomi.data.Mangas
 import tachiyomi.data.MemoColumnAdapter
 import tachiyomi.data.Reading_sessions
 import tachiyomi.data.StringListColumnAdapter
+import tachiyomi.domain.immersion.model.CapabilityState
 import tachiyomi.domain.immersion.model.CharacterVolume
 import tachiyomi.domain.immersion.model.EventId
 import tachiyomi.domain.immersion.model.EventType
@@ -139,11 +140,35 @@ class SqlDelightImmersionRepositoryTest {
                 migrationDriver,
                 "SELECT count(*) FROM pragma_table_info('immersion_session') WHERE name = 'legacy_cards_total'",
             ) shouldBe 1
+            queryLong(
+                migrationDriver,
+                "SELECT count(*) FROM pragma_table_info('immersion_source_unit') WHERE name = 'ocr_quality'",
+            ) shouldBe 1
             queryImmersionSchema(migrationDriver) shouldContainExactly queryImmersionSchema(driver)
             assertLegacySessionConstraints(migrationDriver)
         } finally {
             migrationDriver.close()
         }
+    }
+
+    @Test
+    fun `OCR quality persists with its source unit`() = runTest {
+        prepareSession()
+        val event = exposure(sequence = 1, eventNumber = 1).let {
+            it.copy(
+                source = it.source.copy(
+                    sourceKind = SourceKind.MANGA_OCR_BLOCK,
+                    ocrEngineId = "lens",
+                    ocrVersion = 2,
+                    ocrQuality = CapabilityState.PARTIAL,
+                ),
+            )
+        }
+
+        repository.appendExposure(event) shouldBe PersistenceResult.Applied
+
+        queryStrings("SELECT ocr_quality FROM immersion_source_unit") shouldContainExactly
+            listOf(CapabilityState.PARTIAL.name)
     }
 
     @Test
@@ -684,7 +709,10 @@ class SqlDelightImmersionRepositoryTest {
                     FROM sqlite_master
                     WHERE name LIKE 'immersion_%'
                         AND sql IS NOT NULL
-                        AND NOT (type = 'table' AND name = 'immersion_session')
+                        AND NOT (
+                            type = 'table'
+                            AND name IN ('immersion_session', 'immersion_source_unit')
+                        )
                     ORDER BY type, name
                 """.trimIndent(),
                 mapper = { cursor ->

@@ -282,7 +282,7 @@ abstract class PagerViewer(
             }
             currentPage = page
             when (page) {
-                is ReaderPage -> onReaderPageSelected(page, allowPreload, forward, pagePair.second != null)
+                is ReaderPage -> onReaderPageSelected(page, allowPreload, forward, pagePair.second as? ReaderPage)
                 is ChapterTransition -> onTransitionSelected(page)
             }
         }
@@ -311,10 +311,15 @@ abstract class PagerViewer(
      * Called when a [ReaderPage] is marked as active. It notifies the
      * activity of the change and requests the preload of the next chapter if this is the last page.
      */
-    private fun onReaderPageSelected(page: ReaderPage, allowPreload: Boolean, forward: Boolean, hasExtraPage: Boolean) {
+    private fun onReaderPageSelected(
+        page: ReaderPage,
+        allowPreload: Boolean,
+        forward: Boolean,
+        extraPage: ReaderPage?,
+    ) {
         val pages = page.chapter.pages ?: return
         logcat { "onReaderPageSelected: ${page.number}/${pages.size}" }
-        activity.onPageSelected(page, hasExtraPage)
+        activity.onPageSelected(page, extraPage)
 
         // Notify holder of page change
         getPageHolder(page)?.onPageSelected(forward)
@@ -404,7 +409,7 @@ abstract class PagerViewer(
                 val joinedItem = adapter.joinedItems.firstOrNull { it.first == page || it.second == page }
                 activity.onPageSelected(
                     joinedItem?.first as? ReaderPage ?: page,
-                    joinedItem?.second != null,
+                    joinedItem?.second as? ReaderPage,
                 )
             }
         } else {

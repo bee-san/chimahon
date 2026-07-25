@@ -590,6 +590,7 @@ class SqlDelightImmersionRepository(
             ocrEngineId = source.ocrEngineId,
             ocrVersion = source.ocrVersion?.toLong(),
             ocrConfidence = source.ocrConfidence,
+            ocrQuality = source.ocrQuality?.name,
             tokenizerVersion = source.tokenizerVersion.toLong(),
             rawText = source.rawText?.encodeToByteArray(),
             rawTextEncoding = source.rawText?.let { UTF8 },

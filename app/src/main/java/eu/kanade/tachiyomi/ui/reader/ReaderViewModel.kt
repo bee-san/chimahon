@@ -81,6 +81,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filterNotNull
@@ -91,6 +92,7 @@ import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.supervisorScope
@@ -101,6 +103,15 @@ import kotlinx.coroutines.withTimeoutOrNull
 import logcat.LogPriority
 import mihon.core.archive.archiveReader
 import mihon.core.archive.epubReader
+import mihon.feature.stats.capture.LegacyMangaSessionSnapshot
+import mihon.feature.stats.capture.MangaCaptureAdapter
+import mihon.feature.stats.capture.MangaCaptureOverlay
+import mihon.feature.stats.capture.MangaCaptureTitle
+import mihon.feature.stats.capture.MangaOcrAvailability
+import mihon.feature.stats.capture.MangaOcrBlockCapture
+import mihon.feature.stats.capture.MangaOcrCoverageSnapshot
+import mihon.feature.stats.capture.MangaPageKey
+import mihon.feature.stats.capture.MangaPageViewport
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import tachiyomi.core.common.preference.toggle
 import tachiyomi.core.common.storage.UniFileTempFileManager
@@ -123,6 +134,9 @@ import tachiyomi.domain.history.interactor.UpsertHistory
 import tachiyomi.domain.history.model.HistoryUpdate
 import tachiyomi.domain.history.model.ReadingSession
 import tachiyomi.domain.history.repository.HistoryRepository
+import tachiyomi.domain.immersion.model.LanguageTag
+import tachiyomi.domain.immersion.service.ImmersionRecorder
+import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
 import tachiyomi.domain.library.service.LibraryPreferences
 import tachiyomi.domain.manga.interactor.GetFlatMetadataById
 import tachiyomi.domain.manga.interactor.GetManga
@@ -136,10 +150,18 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.io.File
 import java.time.Instant
+import java.util.Collections
 import java.util.Collections.emptyList
 import java.util.Date
 import java.util.LinkedHashMap
 import kotlin.math.min
+
+data class VisibleReaderPage(
+    val page: ReaderPage,
+    val visibleTop: Float = 0f,
+    val visibleBottom: Float = 1f,
+    val continuous: Boolean = false,
+)
 
 /**
  * Presenter used by the activity to perform background operations.
@@ -181,6 +203,8 @@ class ReaderViewModel @JvmOverloads constructor(
     private val localFileSystem: tachiyomi.source.local.io.LocalSourceFileSystem = Injekt.get(),
     private val application: Application = Injekt.get(),
     private val networkClient: okhttp3.OkHttpClient = Injekt.get<eu.kanade.tachiyomi.network.NetworkHelper>().client,
+    private val immersionRecorder: ImmersionRecorder = Injekt.get(),
+    private val immersionStatsPreferences: ImmersionStatsPreferences = Injekt.get(),
 ) : ViewModel() {
 
     private data class OcrCacheKey(
@@ -240,8 +264,18 @@ class ReaderViewModel @JvmOverloads constructor(
         }
 
     private var lastMangaStatsTime: Long = SystemClock.elapsedRealtime()
-    private var currentMangaStatsPage: ReaderPage? = null
-    private val consumedMangaStatsPages = mutableSetOf<Int>()
+    private var currentMangaStatsPages: List<ReaderPage> = emptyList()
+    private val consumedMangaStatsPages = mutableSetOf<MangaPageKey>()
+    private val mangaCaptureEverVisiblePages = mutableSetOf<MangaPageKey>()
+    private val mangaCaptureOcrCheckedPages = mutableSetOf<MangaPageKey>()
+    private var mangaCaptureCurrentlyVisiblePages = emptySet<MangaPageKey>()
+    private var mangaCaptureLegacyComparable = true
+    private var mangaCaptureAdapter: MangaCaptureAdapter? = null
+    private var mangaCaptureFinalized = false
+    private val mangaStatsLegacyMutex = Mutex()
+    private val mangaStatsWriteJobs = Collections.synchronizedSet(mutableSetOf<Job>())
+    private var legacyMangaStatsCharacters = 0L
+    private var legacyMangaStatsTimeMs = 0L
 
     var mangaStatsSessionCharacters: Int = 0
         private set
@@ -250,6 +284,8 @@ class ReaderViewModel @JvmOverloads constructor(
     var mangaStatsTracking by mutableStateOf(true)
         private set
     var mangaStatsEstimate by mutableStateOf(MangaStatsEstimate())
+        private set
+    var mangaOcrCoverage by mutableStateOf(MangaOcrCoverageSnapshot())
         private set
     var showMangaStats by mutableStateOf(false)
         private set
@@ -476,6 +512,12 @@ class ReaderViewModel @JvmOverloads constructor(
                 }
             }
             .launchIn(viewModelScope)
+        state.map { it.dialog != null }
+            .distinctUntilChanged()
+            .onEach { visible ->
+                mangaCaptureAdapter?.setOverlayVisible(MangaCaptureOverlay.READER_DIALOG, visible)
+            }
+            .launchIn(viewModelScope)
         // SY <--
     }
 
@@ -497,7 +539,24 @@ class ReaderViewModel @JvmOverloads constructor(
      */
     fun onActivityFinish() {
         trackMangaStats(null)
+        finalizeMangaCapture()
         deletePendingChapters()
+    }
+
+    private fun finalizeMangaCapture() {
+        if (mangaCaptureFinalized) return
+        mangaCaptureFinalized = true
+        viewModelScope.launchNonCancellable {
+            val pendingWrites = synchronized(mangaStatsWriteJobs) { mangaStatsWriteJobs.toList() }
+            pendingWrites.joinAll()
+            mangaCaptureAdapter?.finalize(
+                LegacyMangaSessionSnapshot(
+                    activeDurationMillis = legacyMangaStatsTimeMs,
+                    characters = legacyMangaStatsCharacters,
+                    equivalentPolicy = mangaCaptureLegacyComparable,
+                ),
+            )?.await()
+        }
     }
 
     /**
@@ -559,6 +618,7 @@ class ReaderViewModel @JvmOverloads constructor(
                             // SY <--
                         )
                     }
+                    initializeMangaCapture(manga, source)
                     if (chapterId == -1L) chapterId = initialChapterId
 
                     val context = Injekt.get<Application>()
@@ -759,6 +819,39 @@ class ReaderViewModel @JvmOverloads constructor(
         eventChannel.trySend(Event.ReloadViewerChapters)
     }
 
+    private fun initializeMangaCapture(
+        manga: Manga,
+        source: Source,
+    ) {
+        if (mangaCaptureAdapter != null) return
+        val profile = dictionaryPreferences.profileResolver.resolve(
+            mangaId = manga.id,
+            sourceId = manga.source,
+            sourceLang = source.lang,
+        )
+        val languageTag = profile.languageCode
+            .takeIf(String::isNotBlank)
+            ?.let { runCatching { LanguageTag.from(it) }.getOrNull() }
+        val adapter = MangaCaptureAdapter(
+            captureTitle = MangaCaptureTitle(
+                mangaId = manga.id,
+                sourceId = manga.source,
+                displayTitle = manga.title,
+                profileId = profile.id,
+                languageTag = languageTag,
+                createdAtEpochMillis = manga.dateAdded.coerceAtLeast(0),
+            ),
+            recorder = immersionRecorder,
+            rawTextRetention = { immersionStatsPreferences.rawTextRetention().get() },
+            idleTimeoutMillis = immersionStatsPreferences.readerIdleTimeoutSeconds().get() * 1_000L,
+            incognito = incognitoMode,
+        )
+        mangaCaptureAdapter = adapter
+        viewModelScope.launch {
+            adapter.coverage.collect { mangaOcrCoverage = it }
+        }
+    }
+
     fun onViewerLoaded(viewer: Viewer?) {
         mutableState.update {
             it.copy(viewer = viewer)
@@ -774,7 +867,7 @@ class ReaderViewModel @JvmOverloads constructor(
      * read, update tracking services, enqueue downloaded chapter deletion, and updating the active chapter if this
      * [page]'s chapter is different from the currently active.
      */
-    fun onPageSelected(page: ReaderPage, currentPageText: String /* SY --> */, hasExtraPage: Boolean /* SY <-- */) {
+    fun onPageSelected(page: ReaderPage, currentPageText: String /* SY --> */, extraPage: ReaderPage? /* SY <-- */) {
         // InsertPage doesn't change page progress
         if (page is InsertPage) {
             return
@@ -789,10 +882,14 @@ class ReaderViewModel @JvmOverloads constructor(
 
         // Save last page read and mark as read if needed
         viewModelScope.launchNonCancellable {
-            updateChapterProgress(selectedChapter, page/* SY --> */, hasExtraPage/* SY <-- */)
+            updateChapterProgress(selectedChapter, page/* SY --> */, extraPage != null/* SY <-- */)
         }
 
-        trackMangaStats(page)
+        val selectedPages = listOfNotNull(page, extraPage)
+        trackMangaStats(selectedPages)
+        if (state.value.viewer !is WebtoonViewer) {
+            onMangaPagesVisible(selectedPages.map(::VisibleReaderPage))
+        }
 
         if (selectedChapter != getCurrentChapter()) {
             logcat { "Setting ${selectedChapter.chapter.url} as active" }
@@ -807,6 +904,72 @@ class ReaderViewModel @JvmOverloads constructor(
         if (isOcrEnabled()) scanOcrPages(page)
 
         eventChannel.trySend(Event.PageChanged)
+    }
+
+    fun onMangaPagesVisible(pages: List<VisibleReaderPage>) {
+        val adapter = mangaCaptureAdapter ?: return
+        val allowed = isOcrAllowedForCurrentManga()
+        val viewports = pages.mapNotNull { visible ->
+            val chapterId = visible.page.chapter.chapter.id ?: return@mapNotNull null
+            MangaPageViewport(
+                key = MangaPageKey(chapterId, visible.page.index),
+                visibleTop = visible.visibleTop,
+                visibleBottom = visible.visibleBottom,
+                ocrAvailability = if (allowed) {
+                    MangaOcrAvailability.NOT_REQUESTED
+                } else {
+                    MangaOcrAvailability.UNSUPPORTED
+                },
+            )
+        }
+        val visibleKeys = viewports.mapTo(mutableSetOf(), MangaPageViewport::key)
+        if (pages.any(VisibleReaderPage::continuous)) {
+            mangaCaptureLegacyComparable = false
+        }
+        if (visibleKeys.any { it in mangaCaptureEverVisiblePages && it !in mangaCaptureCurrentlyVisiblePages }) {
+            mangaCaptureLegacyComparable = false
+        }
+        mangaCaptureEverVisiblePages += visibleKeys
+        mangaCaptureCurrentlyVisiblePages = visibleKeys
+        adapter.onVisiblePages(viewports)
+
+        pages.forEach { visible ->
+            val chapterId = visible.page.chapter.chapter.id ?: return@forEach
+            val key = MangaPageKey(chapterId, visible.page.index)
+            if (!allowed) {
+                adapter.onOcrResult(key, MangaOcrAvailability.UNSUPPORTED, emptyList())
+                return@forEach
+            }
+            if (!mangaCaptureOcrCheckedPages.add(key)) return@forEach
+            viewModelScope.launchIO {
+                val blocks = getCachedOcrBlocks(visible.page)
+                adapter.onOcrResult(
+                    page = key,
+                    availability = if (blocks.isEmpty()) {
+                        MangaOcrAvailability.NOT_REQUESTED
+                    } else {
+                        MangaOcrAvailability.AVAILABLE
+                    },
+                    blocks = blocks.mapNotNull { it.toMangaCaptureBlock() },
+                )
+            }
+        }
+    }
+
+    fun onVisibleOcrResult(
+        page: ReaderPage,
+        blocks: List<eu.kanade.tachiyomi.ui.reader.viewer.OcrTextBlock>,
+    ) {
+        val chapterId = page.chapter.chapter.id ?: return
+        mangaCaptureAdapter?.onOcrResult(
+            page = MangaPageKey(chapterId, page.index),
+            availability = if (blocks.isEmpty()) MangaOcrAvailability.FAILED else MangaOcrAvailability.AVAILABLE,
+            blocks = blocks.mapNotNull { it.toMangaCaptureBlock() },
+        )
+    }
+
+    fun onReaderBackgrounded(backgrounded: Boolean) {
+        mangaCaptureAdapter?.setBackgrounded(backgrounded)
     }
 
     private fun downloadNextChapters() {
@@ -935,6 +1098,10 @@ class ReaderViewModel @JvmOverloads constructor(
                 // SY <--
             ) {
                 updateChapterProgressOnComplete(readerChapter)
+                readerChapter.chapter.id?.let { mangaCaptureAdapter?.onChapterCompleted(it) }
+                if (chapterList.all { it == readerChapter || it.chapter.read }) {
+                    mangaCaptureAdapter?.onTitleCompleted()
+                }
 
                 // SY -->
                 // Check if syncing is enabled for chapter read:
@@ -1239,15 +1406,18 @@ class ReaderViewModel @JvmOverloads constructor(
 
     fun openMangaStatsSheet() {
         showMangaStats = true
+        mangaCaptureAdapter?.setOverlayVisible(MangaCaptureOverlay.STATISTICS, true)
         refreshMangaStatsEstimate()
     }
 
     fun closeMangaStatsSheet() {
         showMangaStats = false
+        mangaCaptureAdapter?.setOverlayVisible(MangaCaptureOverlay.STATISTICS, false)
     }
 
     fun toggleMangaStatsTracking() {
         mangaStatsTracking = !mangaStatsTracking
+        mangaCaptureAdapter?.setOverlayVisible(MangaCaptureOverlay.MANUAL_PAUSE, !mangaStatsTracking)
     }
 
     fun setDoublePages(doublePages: Boolean) {
@@ -1748,7 +1918,9 @@ class ReaderViewModel @JvmOverloads constructor(
 
         val diskBlocks = ocrCacheManager.loadOcrBlocks(manga, domainChapter, source, page.index)
             ?.takeIf { it.isNotEmpty() }
-            ?.map { it.toViewerBlock() }
+            ?.mapIndexed { index, block ->
+                block.toViewerBlock().let { it.copy(blockId = it.blockId ?: index.toString()) }
+            }
             ?: return null
 
         ocrCacheMutex.withLock {
@@ -1914,7 +2086,7 @@ class ReaderViewModel @JvmOverloads constructor(
             pageIndex,
         ) ?: return null
 
-        return chimahon.ocr.Mokuro.convertMokuroBlocks(mokuroPage).map { block ->
+        return chimahon.ocr.Mokuro.convertMokuroBlocks(mokuroPage).mapIndexed { index, block ->
             eu.kanade.tachiyomi.ui.reader.viewer.OcrTextBlock(
                 xmin = block.xmin,
                 ymin = block.ymin,
@@ -1925,6 +2097,9 @@ class ReaderViewModel @JvmOverloads constructor(
                 lineGeometries = block.lineGeometries?.map { lg ->
                     eu.kanade.tachiyomi.ui.reader.viewer.OcrLineGeometry(lg.xmin, lg.ymin, lg.xmax, lg.ymax, lg.rotation)
                 },
+                engineId = "mokuro",
+                engineVersion = 1,
+                blockId = block.blockId ?: index.toString(),
             )
         }
     }
@@ -1970,6 +2145,10 @@ class ReaderViewModel @JvmOverloads constructor(
                                 chimahon.ocr.OcrLineGeometry(lg.xmin, lg.ymin, lg.xmax, lg.ymax, lg.rotation)
                             },
                             language = it.language,
+                            engineId = it.engineId,
+                            engineVersion = it.engineVersion,
+                            confidence = it.confidence,
+                            blockId = it.blockId,
                         )
                     },
                     language = chimahon.ocr.OcrLanguage.JAPANESE.bcp47,
@@ -2029,7 +2208,7 @@ class ReaderViewModel @JvmOverloads constructor(
                 chimahon.ocr.Mokuro.resolveMokuroPage(mokuro, imageFiles, pageIndex)
             } ?: return@runCatching null
 
-            chimahon.ocr.Mokuro.convertMokuroBlocks(mokuroPage).map { block ->
+            chimahon.ocr.Mokuro.convertMokuroBlocks(mokuroPage).mapIndexed { index, block ->
                 eu.kanade.tachiyomi.ui.reader.viewer.OcrTextBlock(
                     xmin = block.xmin,
                     ymin = block.ymin,
@@ -2040,6 +2219,9 @@ class ReaderViewModel @JvmOverloads constructor(
                     lineGeometries = block.lineGeometries?.map { lg ->
                         eu.kanade.tachiyomi.ui.reader.viewer.OcrLineGeometry(lg.xmin, lg.ymin, lg.xmax, lg.ymax, lg.rotation)
                     },
+                    engineId = "mokuro",
+                    engineVersion = 1,
+                    blockId = block.blockId ?: index.toString(),
                 )
             }
         }.getOrNull()
@@ -2250,6 +2432,10 @@ class ReaderViewModel @JvmOverloads constructor(
                                 chimahon.ocr.OcrLineGeometry(lg.xmin, lg.ymin, lg.xmax, lg.ymax, lg.rotation)
                             },
                             language = it.language,
+                            engineId = it.engineId,
+                            engineVersion = it.engineVersion,
+                            confidence = it.confidence,
+                            blockId = it.blockId,
                         )
                     },
                     language = ocrLang.bcp47,
@@ -2299,6 +2485,10 @@ class ReaderViewModel @JvmOverloads constructor(
                                 chimahon.ocr.OcrLineGeometry(lg.xmin, lg.ymin, lg.xmax, lg.ymax, lg.rotation)
                             },
                             language = it.language,
+                            engineId = it.engineId,
+                            engineVersion = it.engineVersion,
+                            confidence = it.confidence,
+                            blockId = it.blockId,
                         )
                     },
                     language = mokuroLang,
@@ -2312,11 +2502,15 @@ class ReaderViewModel @JvmOverloads constructor(
         val diskBlocks = ocrCacheManager.loadOcrBlocks(manga, domainChapter, source, page.index)
         if (diskBlocks != null && diskBlocks.isNotEmpty()) {
             ocrCacheMutex.withLock {
-                ocrCache[cacheKey] = diskBlocks.map { it.toViewerBlock() }
+                ocrCache[cacheKey] = diskBlocks.mapIndexed { index, block ->
+                    block.toViewerBlock().let { it.copy(blockId = it.blockId ?: index.toString()) }
+                }
                 trimOcrCacheLocked()
             }
             logcat { "OCR disk hit: chapter=$chapterId page=${page.index} blocks=${diskBlocks.size}" }
-            return diskBlocks.map { it.toViewerBlock() }
+            return diskBlocks.mapIndexed { index, block ->
+                block.toViewerBlock().let { it.copy(blockId = it.blockId ?: index.toString()) }
+            }
         }
 
         return try {
@@ -2356,7 +2550,7 @@ class ReaderViewModel @JvmOverloads constructor(
                 )
             }
 
-            val blocks = ocrResults.mapNotNull { result ->
+            val blocks = ocrResults.mapIndexedNotNull { index, result ->
                 val bbox = result.tightBoundingBox
                 val xmin = bbox.x.toFloat().coerceIn(0f, 1f)
                 val ymin = bbox.y.toFloat().coerceIn(0f, 1f)
@@ -2385,6 +2579,9 @@ class ReaderViewModel @JvmOverloads constructor(
                         vertical = result.forcedOrientation == "vertical",
                         lineGeometries = lineGeometries,
                         language = ocrLang.bcp47,
+                        engineId = "google-lens",
+                        engineVersion = 1,
+                        blockId = index.toString(),
                     )
                 }
             }
@@ -2418,6 +2615,10 @@ class ReaderViewModel @JvmOverloads constructor(
                             chimahon.ocr.OcrLineGeometry(lg.xmin, lg.ymin, lg.xmax, lg.ymax, lg.rotation)
                         },
                         language = it.language,
+                        engineId = it.engineId,
+                        engineVersion = it.engineVersion,
+                        confidence = it.confidence,
+                        blockId = it.blockId,
                     )
                 },
                 language = ocrLang.bcp47,
@@ -2544,24 +2745,40 @@ class ReaderViewModel @JvmOverloads constructor(
         data class CopyImage(val uri: Uri) : Event
     }
 
-    private fun trackMangaStats(newPage: ReaderPage?) {
-        if (newPage == null) consumedMangaStatsPages.clear()
-
+    private fun trackMangaStats(newPages: List<ReaderPage>?): Job? {
         val now = SystemClock.elapsedRealtime()
-        val prevPage = currentMangaStatsPage
+        val previousPages = currentMangaStatsPages
         val rawTime = now - lastMangaStatsTime
         val timeSpent = min(rawTime, 120_000L)
 
-        if (prevPage != null && !incognitoMode && timeSpent > 500 && prevPage.index !in consumedMangaStatsPages) {
-            consumedMangaStatsPages.add(prevPage.index)
-            viewModelScope.launchIO {
-                val blocks = getCachedOcrBlocks(prevPage)
-                val chars = if (blocks.isNotEmpty()) {
-                    blocks.sumOf { block -> block.fullText.length }
-                } else {
-                    0
+        val unconsumedPages = previousPages.filter { page ->
+            val chapterId = page.chapter.chapter.id ?: return@filter false
+            MangaPageKey(chapterId, page.index) !in consumedMangaStatsPages
+        }
+        unconsumedPages.forEach { page ->
+            page.chapter.chapter.id?.let { consumedMangaStatsPages += MangaPageKey(it, page.index) }
+        }
+
+        currentMangaStatsPages = newPages.orEmpty()
+        lastMangaStatsTime = now
+        if (showMangaStats) {
+            refreshMangaStatsEstimate()
+        }
+
+        if (incognitoMode || timeSpent <= 500 || unconsumedPages.isEmpty()) return null
+        val job = viewModelScope.launchIO {
+            mangaStatsLegacyMutex.withLock {
+                val chars = unconsumedPages.sumOf { page ->
+                    getCachedOcrBlocks(page).sumOf { block -> block.fullText.length }
                 }
-                com.canopus.chimareader.data.MangaStatsStorage.addStats(application, chars, timeSpent, manga?.id ?: 0)
+                com.canopus.chimareader.data.MangaStatsStorage.addStats(
+                    application,
+                    chars,
+                    timeSpent,
+                    manga?.id ?: 0,
+                )
+                legacyMangaStatsCharacters += chars
+                legacyMangaStatsTimeMs += timeSpent
                 if (mangaStatsTracking) {
                     mangaStatsSessionCharacters += chars
                     mangaStatsSessionTimeMs += timeSpent
@@ -2571,12 +2788,9 @@ class ReaderViewModel @JvmOverloads constructor(
                 }
             }
         }
-
-        currentMangaStatsPage = newPage
-        lastMangaStatsTime = now
-        if (showMangaStats) {
-            refreshMangaStatsEstimate()
-        }
+        mangaStatsWriteJobs += job
+        job.invokeOnCompletion { mangaStatsWriteJobs -= job }
+        return job
     }
 
     private fun refreshMangaStatsEstimate() {
@@ -2598,7 +2812,7 @@ class ReaderViewModel @JvmOverloads constructor(
             state.value.currentPage
                 .takeIf { it > 0 }
                 ?.minus(1)
-                ?: currentMangaStatsPage?.index
+                ?: currentMangaStatsPages.firstOrNull()?.index
                 ?: 0
             ).coerceIn(currentPages.indices)
 
@@ -2691,6 +2905,30 @@ private fun chimahon.ocr.OcrTextBlock.toViewerBlock(): eu.kanade.tachiyomi.ui.re
             eu.kanade.tachiyomi.ui.reader.viewer.OcrLineGeometry(lg.xmin, lg.ymin, lg.xmax, lg.ymax, lg.rotation)
         },
         language = language,
+        engineId = engineId,
+        engineVersion = engineVersion,
+        confidence = confidence,
+        blockId = blockId,
+    )
+}
+
+private fun eu.kanade.tachiyomi.ui.reader.viewer.OcrTextBlock.toMangaCaptureBlock(): MangaOcrBlockCapture? {
+    val text = fullText.takeIf(String::isNotBlank) ?: return null
+    val safeXMin = xmin.coerceIn(0f, 1f)
+    val safeYMin = ymin.coerceIn(0f, 1f)
+    val safeXMax = xmax.coerceIn(0f, 1f)
+    val safeYMax = ymax.coerceIn(0f, 1f)
+    if (safeXMax <= safeXMin || safeYMax <= safeYMin) return null
+    return MangaOcrBlockCapture(
+        text = text,
+        blockId = blockId,
+        xmin = safeXMin,
+        ymin = safeYMin,
+        xmax = safeXMax,
+        ymax = safeYMax,
+        engineId = engineId,
+        engineVersion = engineVersion,
+        confidence = confidence,
     )
 }
 

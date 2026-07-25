@@ -19,6 +19,7 @@ import chimahon.DictionaryRepository
 import chimahon.MediaInfo
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.ui.reader.ReaderActivity
+import eu.kanade.tachiyomi.ui.reader.VisibleReaderPage
 import eu.kanade.tachiyomi.ui.reader.model.ChapterTransition
 import eu.kanade.tachiyomi.ui.reader.model.ReaderChapter
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
@@ -409,6 +410,7 @@ class WebtoonViewer(
     }
 
     fun onScrolled(pos: Int? = null) {
+        reportMeaningfullyVisiblePages()
         val position = pos ?: layoutManager.findLastEndVisibleItemPosition()
         val item = adapter.items.getOrNull(position)
         val allowPreload = checkAllowPreload(item as? ReaderPage)
@@ -419,6 +421,38 @@ class WebtoonViewer(
                 is ChapterTransition -> onTransitionSelected(item)
             }
         }
+    }
+
+    private fun reportMeaningfullyVisiblePages() {
+        val viewportTop = recycler.paddingTop
+        val viewportBottom = recycler.height - recycler.paddingBottom
+        val viewportHeight = (viewportBottom - viewportTop).coerceAtLeast(1)
+        val pages = buildList {
+            repeat(recycler.childCount) { childIndex ->
+                val child = recycler.getChildAt(childIndex) ?: return@repeat
+                val adapterPosition = recycler.getChildAdapterPosition(child)
+                val page = adapter.items.getOrNull(adapterPosition) as? ReaderPage ?: return@repeat
+                val intersectionTop = max(child.top, viewportTop)
+                val intersectionBottom = min(child.bottom, viewportBottom)
+                val intersectionHeight = (intersectionBottom - intersectionTop).coerceAtLeast(0)
+                val childHeight = child.height.coerceAtLeast(1)
+                val qualifyingHeight = min(childHeight, viewportHeight)
+                if (intersectionHeight.toFloat() / qualifyingHeight < MANGA_PAGE_VISIBILITY_THRESHOLD) {
+                    return@repeat
+                }
+                add(
+                    VisibleReaderPage(
+                        page = page,
+                        visibleTop = ((intersectionTop - child.top).toFloat() / childHeight)
+                            .coerceIn(0f, 1f),
+                        visibleBottom = ((intersectionBottom - child.top).toFloat() / childHeight)
+                            .coerceIn(0f, 1f),
+                        continuous = true,
+                    ),
+                )
+            }
+        }
+        activity.viewModel.onMangaPagesVisible(pages)
     }
 
     /**
@@ -584,3 +618,4 @@ class WebtoonViewer(
 
 // Double the cache size to reduce rebinds/recycles incurred by the extra layout space on scroll direction changes
 private const val RECYCLER_VIEW_CACHE_SIZE = 4
+private const val MANGA_PAGE_VISIBILITY_THRESHOLD = 0.5f

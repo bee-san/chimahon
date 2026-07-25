@@ -32,21 +32,23 @@ import androidx.compose.ui.unit.dp
 import com.canopus.chimareader.data.MangaStatsStorage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import mihon.feature.stats.capture.MangaOcrCoverageSnapshot
 import tachiyomi.i18n.MR
+import tachiyomi.i18n.kmk.KMR
 import tachiyomi.presentation.core.i18n.stringResource
 import java.time.LocalDate
 import java.util.Locale
 import kotlin.math.max
 
 data class MangaStatsDisplay(
-    val charactersRead: Int = 0,
+    val charactersRead: Int? = 0,
     val readingTimeMs: Long = 0,
 ) {
-    val readingSpeed: Int
-        get() = if (readingTimeMs > 0) {
+    val readingSpeed: Int?
+        get() = if (charactersRead != null && readingTimeMs > 0) {
             (charactersRead.toDouble() / (readingTimeMs / 3600000.0)).toInt()
         } else {
-            0
+            null
         }
 }
 
@@ -65,6 +67,7 @@ fun MangaStatsSheet(
     sessionCharacters: Int,
     sessionTimeMs: Long,
     estimate: MangaStatsEstimate = MangaStatsEstimate(),
+    ocrCoverage: MangaOcrCoverageSnapshot = MangaOcrCoverageSnapshot(),
     isTracking: Boolean?,
     onToggleTracking: (() -> Unit)?,
     onDismiss: () -> Unit,
@@ -82,11 +85,11 @@ fun MangaStatsSheet(
         val today = all.filter { it.dateKey == LocalDate.now().toString() && it.mangaId == mangaId }
         val allForManga = all.filter { it.mangaId == mangaId }
         todayStats = MangaStatsDisplay(
-            charactersRead = today.sumOf { it.charactersRead },
+            charactersRead = today.legacyCharacterCount(),
             readingTimeMs = today.sumOf { it.readingTime },
         )
         allTimeStats = MangaStatsDisplay(
-            charactersRead = allForManga.sumOf { it.charactersRead },
+            charactersRead = allForManga.legacyCharacterCount(),
             readingTimeMs = allForManga.sumOf { it.readingTime },
         )
     }
@@ -126,10 +129,23 @@ fun MangaStatsSheet(
 
             if (onToggleTracking != null) {
                 Section(title = "Session") {
-                    val speed = sessionSpeed(sessionCharacters, sessionTimeMs)
-                    StatRow("Characters Read", sessionCharacters.toString())
-                    StatRow("Reading Speed", "$speed /h")
+                    val measuredCharacters = sessionCharacters.takeIf { ocrCoverage.ocrCoveredPages > 0 }
+                    val speed = measuredCharacters?.let { sessionSpeed(it, sessionTimeMs) }
+                    StatRow(
+                        "Characters Read",
+                        measuredCharacters?.toString()
+                            ?: stringResource(KMR.strings.stats_manga_characters_unavailable),
+                    )
+                    StatRow(
+                        "Reading Speed",
+                        speed?.let { "$it /h" }
+                            ?: stringResource(KMR.strings.stats_manga_characters_unavailable),
+                    )
                     StatRow("Reading Time", formatDuration(sessionTimeMs / 1000))
+                    StatRow(
+                        stringResource(KMR.strings.stats_manga_ocr_coverage),
+                        ocrCoverage.formatCoverage(),
+                    )
                     StatRow(
                         "Time to finish Book",
                         formatDurationSeconds(estimate.remainingBookSeconds),
@@ -142,14 +158,14 @@ fun MangaStatsSheet(
             }
 
             Section(title = "Today") {
-                StatRow("Characters Read", todayStats.charactersRead.toString())
-                StatRow("Reading Speed", "${todayStats.readingSpeed} /h")
+                StatRow("Characters Read", todayStats.charactersRead.formatCharacters())
+                StatRow("Reading Speed", todayStats.readingSpeed.formatSpeed())
                 StatRow("Reading Time", formatDuration(todayStats.readingTimeMs / 1000))
             }
 
             Section(title = "All Time") {
-                StatRow("Characters Read", allTimeStats.charactersRead.toString())
-                StatRow("Reading Speed", "${allTimeStats.readingSpeed} /h")
+                StatRow("Characters Read", allTimeStats.charactersRead.formatCharacters())
+                StatRow("Reading Speed", allTimeStats.readingSpeed.formatSpeed())
                 StatRow("Reading Time", formatDuration(allTimeStats.readingTimeMs / 1000))
             }
         }
@@ -206,6 +222,31 @@ private fun formatDuration(totalSeconds: Long): String {
 private fun sessionSpeed(chars: Int, timeMs: Long): Int {
     if (timeMs <= 0) return 0
     return (chars.toDouble() / (timeMs / 3600000.0)).toInt()
+}
+
+@Composable
+private fun Int?.formatCharacters(): String =
+    this?.toString() ?: stringResource(KMR.strings.stats_manga_characters_unavailable)
+
+@Composable
+private fun Int?.formatSpeed(): String =
+    this?.let { "$it /h" } ?: stringResource(KMR.strings.stats_manga_characters_unavailable)
+
+@Composable
+private fun MangaOcrCoverageSnapshot.formatCoverage(): String {
+    val percentage = ((ratio ?: 0.0) * 100).toInt()
+    return stringResource(
+        KMR.strings.stats_manga_ocr_coverage_value,
+        ocrCoveredPages,
+        viewedPages,
+        percentage,
+    )
+}
+
+private fun List<com.canopus.chimareader.data.MangaStats>.legacyCharacterCount(): Int? {
+    if (isEmpty()) return 0
+    val total = sumOf { it.charactersRead }
+    return total.takeIf { it > 0 || none { value -> value.readingTime > 0 } }
 }
 
 private fun formatDurationSeconds(seconds: Double): String {
