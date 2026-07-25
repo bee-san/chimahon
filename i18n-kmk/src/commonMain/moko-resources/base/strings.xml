@@ -263,4 +263,5 @@
     <string name="stats_manga_ocr_coverage">OCR coverage</string>
     <string name="stats_manga_ocr_coverage_value">%1$d of %2$d pages (%3$d%%)</string>
     <string name="stats_manga_characters_unavailable">Unavailable</string>
+    <string name="stats_external_player_not_captured">External-player viewing is not included in immersion statistics because reliable playback callbacks are unavailable.</string>
 </resources>

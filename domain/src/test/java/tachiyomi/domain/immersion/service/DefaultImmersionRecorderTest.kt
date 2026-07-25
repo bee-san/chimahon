@@ -93,6 +93,30 @@ class DefaultImmersionRecorderTest {
     }
 
     @Test
+    fun `paused provenance exposure persists without adding active time`() = runTest {
+        val fixture = recorderFixture()
+        fixture.recorder.startSession(fixture.context)
+        fixture.clock.advance(1_000)
+        fixture.recorder.pause(PauseReason.USER)
+        fixture.clock.advance(5_000)
+
+        fixture.recorder.record(fixture.exposure()) shouldBe RecordResult.Enqueued(1)
+        fixture.recorder.finalize(FinalizeReason.NORMAL)
+
+        fixture.repository.session().let { session ->
+            session.activeDuration shouldBe MillisecondDuration(1_000)
+            session.grossCharacters shouldBe NonNegativeCounter(20)
+        }
+        fixture.repository.events.map { it.type } shouldContainExactly listOf(
+            EventType.SESSION_STARTED,
+            EventType.HEARTBEAT,
+            EventType.PAUSED,
+            EventType.EXPOSURE,
+            EventType.SESSION_FINALIZED,
+        )
+    }
+
+    @Test
     fun `idle timeout caps time and activity resumes with an explicit boundary`() = runTest {
         val fixture = recorderFixture(idleTimeoutMillis = 2_000)
         fixture.recorder.startSession(fixture.context)

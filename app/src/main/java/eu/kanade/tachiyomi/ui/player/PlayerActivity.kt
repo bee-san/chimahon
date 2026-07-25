@@ -501,6 +501,7 @@ class PlayerActivity : BaseActivity() {
             return
         }
 
+        viewModel.setVideoCaptureBackgrounded(true)
         player.isExiting = true
         if (isFinishing) {
             MPVLib.command(arrayOf("stop"))
@@ -822,6 +823,7 @@ class PlayerActivity : BaseActivity() {
 
         player.isExiting = false
         super.onResume()
+        viewModel.setVideoCaptureBackgrounded(false)
 
         viewModel.currentVolume.update {
             audioManager.getStreamVolume(AudioManager.STREAM_MUSIC).also {
@@ -899,10 +901,12 @@ class PlayerActivity : BaseActivity() {
 
             "paused-for-cache" -> {
                 viewModel.isLoading.update { value }
+                viewModel.setVideoBuffering(value)
             }
 
             "seeking" -> {
                 viewModel.isLoading.update { value }
+                viewModel.setVideoSeeking(value)
             }
 
             "eof-reached" -> {
@@ -928,6 +932,7 @@ class PlayerActivity : BaseActivity() {
                 viewModel.updateSubtitle(viewModel.selectedSubtitles.value.first, it)
             }
             "sub-text" -> viewModel.updateSubtitleText(value)
+            "secondary-sub-text" -> viewModel.updateSecondarySubtitleText(value)
             "hwdec", "hwdec-current" -> viewModel.getDecoder()
             "user-data/aniyomi" -> viewModel.handleLuaInvocation(property, value)
         }
@@ -1464,6 +1469,7 @@ class PlayerActivity : BaseActivity() {
         setupPlayerOrientation()
         setupChapters()
         setupTracks()
+        viewModel.onPlayableVideoLoaded()
         viewModel.autoLoadJimakuSubtitlesOnVideoOpen()
 
         // aniSkip stuff
@@ -1562,6 +1568,9 @@ class PlayerActivity : BaseActivity() {
     }
 
     private fun endFile(eofReached: Boolean) {
+        if (eofReached) {
+            viewModel.onVideoEpisodeCompleted()
+        }
         if (eofReached && playerPreferences.autoplayEnabled().get()) {
             viewModel.changeEpisode(previous = false, autoPlay = true)
         }

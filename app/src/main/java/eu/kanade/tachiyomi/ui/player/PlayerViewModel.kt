@@ -94,6 +94,8 @@ import eu.kanade.tachiyomi.ui.player.utils.matchedSrtFiles
 import eu.kanade.tachiyomi.ui.player.utils.selectBestJimakuEntry
 import eu.kanade.tachiyomi.ui.player.utils.subtitleRegexFilterOptions
 import eu.kanade.tachiyomi.ui.reader.SaveImageNotifier
+import eu.kanade.tachiyomi.ui.reader.viewer.OcrTextBlock
+import eu.kanade.tachiyomi.ui.reader.viewer.orderedFullText
 import eu.kanade.tachiyomi.ui.youtube.YouTubePreferences
 import eu.kanade.tachiyomi.ui.youtube.YoutubeResolver
 import eu.kanade.tachiyomi.ui.youtube.allowsExternalSubtitleLookup
@@ -126,6 +128,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import logcat.LogPriority
+import mihon.feature.stats.capture.VideoCaptureAdapter
+import mihon.feature.stats.capture.VideoCaptureTitle
+import mihon.feature.stats.capture.VideoCoverageSnapshot
+import mihon.feature.stats.capture.VideoEpisodeCapture
+import mihon.feature.stats.capture.VideoMediaCaptureContext
+import mihon.feature.stats.capture.VideoOcrFrameCapture
+import mihon.feature.stats.capture.VideoOcrRegionCapture
+import mihon.feature.stats.capture.VideoProgressSnapshot
+import mihon.feature.stats.capture.VideoSubtitleCueCapture
+import mihon.feature.stats.capture.VideoSubtitleRole
 import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.core.common.util.lang.launchNonCancellable
@@ -146,6 +158,11 @@ import tachiyomi.domain.episode.service.getEpisodeSort
 import tachiyomi.domain.history.interactor.GetNextEpisodes
 import tachiyomi.domain.history.interactor.UpsertAnimeHistory
 import tachiyomi.domain.history.model.AnimeHistoryUpdate
+import tachiyomi.domain.immersion.model.CapabilityState
+import tachiyomi.domain.immersion.model.LanguageTag
+import tachiyomi.domain.immersion.service.FinalizeReason
+import tachiyomi.domain.immersion.service.ImmersionRecorder
+import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
 import tachiyomi.domain.source.anime.service.AnimeSourceManager
 import tachiyomi.domain.track.anime.interactor.GetAnimeTracks
 import tachiyomi.i18n.MR
@@ -161,6 +178,7 @@ import kotlin.coroutines.cancellation.CancellationException
 
 private const val MAX_SUBTITLE_HISTORY = 120
 private const val VIDEO_SELECTION_DELIMITER = "\u001e"
+private const val DEFAULT_DYNAMIC_SUBTITLE_DURATION_MILLIS = 5_000L
 class PlayerViewModelProviderFactory(
     private val activity: PlayerActivity,
 ) : ViewModelProvider.Factory {
@@ -191,6 +209,8 @@ class PlayerViewModel @JvmOverloads constructor(
     internal val subtitlePreferences: SubtitlePreferences = Injekt.get(),
     private val dictionaryPreferences: DictionaryPreferences = Injekt.get(),
     private val basePreferences: BasePreferences = Injekt.get(),
+    private val immersionRecorder: ImmersionRecorder = Injekt.get(),
+    private val immersionStatsPreferences: ImmersionStatsPreferences = Injekt.get(),
     private val syncPreferences: SyncPreferences = Injekt.get(),
     private val getCustomButtons: GetCustomButtons = Injekt.get(),
     private val trackSelect: TrackSelect = Injekt.get(),
@@ -357,6 +377,19 @@ class PlayerViewModel @JvmOverloads constructor(
     val isCapturingOcr: StateFlow<Boolean> = _isCapturingOcr.asStateFlow()
     private val _suppressTap = MutableStateFlow(false)
     val suppressTap: StateFlow<Boolean> = _suppressTap.asStateFlow()
+    private val _videoStatsCoverage = MutableStateFlow(VideoCoverageSnapshot())
+    val videoStatsCoverage: StateFlow<VideoCoverageSnapshot> = _videoStatsCoverage.asStateFlow()
+    private val _videoStatsProgress = MutableStateFlow<VideoProgressSnapshot?>(null)
+    val videoStatsProgress: StateFlow<VideoProgressSnapshot?> = _videoStatsProgress.asStateFlow()
+    private val _videoMediaCaptureContext = MutableStateFlow<VideoMediaCaptureContext?>(null)
+    val videoMediaCaptureContext: StateFlow<VideoMediaCaptureContext?> = _videoMediaCaptureContext.asStateFlow()
+    private var videoCaptureAdapter: VideoCaptureAdapter? = null
+    private var videoCaptureEpisodeId: Long? = null
+    private var videoCaptureCollectors: Job? = null
+    private var videoOcrFramePositionMillis = 0L
+    private var nextDynamicCaptureCueIndex = 1_000_000
+    private val dynamicCaptureCues = mutableMapOf<VideoSubtitleRole, DynamicCaptureCue>()
+    private var secondarySubtitleText = ""
     val customButtons = _customButtons.asStateFlow()
 
     private val _primaryButtonTitle = MutableStateFlow("")
@@ -528,6 +561,7 @@ class PlayerViewModel @JvmOverloads constructor(
         isLoadingTracks.update { _ -> true }
         updateIsLoadingEpisode(false)
         setPausedState()
+        reportVideoSubtitleTracks()
     }
 
     @Immutable
@@ -1296,11 +1330,13 @@ class PlayerViewModel @JvmOverloads constructor(
         activity.player.sid = _selectedSubtitles.value.first
         applyParsedSubtitleCuesForSelectedTrack()
         rememberSubtitleSelectionForCurrentEpisode()
+        reportVideoSubtitleTracks()
     }
 
     fun updateSubtitle(sid: Int, secondarySid: Int) {
         _selectedSubtitles.update { Pair(sid, secondarySid) }
         applyParsedSubtitleCuesForTrack(sid)
+        reportVideoSubtitleTracks()
     }
 
     fun updateSubtitleText(text: String?) {
@@ -1310,9 +1346,16 @@ class PlayerViewModel @JvmOverloads constructor(
         _currentSubtitleText.update { effectiveText }
         if (showingParsedSubtitleTrackId != null) {
             updateActiveSubtitleCueFromPosition(pos.value.toDouble(), effectiveText)
-            return
+        } else {
+            updateSubtitleHistory(cleaned, effectiveText)
         }
-        updateSubtitleHistory(cleaned, effectiveText)
+        reportVideoSubtitleCue(VideoSubtitleRole.PRIMARY, cleaned, effectiveText)
+    }
+
+    fun updateSecondarySubtitleText(text: String?) {
+        val cleaned = text.orEmpty().cleanMpvSubtitleText()
+        secondarySubtitleText = cleaned
+        reportVideoSubtitleCue(VideoSubtitleRole.SECONDARY, cleaned, cleaned)
     }
 
     private fun updateSubtitleHistory(rawText: String, text: String) {
@@ -1344,6 +1387,82 @@ class PlayerViewModel @JvmOverloads constructor(
         )
         _subtitleHistory.update { cues -> (cues + cue).takeLast(MAX_SUBTITLE_HISTORY) }
         _activeSubtitleCueIndex.update { cue.index }
+    }
+
+    private fun reportVideoSubtitleTracks() {
+        val (primaryId, secondaryId) = selectedSubtitles.value
+        val primary = subtitleTracks.value.firstOrNull { it.id == primaryId }
+        val secondary = subtitleTracks.value.firstOrNull { it.id == secondaryId }
+        videoCaptureAdapter?.onSubtitleTrackChanged(
+            primaryTrackId = primary?.id?.toString(),
+            secondaryTrackId = secondary?.id?.toString(),
+            primaryLanguage = primary?.language,
+            secondaryLanguage = secondary?.language,
+        )
+    }
+
+    private fun reportVideoSubtitleCue(
+        role: VideoSubtitleRole,
+        rawText: String,
+        text: String,
+    ) {
+        val adapter = videoCaptureAdapter ?: return
+        val trackId = when (role) {
+            VideoSubtitleRole.PRIMARY -> selectedSubtitles.value.first
+            VideoSubtitleRole.SECONDARY -> selectedSubtitles.value.second
+        }
+        if (trackId == -1 || text.isBlank()) {
+            dynamicCaptureCues.remove(role)
+            adapter.onSubtitleCueCleared(role)
+            return
+        }
+
+        val positionSeconds = pos.value.toDouble()
+        val parsedCue = parsedSubtitleCuesByTrackId[trackId]
+            ?.filter { cue ->
+                val start = if (role == VideoSubtitleRole.PRIMARY) cue.effectiveStartSeconds() else cue.positionSeconds
+                val end = if (role == VideoSubtitleRole.PRIMARY) cue.effectiveEndSeconds() else cue.endPositionSeconds
+                positionSeconds in start..end
+            }
+            ?.minByOrNull { cue ->
+                val start = if (role == VideoSubtitleRole.PRIMARY) cue.effectiveStartSeconds() else cue.positionSeconds
+                kotlin.math.abs(start - positionSeconds)
+            }
+            ?.takeIf { it.text.normalizedSubtitleCueText() == text.normalizedSubtitleCueText() }
+
+        val cue = parsedCue?.let {
+            VideoSubtitleCueCapture(
+                trackId = trackId.toString(),
+                trackLanguage = subtitleTracks.value.firstOrNull { track -> track.id == trackId }?.language,
+                role = role,
+                cueIndex = it.index,
+                startMillis = (it.positionSeconds * 1_000).toLong().coerceAtLeast(0),
+                endMillis = (it.endPositionSeconds * 1_000).toLong()
+                    .coerceAtLeast((it.positionSeconds * 1_000).toLong() + 1),
+                text = text,
+                rawText = rawText,
+            )
+        } ?: run {
+            val existing = dynamicCaptureCues[role]
+                ?.takeIf { it.trackId == trackId && it.text == text }
+            val dynamic = existing ?: DynamicCaptureCue(
+                trackId = trackId,
+                text = text,
+                cueIndex = nextDynamicCaptureCueIndex++,
+                startMillis = (positionSeconds * 1_000).toLong().coerceAtLeast(0),
+            ).also { dynamicCaptureCues[role] = it }
+            VideoSubtitleCueCapture(
+                trackId = trackId.toString(),
+                trackLanguage = subtitleTracks.value.firstOrNull { track -> track.id == trackId }?.language,
+                role = role,
+                cueIndex = dynamic.cueIndex,
+                startMillis = dynamic.startMillis,
+                endMillis = dynamic.startMillis + DEFAULT_DYNAMIC_SUBTITLE_DURATION_MILLIS,
+                text = text,
+                rawText = rawText,
+            )
+        }
+        adapter.onSubtitleCueActive(cue)
     }
 
     fun selectSubtitleCue(index: Int) {
@@ -1385,6 +1504,7 @@ class PlayerViewModel @JvmOverloads constructor(
     fun setSubtitlesVisible(visible: Boolean) {
         MPVLib.setPropertyBoolean("sub-visibility", visible)
         _subtitlesVisible.update { visible }
+        videoCaptureAdapter?.setSubtitleModeVisible(visible)
         playerUpdate.update {
             PlayerUpdates.ShowText(
                 activity.stringResource(
@@ -1397,8 +1517,18 @@ class PlayerViewModel @JvmOverloads constructor(
     fun updatePlayBackPos(pos: Float) {
         onSecondReached(pos.toInt(), duration.value.toInt())
         _pos.update { pos }
+        videoCaptureAdapter?.onPlaybackPosition(
+            positionMillis = (pos * 1_000).toLong(),
+            durationMillis = duration.value.takeIf { it > 0 }?.let { (it * 1_000).toLong() },
+        )
         if (showingParsedSubtitleTrackId != null) {
             updateActiveSubtitleCueFromPosition(pos.toDouble())
+        }
+        if (currentSubtitleText.value.isNotBlank()) {
+            reportVideoSubtitleCue(VideoSubtitleRole.PRIMARY, currentRawSubtitleText, currentSubtitleText.value)
+        }
+        if (secondarySubtitleText.isNotBlank()) {
+            reportVideoSubtitleCue(VideoSubtitleRole.SECONDARY, secondarySubtitleText, secondarySubtitleText)
         }
     }
 
@@ -1435,6 +1565,7 @@ class PlayerViewModel @JvmOverloads constructor(
     fun pause() {
         activity.player.paused = true
         _paused.update { true }
+        videoCaptureAdapter?.setPlaying(false)
         runCatching {
             activity.setPictureInPictureParams(activity.createPipParams())
         }
@@ -1445,6 +1576,7 @@ class PlayerViewModel @JvmOverloads constructor(
         clearEndOfFileState()
         activity.player.paused = false
         _paused.update { false }
+        videoCaptureAdapter?.setPlaying(true)
     }
 
     private val showStatusBar = playerPreferences.showSystemStatusBar().get()
@@ -1470,6 +1602,7 @@ class PlayerViewModel @JvmOverloads constructor(
         if (_isCapturingOcr.value) return
         _isCapturingOcr.value = true
         _suppressTap.value = true
+        videoOcrFramePositionMillis = (pos.value * 1_000).toLong().coerceAtLeast(0)
         if (_controlsShown.value) {
             hideControls()
         }
@@ -1488,6 +1621,46 @@ class PlayerViewModel @JvmOverloads constructor(
 
     fun dismissOcrScreenshot() {
         _ocrScreenshot.value = null
+        videoCaptureAdapter?.onVideoOcrHidden()
+    }
+
+    fun onVideoOcrVisible(blocks: List<OcrTextBlock>) {
+        val frameIdentity = buildString {
+            append("episode:")
+            append(currentEpisode.value?.id ?: -1)
+            append(":")
+            append(videoOcrFramePositionMillis)
+        }
+        videoCaptureAdapter?.onVideoOcrVisible(
+            VideoOcrFrameCapture(
+                timestampMillis = videoOcrFramePositionMillis,
+                frameIdentity = frameIdentity,
+                regions = blocks.mapIndexedNotNull { index, block ->
+                    block.orderedFullText.takeIf(String::isNotBlank)?.let { text ->
+                        VideoOcrRegionCapture(
+                            regionId = block.blockId ?: index.toString(),
+                            text = text,
+                            engineId = block.engineId,
+                            engineVersion = block.engineVersion,
+                            languageTag = block.language,
+                            confidence = block.confidence,
+                        )
+                    }
+                },
+                capability = CapabilityState.AVAILABLE,
+            ),
+        )
+    }
+
+    fun onVideoOcrUnavailable() {
+        videoCaptureAdapter?.onVideoOcrVisible(
+            VideoOcrFrameCapture(
+                timestampMillis = videoOcrFramePositionMillis,
+                frameIdentity = "episode:${currentEpisode.value?.id ?: -1}:$videoOcrFramePositionMillis",
+                regions = emptyList(),
+                capability = CapabilityState.UNAVAILABLE,
+            ),
+        )
     }
 
     fun hideSeekBar() {
@@ -1929,6 +2102,7 @@ class PlayerViewModel @JvmOverloads constructor(
     }
 
     override fun onCleared() {
+        finalizeVideoCapture()
         if (currentEpisode.value != null) {
             saveWatchingProgress(currentEpisode.value!!)
             episodeToDownload?.let {
@@ -2542,6 +2716,90 @@ class PlayerViewModel @JvmOverloads constructor(
         mediaTitle.update { _ -> episode.name }
         _isEpisodeOnline.update { _ -> isEpisodeOnline() == true }
         MPVLib.setPropertyDouble("user-data/current-anime/episode-number", episode.episode_number.toDouble())
+        initializeVideoCapture()
+    }
+
+    private fun initializeVideoCapture() {
+        val anime = currentAnime.value ?: return
+        val episode = currentEpisode.value ?: return
+        val source = currentSource.value ?: return
+        val episodeId = episode.id ?: return
+        if (videoCaptureEpisodeId == episodeId && videoCaptureAdapter != null) return
+
+        videoCaptureAdapter?.finalize(FinalizeReason.TITLE_CHANGED)
+        videoCaptureCollectors?.cancel()
+        dynamicCaptureCues.clear()
+        secondarySubtitleText = ""
+
+        val profile = dictionaryPreferences.profileResolver.resolve(
+            sourceId = source.id,
+            sourceLang = source.lang,
+        )
+        val languageTag = profile.languageCode
+            .takeIf(String::isNotBlank)
+            ?.let { runCatching { LanguageTag.from(it) }.getOrNull() }
+        val adapter = VideoCaptureAdapter(
+            captureTitle = VideoCaptureTitle(
+                animeId = anime.id,
+                sourceId = anime.source,
+                displayTitle = anime.title,
+                profileId = profile.id,
+                languageTag = languageTag,
+                createdAtEpochMillis = anime.dateAdded.coerceAtLeast(0),
+            ),
+            episode = VideoEpisodeCapture(
+                episodeId = episodeId,
+                mediaId = "episode:$episodeId",
+                displayName = episode.name,
+                durationMillis = duration.value.takeIf { it > 0 }?.let { (it * 1_000).toLong() },
+            ),
+            recorder = immersionRecorder,
+            rawTextRetention = { immersionStatsPreferences.rawTextRetention().get() },
+            bufferingGraceMillis = immersionStatsPreferences.videoBufferingGraceSeconds().get() * 1_000L,
+            incognito = incognitoMode,
+        )
+        videoCaptureAdapter = adapter
+        videoCaptureEpisodeId = episodeId
+        videoCaptureCollectors = viewModelScope.launch {
+            launch { adapter.coverage.collect(_videoStatsCoverage::emit) }
+            launch { adapter.progress.collect(_videoStatsProgress::emit) }
+            launch { adapter.mediaContext.collect(_videoMediaCaptureContext::emit) }
+        }
+        reportVideoSubtitleTracks()
+        adapter.setSubtitleModeVisible(subtitlesVisible.value)
+    }
+
+    fun onPlayableVideoLoaded() {
+        initializeVideoCapture()
+        videoCaptureAdapter?.onPlayableMedia()
+        videoCaptureAdapter?.setPlaying(!paused.value)
+    }
+
+    fun setVideoBuffering(buffering: Boolean) {
+        videoCaptureAdapter?.setBuffering(buffering)
+    }
+
+    fun setVideoSeeking(seeking: Boolean) {
+        videoCaptureAdapter?.setSeeking(seeking)
+    }
+
+    fun setVideoCaptureBackgrounded(backgrounded: Boolean) {
+        videoCaptureAdapter?.setBackgrounded(backgrounded)
+    }
+
+    fun onVideoEpisodeCompleted() {
+        videoCaptureAdapter?.onEpisodeCompleted()
+        if (!hasNextEpisode.value) {
+            videoCaptureAdapter?.onTitleCompleted()
+        }
+    }
+
+    fun finalizeVideoCapture(reason: FinalizeReason = FinalizeReason.NORMAL) {
+        videoCaptureAdapter?.finalize(reason)
+        videoCaptureAdapter = null
+        videoCaptureEpisodeId = null
+        videoCaptureCollectors?.cancel()
+        videoCaptureCollectors = null
     }
 
     private fun initEpisodeList(anime: Anime): List<Episode> {
@@ -3475,6 +3733,13 @@ class PlayerViewModel @JvmOverloads constructor(
     fun setPrimaryCustomButtonTitle(button: CustomButton) {
         _primaryButtonTitle.update { _ -> button.name }
     }
+
+    private data class DynamicCaptureCue(
+        val trackId: Int,
+        val text: String,
+        val cueIndex: Int,
+        val startMillis: Long,
+    )
 
     sealed class Event {
         data class SetCoverResult(val result: SetAsCover) : Event()

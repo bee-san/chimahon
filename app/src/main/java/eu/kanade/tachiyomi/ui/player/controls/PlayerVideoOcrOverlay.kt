@@ -116,6 +116,11 @@ internal fun PlayerVideoOcrOverlay(
             error = null
             blocks = emptyList()
             showTapHint = false
+            val engineId = if (dictionaryPreferences.ocrEngine().get() == "local") {
+                "mokuro"
+            } else {
+                "google-lens"
+            }
             val language = OcrLanguage.entries.find {
                 it.bcp47.equals(activeProfile.languageCode, ignoreCase = true)
             } ?: OcrLanguage.JAPANESE
@@ -123,9 +128,10 @@ internal fun PlayerVideoOcrOverlay(
             runCatching {
                 withContext(Dispatchers.Default) {
                     recognizePage(screenshot, language)
-                        .toScreenLookupBlocks(language.bcp47)
+                        .toScreenLookupBlocks(language.bcp47, engineId, 1)
                 }
             }.onSuccess { ocrBlocks ->
+                viewModel.onVideoOcrVisible(ocrBlocks)
                 blocks = remapToScreenArea(
                     ocrBlocks,
                     imgWidth = screenshot.width,
@@ -139,6 +145,7 @@ internal fun PlayerVideoOcrOverlay(
                     showTapHint = true
                 }
             }.onFailure {
+                viewModel.onVideoOcrUnavailable()
                 error = it.message ?: context.contextStringResource(MR.strings.screen_lookup_capture_failed)
             }
             isLoading = false
