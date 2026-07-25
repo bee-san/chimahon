@@ -1,7 +1,11 @@
 <div align="center">
 
 <img width="200" height="200" src="./app/src/main/res/drawable/chimahon.png" alt="Chimahon icon" />
-<h1 align="center">Chimahon</h1>
+<h1 align="center">Chimahon, Bee's Fork</h1>
+
+Differences from upstream
+- Animated WebP video to Anki
+- Much better stats similar to Subminer / GameSentenceMiner
 
 **Mihon-focused immersion fork with Manga and Novel support.**
 
