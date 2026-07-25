@@ -18,11 +18,15 @@ import androidx.glance.layout.fillMaxWidth
 import androidx.glance.layout.height
 import androidx.glance.layout.padding
 import androidx.glance.layout.width
-import com.canopus.chimareader.data.AnkiStatsStorage
-import com.canopus.chimareader.data.BookStorage
-import com.canopus.chimareader.data.MangaStatsStorage
 import eu.kanade.tachiyomi.R
 import tachiyomi.core.common.Constants
+import tachiyomi.domain.immersion.model.ImmersionLocalDate
+import tachiyomi.domain.immersion.model.LocalDateRange
+import tachiyomi.domain.immersion.model.StatsFilter
+import tachiyomi.domain.immersion.service.ImmersionAnalyticsService
+import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
 import java.time.LocalDate
 import java.util.concurrent.TimeUnit
 
@@ -38,22 +42,9 @@ class ReadingStatsWidget : GlanceAppWidget() {
             return
         }
 
-        val today = LocalDate.now().toString()
-        val mangaStats = MangaStatsStorage.loadAll(context).filter { it.dateKey == today }
-        val ankiStats = AnkiStatsStorage.loadAll(context).filter { it.dateKey == today }
-        val novelToday = loadNovelStatsForDay(context, today)
-
-        val totalChars = mangaStats.sumOf { it.charactersRead } + novelToday.characters
-        // Manga stats store ms; novel Statistics.readingTime is seconds (same as StatsScreenModel).
-        val totalTimeMs = mangaStats.sumOf { it.readingTime } + novelToday.timeMs
-        val totalCards = ankiStats.sumOf { it.mangaCards + it.novelCards }
-
-        val timeString = formatReadingTime(totalTimeMs)
-        val charactersPerHour = if (totalTimeMs > 0) {
-            ((totalChars.toDouble() * MS_PER_HOUR) / totalTimeMs).toInt()
-        } else {
-            0
-        }
+        val stats = loadTodayStats()
+        val timeString = formatReadingTime(stats.activeTimeMillis)
+        val charactersPerHour = stats.charactersPerHour
 
         val labelCharacters = context.getString(R.string.widget_stat_characters)
         val labelReadingTime = context.getString(R.string.widget_stat_reading_time)
@@ -74,7 +65,7 @@ class ReadingStatsWidget : GlanceAppWidget() {
                 Row(modifier = GlanceModifier.fillMaxWidth().defaultWeight()) {
                     StatCard(
                         iconRes = R.drawable.ic_text_fields_24dp,
-                        value = "%,d".format(totalChars),
+                        value = "%,d".format(stats.characters),
                         label = labelCharacters,
                         modifier = GlanceModifier.defaultWeight().fillMaxHeight(),
                     )
@@ -92,14 +83,14 @@ class ReadingStatsWidget : GlanceAppWidget() {
                     Row(modifier = GlanceModifier.fillMaxWidth().defaultWeight()) {
                         StatCard(
                             iconRes = R.drawable.ic_speed_24dp,
-                            value = "%,d".format(charactersPerHour),
+                            value = charactersPerHour?.let { "%,d".format(it) } ?: "—",
                             label = labelSpeed,
                             modifier = GlanceModifier.defaultWeight().fillMaxHeight(),
                         )
                         Spacer(modifier = GlanceModifier.width(6.dp))
                         StatCard(
                             iconRes = R.drawable.ic_style_24dp,
-                            value = totalCards.toString(),
+                            value = stats.cardsCreated.toString(),
                             label = labelMinedCards,
                             modifier = GlanceModifier.defaultWeight().fillMaxHeight(),
                         )
@@ -115,25 +106,38 @@ class ReadingStatsWidget : GlanceAppWidget() {
         return if (hours > 0) "${hours}h ${minutes}m" else "${minutes}m"
     }
 
-    private data class NovelDayTotals(val characters: Int, val timeMs: Long)
-
-    private fun loadNovelStatsForDay(context: Context, dateKey: String): NovelDayTotals {
-        var characters = 0
-        var timeSeconds = 0.0
-        for (book in BookStorage.loadAllBooks(context)) {
-            val dir = BookStorage.getBookDirectory(context, book.folder ?: book.id)
-            val dayStats = BookStorage.loadStatistics(dir)?.filter { it.dateKey == dateKey }.orEmpty()
-            characters += dayStats.sumOf { it.charactersRead }
-            timeSeconds += dayStats.sumOf { it.readingTime }
+    private suspend fun loadTodayStats(): TodayStats {
+        val preferences = Injekt.get<ImmersionStatsPreferences>()
+        val basis = preferences.dashboardCharacterMetric().get()
+        val today = ImmersionLocalDate.from(LocalDate.now())
+        return runCatching {
+            val overview = Injekt.get<ImmersionAnalyticsService>().overview(
+                StatsFilter(
+                    dateRange = LocalDateRange(today, today),
+                    includeLegacyAggregates = preferences.includeLegacyAggregates().get(),
+                    characterMetric = basis,
+                    includeRereadsAndReplays = preferences.dashboardIncludeRereads().get(),
+                ),
+            ).value.comparison.current
+            TodayStats(
+                characters = overview.characters.valueFor(basis),
+                activeTimeMillis = overview.activeTime.value,
+                charactersPerHour = overview.readingSpeedPerHour(basis)?.toInt(),
+                cardsCreated = overview.cardsCreated.value,
+            )
+        }.getOrElse {
+            TodayStats()
         }
-        return NovelDayTotals(
-            characters = characters,
-            timeMs = (timeSeconds * 1000.0).toLong(),
-        )
     }
+
+    private data class TodayStats(
+        val characters: Long = 0,
+        val activeTimeMillis: Long = 0,
+        val charactersPerHour: Int? = null,
+        val cardsCreated: Long = 0,
+    )
 
     companion object {
         private val COMPACT_THRESHOLD = 180.dp
-        private const val MS_PER_HOUR = 3_600_000.0
     }
 }

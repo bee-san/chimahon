@@ -165,6 +165,34 @@ ON immersion_source_unit(title_id, last_exposed_at DESC, id DESC);
 CREATE INDEX immersion_source_unit_index_work_index
 ON immersion_source_unit(indexing_status, indexed_version, first_exposed_at, id);
 
+CREATE VIRTUAL TABLE immersion_source_fts USING fts4(
+    source_unit_id,
+    normalized_text
+);
+
+CREATE TRIGGER immersion_source_fts_insert
+AFTER INSERT ON immersion_source_unit
+WHEN new.raw_text IS NOT NULL
+BEGIN
+    INSERT INTO immersion_source_fts(source_unit_id, normalized_text)
+    VALUES (new.id, new.raw_text);
+END;
+
+CREATE TRIGGER immersion_source_fts_update
+AFTER UPDATE OF raw_text ON immersion_source_unit
+BEGIN
+    DELETE FROM immersion_source_fts WHERE source_unit_id = old.id;
+    INSERT INTO immersion_source_fts(source_unit_id, normalized_text)
+    SELECT new.id, new.raw_text
+    WHERE new.raw_text IS NOT NULL;
+END;
+
+CREATE TRIGGER immersion_source_fts_delete
+AFTER DELETE ON immersion_source_unit
+BEGIN
+    DELETE FROM immersion_source_fts WHERE source_unit_id = old.id;
+END;
+
 CREATE TABLE immersion_event(
     id TEXT NOT NULL PRIMARY KEY,
     session_id TEXT NOT NULL,
@@ -1591,6 +1619,171 @@ FROM immersion_daily_rollup
 WHERE local_date BETWEEN :startDate AND :endDate
 ORDER BY local_date, scope_key;
 
+selectImmersionAnalyticsInventory:
+WITH filtered_exposure AS (
+    SELECT DISTINCT
+        exposure.source_unit_id,
+        event.occurred_at,
+        session.title_id
+    FROM immersion_source_exposure AS exposure
+    JOIN immersion_event AS event ON event.id = exposure.event_id
+    JOIN immersion_session AS session ON session.id = event.session_id
+    WHERE
+        session.status != 'DELETED'
+        AND (
+            :filterDate = 0
+            OR event.local_date BETWEEN :startDate AND :endDate
+        )
+        AND (:filterMediaKinds = 0 OR session.media_kind IN :mediaKinds)
+        AND (:filterProfileIds = 0 OR session.profile_id IN :profileIds)
+        AND (:filterLanguageTags = 0 OR coalesce(session.language_tag, '') IN :languageTags)
+        AND (:filterTitleIds = 0 OR session.title_id IN :titleIds)
+        AND (:includeRereads = 1 OR exposure.replay_ordinal = 0)
+        AND (:includeLegacy = 1 OR session.legacy_import = 0)
+        AND (
+            :filterProvenance = 0
+            OR (
+                session.legacy_import = 1
+                AND 'LEGACY_AGGREGATE' IN :provenanceStates
+            )
+            OR (
+                session.legacy_import = 0
+                AND 'AVAILABLE' IN :provenanceStates
+            )
+        )
+),
+word_metrics AS (
+    SELECT
+        count(DISTINCT word.id) AS unique_words,
+        count(DISTINCT CASE
+            WHEN word.first_seen_at = filtered_exposure.occurred_at THEN word.id
+        END) AS new_words
+    FROM filtered_exposure
+    JOIN immersion_word_occurrence AS occurrence
+        ON occurrence.source_unit_id = filtered_exposure.source_unit_id
+    JOIN immersion_word AS word ON word.id = occurrence.word_id
+    WHERE word.excluded = 0
+),
+character_metrics AS (
+    SELECT
+        count(DISTINCT character.code_point) AS distinct_characters,
+        count(DISTINCT CASE
+            WHEN character.first_seen_at = filtered_exposure.occurred_at THEN character.code_point
+        END) AS new_characters,
+        count(DISTINCT CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM immersion_anki_character AS anki_character
+                JOIN immersion_anki_snapshot AS snapshot
+                    ON snapshot.id = anki_character.snapshot_id
+                WHERE
+                    snapshot.is_current = 1
+                    AND (:filterProfileIds = 0 OR snapshot.profile_id IN :profileIds)
+                    AND anki_character.code_point = character.code_point
+            ) THEN character.code_point
+        END) AS characters_in_anki
+    FROM filtered_exposure
+    JOIN immersion_character_occurrence AS occurrence
+        ON occurrence.source_unit_id = filtered_exposure.source_unit_id
+    JOIN immersion_character AS character
+        ON character.code_point = occurrence.character_code_point
+)
+SELECT
+    coalesce(character_metrics.distinct_characters, 0) AS distinct_characters,
+    coalesce(character_metrics.new_characters, 0) AS new_characters,
+    coalesce(word_metrics.unique_words, 0) AS unique_words,
+    coalesce(word_metrics.new_words, 0) AS new_words,
+    coalesce(character_metrics.characters_in_anki, 0) AS characters_in_anki
+FROM word_metrics, character_metrics;
+
+selectImmersionAnalyticsTitleInventory:
+WITH filtered_exposure AS (
+    SELECT DISTINCT
+        exposure.source_unit_id,
+        event.occurred_at,
+        session.title_id
+    FROM immersion_source_exposure AS exposure
+    JOIN immersion_event AS event ON event.id = exposure.event_id
+    JOIN immersion_session AS session ON session.id = event.session_id
+    WHERE
+        session.status != 'DELETED'
+        AND (
+            :filterDate = 0
+            OR event.local_date BETWEEN :startDate AND :endDate
+        )
+        AND (:filterMediaKinds = 0 OR session.media_kind IN :mediaKinds)
+        AND (:filterProfileIds = 0 OR session.profile_id IN :profileIds)
+        AND (:filterLanguageTags = 0 OR coalesce(session.language_tag, '') IN :languageTags)
+        AND (:filterTitleIds = 0 OR session.title_id IN :titleIds)
+        AND (:includeRereads = 1 OR exposure.replay_ordinal = 0)
+        AND (:includeLegacy = 1 OR session.legacy_import = 0)
+        AND (
+            :filterProvenance = 0
+            OR (
+                session.legacy_import = 1
+                AND 'LEGACY_AGGREGATE' IN :provenanceStates
+            )
+            OR (
+                session.legacy_import = 0
+                AND 'AVAILABLE' IN :provenanceStates
+            )
+        )
+),
+titles AS (
+    SELECT DISTINCT title_id FROM filtered_exposure
+),
+word_metrics AS (
+    SELECT
+        filtered_exposure.title_id,
+        count(DISTINCT word.id) AS unique_words,
+        count(DISTINCT CASE
+            WHEN word.first_seen_at = filtered_exposure.occurred_at THEN word.id
+        END) AS new_words
+    FROM filtered_exposure
+    JOIN immersion_word_occurrence AS occurrence
+        ON occurrence.source_unit_id = filtered_exposure.source_unit_id
+    JOIN immersion_word AS word ON word.id = occurrence.word_id
+    WHERE word.excluded = 0
+    GROUP BY filtered_exposure.title_id
+),
+character_metrics AS (
+    SELECT
+        filtered_exposure.title_id,
+        count(DISTINCT character.code_point) AS distinct_characters,
+        count(DISTINCT CASE
+            WHEN character.first_seen_at = filtered_exposure.occurred_at THEN character.code_point
+        END) AS new_characters,
+        count(DISTINCT CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM immersion_anki_character AS anki_character
+                JOIN immersion_anki_snapshot AS snapshot
+                    ON snapshot.id = anki_character.snapshot_id
+                WHERE
+                    snapshot.is_current = 1
+                    AND (:filterProfileIds = 0 OR snapshot.profile_id IN :profileIds)
+                    AND anki_character.code_point = character.code_point
+            ) THEN character.code_point
+        END) AS characters_in_anki
+    FROM filtered_exposure
+    JOIN immersion_character_occurrence AS occurrence
+        ON occurrence.source_unit_id = filtered_exposure.source_unit_id
+    JOIN immersion_character AS character
+        ON character.code_point = occurrence.character_code_point
+    GROUP BY filtered_exposure.title_id
+)
+SELECT
+    titles.title_id,
+    coalesce(character_metrics.distinct_characters, 0) AS distinct_characters,
+    coalesce(character_metrics.new_characters, 0) AS new_characters,
+    coalesce(word_metrics.unique_words, 0) AS unique_words,
+    coalesce(word_metrics.new_words, 0) AS new_words,
+    coalesce(character_metrics.characters_in_anki, 0) AS characters_in_anki
+FROM titles
+LEFT JOIN word_metrics ON word_metrics.title_id = titles.title_id
+LEFT JOIN character_metrics ON character_metrics.title_id = titles.title_id
+ORDER BY titles.title_id;
+
 selectImmersionAnalyticsTitleMetadata:
 SELECT
     id,
@@ -1967,6 +2160,12 @@ JOIN immersion_session AS session ON session.id = event.session_id
 WHERE
     word.excluded = 0
     AND (
+        :searchQuery = ''
+        OR word.display_headword LIKE '%' || :searchQuery || '%' COLLATE NOCASE
+        OR coalesce(word.display_reading, '') LIKE '%' || :searchQuery || '%' COLLATE NOCASE
+        OR coalesce(word.part_of_speech, '') LIKE '%' || :searchQuery || '%' COLLATE NOCASE
+    )
+    AND (
         :filterDate = 0 OR
         event.local_date BETWEEN :startDate AND :endDate
     )
@@ -2022,6 +2221,8 @@ ORDER BY
     CASE WHEN :sort = 'MOST_RECENT' THEN word.last_seen_at END DESC,
     CASE WHEN :sort = 'FIRST_SEEN' THEN word.first_seen_at END,
     CASE WHEN :sort = 'ALPHABETICAL' THEN word.display_headword END,
+    CASE WHEN :sort = 'FREQUENCY_RANK' THEN word.frequency_rank IS NULL END,
+    CASE WHEN :sort = 'FREQUENCY_RANK' THEN word.frequency_rank END,
     CASE WHEN :sort = 'MOST_CHARACTERS' THEN length(word.display_headword) END DESC,
     word.id
 LIMIT :limit
@@ -2077,6 +2278,14 @@ JOIN immersion_source_exposure AS exposure ON exposure.source_unit_id = occurren
 JOIN immersion_event AS event ON event.id = exposure.event_id
 JOIN immersion_session AS session ON session.id = event.session_id
 WHERE
+    (
+        :searchQuery = ''
+        OR character.rendered = :searchQuery
+        OR printf('U+%04X', character.code_point) LIKE '%' || upper(:searchQuery) || '%'
+        OR coalesce(character.unicode_name, '') LIKE '%' || :searchQuery || '%' COLLATE NOCASE
+        OR character.unicode_script LIKE '%' || :searchQuery || '%' COLLATE NOCASE
+    )
+    AND
     (
         :filterDate = 0 OR
         event.local_date BETWEEN :startDate AND :endDate
@@ -2137,6 +2346,8 @@ ORDER BY
     CASE WHEN :sort = 'MOST_RECENT' THEN character.last_seen_at END DESC,
     CASE WHEN :sort = 'FIRST_SEEN' THEN character.first_seen_at END,
     CASE WHEN :sort = 'ALPHABETICAL' THEN character.rendered END,
+    CASE WHEN :sort = 'FREQUENCY_RANK' THEN character.frequency_rank IS NULL END,
+    CASE WHEN :sort = 'FREQUENCY_RANK' THEN character.frequency_rank END,
     CASE WHEN :sort = 'MOST_CHARACTERS' THEN occurrence_count END DESC,
     character.code_point
 LIMIT :limit
@@ -2204,6 +2415,142 @@ WHERE
     )
 ORDER BY started_at DESC, id DESC
 LIMIT :limit;
+
+selectImmersionAnalyticsSessionEvents:
+SELECT
+    event.occurred_at,
+    event.type,
+    event.active_duration_delta_ms,
+    event.gross_character_delta,
+    event.unique_source_character_delta,
+    event.net_character_delta,
+    event.lookup_delta,
+    event.cards_created_delta,
+    event.cards_updated_delta,
+    source.id AS source_unit_id,
+    source.source_kind,
+    source.canonical_locator,
+    source.raw_text IS NOT NULL AS raw_text_available,
+    source.raw_text,
+    title.display_title,
+    session.title_id,
+    session.media_kind
+FROM immersion_event AS event
+JOIN immersion_session AS session ON session.id = event.session_id
+JOIN immersion_title AS title ON title.id = session.title_id
+LEFT JOIN immersion_source_unit AS source ON source.id = event.source_unit_id
+WHERE event.session_id = :sessionId
+ORDER BY event.occurred_at, event.sequence;
+
+selectImmersionAnalyticsSourceSearch:
+SELECT
+    source.id AS source_unit_id,
+    source.title_id,
+    title.display_title,
+    session.id AS session_id,
+    session.media_kind,
+    source.source_kind,
+    source.canonical_locator,
+    min(event.occurred_at) AS occurred_at,
+    snippet(immersion_source_fts, '[', ']', ' … ', 1, 24) AS excerpt,
+    1 AS raw_text_available
+FROM immersion_source_fts
+JOIN immersion_source_unit AS source
+    ON source.id = immersion_source_fts.source_unit_id
+JOIN immersion_source_exposure AS exposure ON exposure.source_unit_id = source.id
+JOIN immersion_event AS event ON event.id = exposure.event_id
+JOIN immersion_session AS session ON session.id = event.session_id
+JOIN immersion_title AS title ON title.id = source.title_id
+WHERE
+    immersion_source_fts MATCH :ftsQuery
+    AND session.status != 'DELETED'
+    AND (
+        :filterDate = 0
+        OR event.local_date BETWEEN :startDate AND :endDate
+    )
+    AND (:filterMediaKinds = 0 OR session.media_kind IN :mediaKinds)
+    AND (:filterProfileIds = 0 OR session.profile_id IN :profileIds)
+    AND (:filterLanguageTags = 0 OR coalesce(session.language_tag, '') IN :languageTags)
+    AND (:filterTitleIds = 0 OR session.title_id IN :titleIds)
+    AND (:includeRereads = 1 OR exposure.replay_ordinal = 0)
+    AND (:includeLegacy = 1 OR session.legacy_import = 0)
+GROUP BY source.id, session.id
+ORDER BY occurred_at DESC, source.id, session.id
+LIMIT :limit
+OFFSET :offset;
+
+selectImmersionAnalyticsWordOccurrences:
+SELECT
+    source.id AS source_unit_id,
+    source.title_id,
+    title.display_title,
+    session.id AS session_id,
+    session.media_kind,
+    source.source_kind,
+    source.canonical_locator,
+    min(event.occurred_at) AS occurred_at,
+    source.raw_text,
+    occurrence.surface_text,
+    source.raw_text IS NOT NULL AS raw_text_available
+FROM immersion_word_occurrence AS occurrence
+JOIN immersion_source_unit AS source ON source.id = occurrence.source_unit_id
+JOIN immersion_source_exposure AS exposure ON exposure.source_unit_id = source.id
+JOIN immersion_event AS event ON event.id = exposure.event_id
+JOIN immersion_session AS session ON session.id = event.session_id
+JOIN immersion_title AS title ON title.id = source.title_id
+WHERE
+    occurrence.word_id = :wordId
+    AND session.status != 'DELETED'
+    AND (
+        :filterDate = 0
+        OR event.local_date BETWEEN :startDate AND :endDate
+    )
+    AND (:filterMediaKinds = 0 OR session.media_kind IN :mediaKinds)
+    AND (:filterProfileIds = 0 OR session.profile_id IN :profileIds)
+    AND (:filterLanguageTags = 0 OR coalesce(session.language_tag, '') IN :languageTags)
+    AND (:filterTitleIds = 0 OR session.title_id IN :titleIds)
+    AND (:includeRereads = 1 OR exposure.replay_ordinal = 0)
+    AND (:includeLegacy = 1 OR session.legacy_import = 0)
+GROUP BY source.id, session.id
+ORDER BY occurred_at DESC, source.id, session.id
+LIMIT :limit
+OFFSET :offset;
+
+selectImmersionAnalyticsCharacterOccurrences:
+SELECT
+    source.id AS source_unit_id,
+    source.title_id,
+    title.display_title,
+    session.id AS session_id,
+    session.media_kind,
+    source.source_kind,
+    source.canonical_locator,
+    min(event.occurred_at) AS occurred_at,
+    source.raw_text,
+    source.raw_text IS NOT NULL AS raw_text_available
+FROM immersion_character_occurrence AS occurrence
+JOIN immersion_source_unit AS source ON source.id = occurrence.source_unit_id
+JOIN immersion_source_exposure AS exposure ON exposure.source_unit_id = source.id
+JOIN immersion_event AS event ON event.id = exposure.event_id
+JOIN immersion_session AS session ON session.id = event.session_id
+JOIN immersion_title AS title ON title.id = source.title_id
+WHERE
+    occurrence.character_code_point = :codePoint
+    AND session.status != 'DELETED'
+    AND (
+        :filterDate = 0
+        OR event.local_date BETWEEN :startDate AND :endDate
+    )
+    AND (:filterMediaKinds = 0 OR session.media_kind IN :mediaKinds)
+    AND (:filterProfileIds = 0 OR session.profile_id IN :profileIds)
+    AND (:filterLanguageTags = 0 OR coalesce(session.language_tag, '') IN :languageTags)
+    AND (:filterTitleIds = 0 OR session.title_id IN :titleIds)
+    AND (:includeRereads = 1 OR exposure.replay_ordinal = 0)
+    AND (:includeLegacy = 1 OR session.legacy_import = 0)
+GROUP BY source.id, session.id
+ORDER BY occurred_at DESC, source.id, session.id
+LIMIT :limit
+OFFSET :offset;
 
 selectImmersionImportLedger:
 SELECT *
@@ -2302,6 +2649,42 @@ selectImmersionGoals:
 SELECT *
 FROM immersion_goal
 ORDER BY updated_at DESC, id DESC;
+
+upsertImmersionGoalCheckIn:
+INSERT INTO immersion_goal_check_in(
+    goal_id,
+    local_date,
+    status,
+    note,
+    occurred_at
+)
+VALUES (:goalId, :localDate, :status, :note, :occurredAt)
+ON CONFLICT(goal_id, local_date) DO UPDATE SET
+    status = excluded.status,
+    note = excluded.note,
+    occurred_at = excluded.occurred_at;
+
+selectImmersionGoalCheckIns:
+SELECT *
+FROM immersion_goal_check_in
+WHERE goal_id = :goalId
+ORDER BY local_date, occurred_at;
+
+insertImmersionGoalAchievement:
+INSERT OR IGNORE INTO immersion_goal_achievement(
+    id,
+    goal_id,
+    milestone_key,
+    earned_at,
+    target_snapshot
+)
+VALUES (:id, :goalId, :milestoneKey, :earnedAt, :targetSnapshot);
+
+selectImmersionGoalAchievements:
+SELECT *
+FROM immersion_goal_achievement
+WHERE goal_id = :goalId
+ORDER BY earned_at, id;
 
 upsertImmersionAnkiSnapshot:
 INSERT INTO immersion_anki_snapshot(
@@ -2585,6 +2968,52 @@ SELECT
         ) THEN 1 ELSE 0 END
     ), 0) AS covered_count
 FROM encountered;
+
+selectImmersionAnkiMaturityDistribution:
+SELECT
+    item.maturity_tier,
+    count(DISTINCT item.card_id) AS item_count
+FROM immersion_anki_item AS item
+JOIN immersion_anki_snapshot AS snapshot ON snapshot.id = item.snapshot_id
+WHERE
+    snapshot.profile_id = :profileId
+    AND snapshot.is_current = 1
+    AND item.language_tag = :languageTag
+GROUP BY item.maturity_tier
+ORDER BY item.maturity_tier;
+
+selectImmersionAnalyticsAnkiActivity:
+SELECT
+    count(CASE WHEN operation.session_id IS NOT NULL AND operation.source_unit_id IS NOT NULL THEN 1 END)
+        AS linked_operations,
+    count(CASE WHEN operation.session_id IS NULL OR operation.source_unit_id IS NULL THEN 1 END)
+        AS unattributed_operations,
+    avg(CASE
+        WHEN source.first_exposed_at IS NOT NULL
+            AND operation.occurred_at >= source.first_exposed_at
+        THEN operation.occurred_at - source.first_exposed_at
+    END) AS mean_lag_millis
+FROM immersion_anki_operation AS operation
+LEFT JOIN immersion_event AS event ON event.id = operation.event_id
+LEFT JOIN immersion_session AS session ON session.id = operation.session_id
+LEFT JOIN immersion_source_unit AS source ON source.id = operation.source_unit_id
+WHERE
+    operation.success = 1
+    AND operation.type IN ('CREATE', 'UPDATE')
+    AND (
+        :filterDate = 0
+        OR coalesce(event.local_date, operation.occurred_at / 86400000)
+            BETWEEN :startDate AND :endDate
+    )
+    AND (
+        session.id IS NULL
+        OR (
+            (:filterMediaKinds = 0 OR session.media_kind IN :mediaKinds)
+            AND (:filterProfileIds = 0 OR session.profile_id IN :profileIds)
+            AND (:filterLanguageTags = 0 OR coalesce(session.language_tag, '') IN :languageTags)
+            AND (:filterTitleIds = 0 OR session.title_id IN :titleIds)
+        )
+    );
 
 recomputeCurrentImmersionAnkiMaturity:
 UPDATE immersion_anki_item

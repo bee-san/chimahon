@@ -1,5 +1,7 @@
 package eu.kanade.tachiyomi.ui.stats
 
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -10,11 +12,9 @@ import eu.kanade.presentation.components.AppBar
 import eu.kanade.presentation.components.AppBarActions
 import eu.kanade.presentation.more.stats.StatsScreenContent
 import eu.kanade.presentation.more.stats.StatsScreenState
-import eu.kanade.presentation.more.stats.data.StatsType
 import eu.kanade.presentation.util.Screen
 import kotlinx.collections.immutable.persistentListOf
-import tachiyomi.i18n.MR
-import tachiyomi.i18n.sy.SYMR
+import tachiyomi.i18n.kmk.KMR
 import tachiyomi.presentation.core.components.material.Scaffold
 import tachiyomi.presentation.core.i18n.stringResource
 import tachiyomi.presentation.core.screens.LoadingScreen
@@ -28,69 +28,66 @@ class StatsScreen(
     @Composable
     override fun Content() {
         val navigator = LocalNavigator.currentOrThrow
-
         val screenModel = rememberScreenModel {
-            StatsScreenModel(titleId = titleId, isNovel = isNovel, titleName = titleName)
+            StatsScreenModel(titleId = titleId)
         }
         val state by screenModel.state.collectAsState()
-        val allRead by screenModel.allRead.collectAsState()
 
         Scaffold(
             topBar = { scrollBehavior ->
                 AppBar(
-                    title = titleName ?: stringResource(MR.strings.label_stats),
+                    title = titleName ?: stringResource(KMR.strings.stats_immersion_title),
                     navigateUp = navigator::pop,
                     scrollBehavior = scrollBehavior,
-                    // SY -->
                     actions = {
-                        if (titleId == null) {
-                            AppBarActions(
-                                persistentListOf(
-                                    AppBar.OverflowAction(
-                                        title = if (allRead) {
-                                            stringResource(SYMR.strings.ignore_non_library_entries)
-                                        } else {
-                                            stringResource(SYMR.strings.include_all_read_entries)
-                                        },
-                                        onClick = screenModel::toggleReadManga,
-                                    ),
+                        AppBarActions(
+                            persistentListOf(
+                                AppBar.Action(
+                                    title = stringResource(KMR.strings.stats_refresh),
+                                    icon = Icons.Outlined.Refresh,
+                                    onClick = screenModel::refresh,
                                 ),
-                            )
-                        }
+                            ),
+                        )
                     },
-                    // SY <--
                 )
             },
         ) { paddingValues ->
-            if (state is StatsScreenState.Loading) {
+            val success = state as? StatsScreenState.Success
+            if (success == null) {
                 LoadingScreen()
                 return@Scaffold
             }
-
             StatsScreenContent(
-                state = state as? StatsScreenState.Success ?: return@Scaffold,
+                state = success,
                 paddingValues = paddingValues,
-                onDateScaleSelect = screenModel::setDateScale,
-                onDateOffsetChange = screenModel::setDateOffset,
-                onStatsTypeSelect = screenModel::setStatsType,
-                onProfileSelect = screenModel::setProfileFilter,
-                allRead = allRead,
-                isSingleTitle = titleId != null,
-                titleName = titleName,
-                onLibraryCardClick = if (titleId == null) {
-                    {
-                        val successState = state as? StatsScreenState.Success ?: return@StatsScreenContent
-                        navigator.push(
-                            StatsTitlesScreen(
-                                activeProfileId = successState.activeProfileId,
-                                allRead = allRead,
-                                statsType = successState.statsType,
-                            ),
-                        )
-                    }
-                } else {
-                    null
-                },
+                onTabSelect = screenModel::selectTab,
+                onRangeSelect = screenModel::selectRange,
+                onPeriodMove = screenModel::movePeriod,
+                onCustomRange = screenModel::setCustomRange,
+                onMediaSelect = screenModel::selectMedia,
+                onProfileSelect = screenModel::selectProfile,
+                onCharacterMetricSelect = screenModel::selectCharacterMetric,
+                onIncludeLegacyChange = screenModel::setIncludeLegacy,
+                onIncludeRereadsChange = screenModel::setIncludeRereads,
+                onTrendScaleSelect = screenModel::selectTrendScale,
+                onTitleSortSelect = screenModel::selectTitleSort,
+                onVocabularySortSelect = screenModel::selectVocabularySort,
+                onCharacterSortSelect = screenModel::selectCharacterSort,
+                onTitleSearch = screenModel::searchTitles,
+                onVocabularySearch = screenModel::searchVocabulary,
+                onCharacterSearch = screenModel::searchCharacters,
+                onSourceSearch = screenModel::searchSources,
+                onTitleSelect = screenModel::selectTitle,
+                onWordSelect = screenModel::selectWord,
+                onCharacterSelect = screenModel::selectCharacter,
+                onSessionSelect = screenModel::selectSession,
+                onLoadMoreVocabulary = screenModel::loadMoreVocabulary,
+                onLoadMoreCharacters = screenModel::loadMoreCharacters,
+                onLoadMoreSessions = screenModel::loadMoreSessions,
+                onCreateGoal = screenModel::createGoal,
+                onArchiveGoal = screenModel::archiveGoal,
+                onCheckInGoal = screenModel::checkInGoal,
             )
         }
     }

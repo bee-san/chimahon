@@ -16,8 +16,12 @@ import tachiyomi.data.SelectLegacyImmersionAggregates
 import tachiyomi.domain.immersion.model.AnalyticsAnkiSummary
 import tachiyomi.domain.immersion.model.AnalyticsCharacterRow
 import tachiyomi.domain.immersion.model.AnalyticsDataQuality
+import tachiyomi.domain.immersion.model.AnalyticsInventoryMetrics
 import tachiyomi.domain.immersion.model.AnalyticsPage
+import tachiyomi.domain.immersion.model.AnalyticsSessionDetail
 import tachiyomi.domain.immersion.model.AnalyticsSort
+import tachiyomi.domain.immersion.model.AnalyticsSourceOccurrence
+import tachiyomi.domain.immersion.model.AnalyticsTimelineBucket
 import tachiyomi.domain.immersion.model.AnalyticsTitleMetadata
 import tachiyomi.domain.immersion.model.AnalyticsWordRow
 import tachiyomi.domain.immersion.model.AnkiInventoryFailure
@@ -28,12 +32,15 @@ import tachiyomi.domain.immersion.model.AnkiOperationType
 import tachiyomi.domain.immersion.model.AnkiSnapshotStatus
 import tachiyomi.domain.immersion.model.CharacterCoverage
 import tachiyomi.domain.immersion.model.CharacterVolume
+import tachiyomi.domain.immersion.model.EventType
 import tachiyomi.domain.immersion.model.ExposureEvent
 import tachiyomi.domain.immersion.model.ImmersionAnkiItem
 import tachiyomi.domain.immersion.model.ImmersionAnkiSnapshot
 import tachiyomi.domain.immersion.model.ImmersionDailyRollup
 import tachiyomi.domain.immersion.model.ImmersionDataException
 import tachiyomi.domain.immersion.model.ImmersionGoal
+import tachiyomi.domain.immersion.model.ImmersionGoalAchievement
+import tachiyomi.domain.immersion.model.ImmersionGoalCheckIn
 import tachiyomi.domain.immersion.model.ImmersionIntegrityReport
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
 import tachiyomi.domain.immersion.model.ImmersionOverview
@@ -538,6 +545,70 @@ class SqlDelightImmersionRepository(
             ).executeAsList().map(Immersion_daily_rollup::toDomain)
         }
 
+    override suspend fun inventoryMetrics(filter: StatsFilter): AnalyticsInventoryMetrics =
+        handler.await {
+            val args = filter.sqlArgs()
+            val range = filter.dateRange
+            immersionQueries.selectImmersionAnalyticsInventory(
+                filterDate = (range != null).toLong(),
+                startDate = range?.start?.epochDay ?: 0,
+                endDate = range?.endInclusive?.epochDay ?: 0,
+                filterMediaKinds = args.filterMediaKinds,
+                mediaKinds = args.mediaKinds,
+                filterProfileIds = args.filterProfileIds,
+                profileIds = args.profileIds,
+                filterLanguageTags = args.filterLanguageTags,
+                languageTags = args.languageTags,
+                filterTitleIds = args.filterTitleIds,
+                titleIds = args.titleIds,
+                includeRereads = filter.includeRereadsAndReplays.toLong(),
+                includeLegacy = filter.includeLegacyAggregates.toLong(),
+                filterProvenance = args.filterProvenance,
+                provenanceStates = args.provenanceStates,
+            ).executeAsOne().let { row ->
+                AnalyticsInventoryMetrics(
+                    distinctCharacters = row.distinct_characters,
+                    newCharacters = row.new_characters,
+                    uniqueWords = row.unique_words,
+                    newWords = row.new_words,
+                    charactersRepresentedInAnki = row.characters_in_anki,
+                )
+            }
+        }
+
+    override suspend fun titleInventoryMetrics(
+        filter: StatsFilter,
+    ): Map<TitleId, AnalyticsInventoryMetrics> =
+        handler.await {
+            val args = filter.sqlArgs()
+            val range = filter.dateRange
+            immersionQueries.selectImmersionAnalyticsTitleInventory(
+                filterDate = (range != null).toLong(),
+                startDate = range?.start?.epochDay ?: 0,
+                endDate = range?.endInclusive?.epochDay ?: 0,
+                filterMediaKinds = args.filterMediaKinds,
+                mediaKinds = args.mediaKinds,
+                filterProfileIds = args.filterProfileIds,
+                profileIds = args.profileIds,
+                filterLanguageTags = args.filterLanguageTags,
+                languageTags = args.languageTags,
+                filterTitleIds = args.filterTitleIds,
+                titleIds = args.titleIds,
+                includeRereads = filter.includeRereadsAndReplays.toLong(),
+                includeLegacy = filter.includeLegacyAggregates.toLong(),
+                filterProvenance = args.filterProvenance,
+                provenanceStates = args.provenanceStates,
+            ).executeAsList().associate { row ->
+                TitleId(row.title_id) to AnalyticsInventoryMetrics(
+                    distinctCharacters = row.distinct_characters,
+                    newCharacters = row.new_characters,
+                    uniqueWords = row.unique_words,
+                    newWords = row.new_words,
+                    charactersRepresentedInAnki = row.characters_in_anki,
+                )
+            }
+        }
+
     override suspend fun titleMetadata(
         titleIds: Set<TitleId>,
     ): List<AnalyticsTitleMetadata> {
@@ -624,6 +695,7 @@ class SqlDelightImmersionRepository(
         sort: AnalyticsSort,
         offset: Long,
         limit: Int,
+        searchQuery: String?,
     ): AnalyticsPage<AnalyticsWordRow> {
         require(offset >= 0)
         require(limit in 1..MAX_PAGE_SIZE)
@@ -648,6 +720,7 @@ class SqlDelightImmersionRepository(
                 provenanceStates = args.provenanceStates,
                 filterMaturity = args.filterMaturity,
                 maturityTiers = args.maturityTiers,
+                searchQuery = searchQuery?.trim().orEmpty(),
                 sort = sort.analyticsSqlSort(),
                 limit = limit.toLong() + 1,
                 offset = offset,
@@ -682,6 +755,7 @@ class SqlDelightImmersionRepository(
         sort: AnalyticsSort,
         offset: Long,
         limit: Int,
+        searchQuery: String?,
     ): AnalyticsPage<AnalyticsCharacterRow> {
         require(offset >= 0)
         require(limit in 1..MAX_PAGE_SIZE)
@@ -706,6 +780,7 @@ class SqlDelightImmersionRepository(
                 provenanceStates = args.provenanceStates,
                 filterMaturity = args.filterMaturity,
                 maturityTiers = args.maturityTiers,
+                searchQuery = searchQuery?.trim().orEmpty(),
                 sort = sort.analyticsSqlSort(),
                 limit = limit.toLong() + 1,
                 offset = offset,
@@ -794,10 +869,247 @@ class SqlDelightImmersionRepository(
         }
     }
 
+    override suspend fun sessionDetail(
+        sessionId: SessionId,
+        maxTimelineBuckets: Int,
+    ): AnalyticsSessionDetail? {
+        require(maxTimelineBuckets in 1..500)
+        return handler.await {
+            val session = immersionQueries.selectImmersionSessionById(sessionId.value)
+                .executeAsOneOrNull()
+                ?.toDomain()
+                ?: return@await null
+            val title = immersionQueries.selectImmersionAnalyticsTitleMetadata(
+                listOf(session.titleId.value),
+            ).executeAsOneOrNull() ?: return@await null
+            val events = immersionQueries.selectImmersionAnalyticsSessionEvents(sessionId.value)
+                .executeAsList()
+            val end = session.endedAtEpochMillis
+                ?: events.lastOrNull()?.occurred_at
+                ?: session.startedAtEpochMillis
+            val span = (end - session.startedAtEpochMillis + 1).coerceAtLeast(1)
+            val bucketWidth = (span + maxTimelineBuckets - 1) / maxTimelineBuckets
+            val buckets = linkedMapOf<Long, TimelineAccumulator>()
+            events.forEach { event ->
+                val bucketIndex = ((event.occurred_at - session.startedAtEpochMillis) / bucketWidth)
+                    .coerceIn(0, maxTimelineBuckets.toLong() - 1)
+                buckets.getOrPut(bucketIndex) { TimelineAccumulator() }.apply {
+                    eventCount++
+                    activeDuration = Math.addExact(activeDuration, event.active_duration_delta_ms)
+                    grossCharacters = Math.addExact(grossCharacters, event.gross_character_delta)
+                    uniqueSourceCharacters = Math.addExact(
+                        uniqueSourceCharacters,
+                        event.unique_source_character_delta,
+                    )
+                    netCharacters = Math.addExact(netCharacters, event.net_character_delta)
+                    lookupCount = Math.addExact(lookupCount, event.lookup_delta)
+                    cardsCreated = Math.addExact(cardsCreated, event.cards_created_delta)
+                    cardsUpdated = Math.addExact(cardsUpdated, event.cards_updated_delta)
+                    eventTypes += EventType.valueOf(event.type)
+                }
+            }
+            val timeline = buckets.map { (index, accumulator) ->
+                val bucketStart = session.startedAtEpochMillis + index * bucketWidth
+                accumulator.toDomain(bucketStart, minOf(end, bucketStart + bucketWidth - 1))
+            }
+            val sources = events.mapNotNull { event ->
+                val sourceUnitId = event.source_unit_id ?: return@mapNotNull null
+                val sourceKind = event.source_kind ?: return@mapNotNull null
+                val locator = event.canonical_locator ?: return@mapNotNull null
+                AnalyticsSourceOccurrence(
+                    sourceUnitId = SourceUnitId(sourceUnitId),
+                    titleId = session.titleId,
+                    displayTitle = title.display_title,
+                    sessionId = session.id,
+                    mediaKind = session.mediaKind,
+                    sourceKind = SourceKind.valueOf(sourceKind),
+                    canonicalLocator = locator,
+                    occurredAtEpochMillis = event.occurred_at,
+                    excerpt = event.raw_text?.decodeUtf8Strict()?.take(SOURCE_EXCERPT_LENGTH),
+                    rawTextAvailable = event.raw_text_available,
+                )
+            }.distinctBy { it.sourceUnitId }
+            AnalyticsSessionDetail(
+                session = session,
+                displayTitle = title.display_title,
+                timeline = timeline,
+                sources = sources,
+            )
+        }
+    }
+
+    override suspend fun sourceSearch(
+        filter: StatsFilter,
+        query: String,
+        offset: Long,
+        limit: Int,
+    ): AnalyticsPage<AnalyticsSourceOccurrence> {
+        require(offset >= 0)
+        require(limit in 1..MAX_PAGE_SIZE)
+        val ftsQuery = query.toFtsQuery() ?: return AnalyticsPage(emptyList(), null)
+        return handler.await {
+            val args = filter.sqlArgs()
+            val range = filter.dateRange
+            val rows = immersionQueries.selectImmersionAnalyticsSourceSearch(
+                ftsQuery = ftsQuery,
+                filterDate = (range != null).toLong(),
+                startDate = range?.start?.epochDay ?: 0,
+                endDate = range?.endInclusive?.epochDay ?: 0,
+                filterMediaKinds = args.filterMediaKinds,
+                mediaKinds = args.mediaKinds,
+                filterProfileIds = args.filterProfileIds,
+                profileIds = args.profileIds,
+                filterLanguageTags = args.filterLanguageTags,
+                languageTags = args.languageTags,
+                filterTitleIds = args.filterTitleIds,
+                titleIds = args.titleIds,
+                includeRereads = filter.includeRereadsAndReplays.toLong(),
+                includeLegacy = filter.includeLegacyAggregates.toLong(),
+                limit = limit.toLong() + 1,
+                offset = offset,
+            ).executeAsList()
+            val hasNext = rows.size > limit
+            AnalyticsPage(
+                items = rows.take(limit).map { row ->
+                    AnalyticsSourceOccurrence(
+                        sourceUnitId = SourceUnitId(row.source_unit_id),
+                        titleId = TitleId(row.title_id),
+                        displayTitle = row.display_title,
+                        sessionId = SessionId(row.session_id),
+                        mediaKind = MediaKind.valueOf(row.media_kind),
+                        sourceKind = SourceKind.valueOf(row.source_kind),
+                        canonicalLocator = row.canonical_locator,
+                        occurredAtEpochMillis = checkNotNull(row.occurred_at),
+                        excerpt = row.excerpt,
+                        rawTextAvailable = row.raw_text_available == 1L,
+                    )
+                },
+                nextOffset = if (hasNext) Math.addExact(offset, limit.toLong()) else null,
+            )
+        }
+    }
+
+    override suspend fun wordOccurrences(
+        filter: StatsFilter,
+        wordId: String,
+        offset: Long,
+        limit: Int,
+    ): AnalyticsPage<AnalyticsSourceOccurrence> {
+        require(wordId.isNotBlank())
+        require(offset >= 0)
+        require(limit in 1..MAX_PAGE_SIZE)
+        return handler.await {
+            val args = filter.sqlArgs()
+            val range = filter.dateRange
+            val rows = immersionQueries.selectImmersionAnalyticsWordOccurrences(
+                wordId = wordId,
+                filterDate = (range != null).toLong(),
+                startDate = range?.start?.epochDay ?: 0,
+                endDate = range?.endInclusive?.epochDay ?: 0,
+                filterMediaKinds = args.filterMediaKinds,
+                mediaKinds = args.mediaKinds,
+                filterProfileIds = args.filterProfileIds,
+                profileIds = args.profileIds,
+                filterLanguageTags = args.filterLanguageTags,
+                languageTags = args.languageTags,
+                filterTitleIds = args.filterTitleIds,
+                titleIds = args.titleIds,
+                includeRereads = filter.includeRereadsAndReplays.toLong(),
+                includeLegacy = filter.includeLegacyAggregates.toLong(),
+                limit = limit.toLong() + 1,
+                offset = offset,
+            ).executeAsList()
+            val hasNext = rows.size > limit
+            AnalyticsPage(
+                items = rows.take(limit).map { row ->
+                    AnalyticsSourceOccurrence(
+                        sourceUnitId = SourceUnitId(row.source_unit_id),
+                        titleId = TitleId(row.title_id),
+                        displayTitle = row.display_title,
+                        sessionId = SessionId(row.session_id),
+                        mediaKind = MediaKind.valueOf(row.media_kind),
+                        sourceKind = SourceKind.valueOf(row.source_kind),
+                        canonicalLocator = row.canonical_locator,
+                        occurredAtEpochMillis = checkNotNull(row.occurred_at),
+                        excerpt = row.raw_text?.decodeUtf8Strict()?.take(SOURCE_EXCERPT_LENGTH)
+                            ?: row.surface_text,
+                        rawTextAvailable = row.raw_text_available,
+                    )
+                },
+                nextOffset = if (hasNext) Math.addExact(offset, limit.toLong()) else null,
+            )
+        }
+    }
+
+    override suspend fun characterOccurrences(
+        filter: StatsFilter,
+        codePoint: UnicodeCodePoint,
+        offset: Long,
+        limit: Int,
+    ): AnalyticsPage<AnalyticsSourceOccurrence> {
+        require(offset >= 0)
+        require(limit in 1..MAX_PAGE_SIZE)
+        return handler.await {
+            val args = filter.sqlArgs()
+            val range = filter.dateRange
+            val rows = immersionQueries.selectImmersionAnalyticsCharacterOccurrences(
+                codePoint = codePoint.value.toLong(),
+                filterDate = (range != null).toLong(),
+                startDate = range?.start?.epochDay ?: 0,
+                endDate = range?.endInclusive?.epochDay ?: 0,
+                filterMediaKinds = args.filterMediaKinds,
+                mediaKinds = args.mediaKinds,
+                filterProfileIds = args.filterProfileIds,
+                profileIds = args.profileIds,
+                filterLanguageTags = args.filterLanguageTags,
+                languageTags = args.languageTags,
+                filterTitleIds = args.filterTitleIds,
+                titleIds = args.titleIds,
+                includeRereads = filter.includeRereadsAndReplays.toLong(),
+                includeLegacy = filter.includeLegacyAggregates.toLong(),
+                limit = limit.toLong() + 1,
+                offset = offset,
+            ).executeAsList()
+            val hasNext = rows.size > limit
+            AnalyticsPage(
+                items = rows.take(limit).map { row ->
+                    AnalyticsSourceOccurrence(
+                        sourceUnitId = SourceUnitId(row.source_unit_id),
+                        titleId = TitleId(row.title_id),
+                        displayTitle = row.display_title,
+                        sessionId = SessionId(row.session_id),
+                        mediaKind = MediaKind.valueOf(row.media_kind),
+                        sourceKind = SourceKind.valueOf(row.source_kind),
+                        canonicalLocator = row.canonical_locator,
+                        occurredAtEpochMillis = checkNotNull(row.occurred_at),
+                        excerpt = row.raw_text?.decodeUtf8Strict()?.take(SOURCE_EXCERPT_LENGTH),
+                        rawTextAvailable = row.raw_text_available,
+                    )
+                },
+                nextOffset = if (hasNext) Math.addExact(offset, limit.toLong()) else null,
+            )
+        }
+    }
+
     override suspend fun ankiSummary(filter: StatsFilter): AnalyticsAnkiSummary =
         handler.await {
             val profileId = filter.profileIds.singleOrNull()
             val languageTag = filter.languageTags.singleOrNull()
+            val args = filter.sqlArgs()
+            val range = filter.dateRange
+            val activity = immersionQueries.selectImmersionAnalyticsAnkiActivity(
+                filterDate = (range != null).toLong(),
+                startDate = range?.start?.epochDay ?: 0,
+                endDate = range?.endInclusive?.epochDay ?: 0,
+                filterMediaKinds = args.filterMediaKinds,
+                mediaKinds = args.mediaKinds,
+                filterProfileIds = args.filterProfileIds,
+                profileIds = args.profileIds,
+                filterLanguageTags = args.filterLanguageTags,
+                languageTags = args.languageTags,
+                filterTitleIds = args.filterTitleIds,
+                titleIds = args.titleIds,
+            ).executeAsOne()
             if (profileId == null || languageTag == null) {
                 return@await AnalyticsAnkiSummary(
                     snapshot = null,
@@ -806,6 +1118,9 @@ class SqlDelightImmersionRepository(
                     characterCoverageEncountered = 0,
                     characterCoverageKnown = 0,
                     reviewHistoryAvailable = false,
+                    linkedOperationCount = activity.linked_operations,
+                    unattributedOperationCount = activity.unattributed_operations,
+                    meanReadingToCardLagMillis = activity.mean_lag_millis?.toLong(),
                 )
             }
             val snapshot = immersionQueries.selectCurrentImmersionAnkiSnapshot(profileId)
@@ -819,6 +1134,12 @@ class SqlDelightImmersionRepository(
                 profileId,
                 languageTag.value,
             ).executeAsOne()
+            val maturity = immersionQueries.selectImmersionAnkiMaturityDistribution(
+                profileId,
+                languageTag.value,
+            ).executeAsList().associate {
+                MaturityTier.valueOf(it.maturity_tier) to it.item_count
+            }
             AnalyticsAnkiSummary(
                 snapshot = snapshot,
                 wordCoverageEncountered = word.encountered_count,
@@ -826,6 +1147,10 @@ class SqlDelightImmersionRepository(
                 characterCoverageEncountered = character.encountered_count,
                 characterCoverageKnown = character.covered_count,
                 reviewHistoryAvailable = snapshot?.supportsReviewHistory == true,
+                maturityDistribution = maturity,
+                linkedOperationCount = activity.linked_operations,
+                unattributedOperationCount = activity.unattributed_operations,
+                meanReadingToCardLagMillis = activity.mean_lag_millis?.toLong(),
             )
         }
 
@@ -1007,6 +1332,62 @@ class SqlDelightImmersionRepository(
         handler.await {
             immersionQueries.selectImmersionGoals().executeAsList().map(Immersion_goal::toDomain)
         }
+
+    override suspend fun upsertCheckIn(checkIn: ImmersionGoalCheckIn) {
+        handler.await(inTransaction = true) {
+            immersionQueries.upsertImmersionGoalCheckIn(
+                goalId = checkIn.goalId,
+                localDate = checkIn.localDate.epochDay,
+                status = checkIn.status,
+                note = checkIn.note,
+                occurredAt = checkIn.occurredAtEpochMillis,
+            )
+            immersionQueries.incrementImmersionRevision(checkIn.occurredAtEpochMillis)
+        }
+    }
+
+    override suspend fun getCheckIns(goalId: String): List<ImmersionGoalCheckIn> {
+        require(goalId.isNotBlank())
+        return handler.await {
+            immersionQueries.selectImmersionGoalCheckIns(goalId).executeAsList().map { row ->
+                ImmersionGoalCheckIn(
+                    goalId = row.goal_id,
+                    localDate = ImmersionLocalDate(row.local_date),
+                    status = row.status,
+                    note = row.note,
+                    occurredAtEpochMillis = row.occurred_at,
+                )
+            }
+        }
+    }
+
+    override suspend fun recordAchievement(achievement: ImmersionGoalAchievement) {
+        handler.await(inTransaction = true) {
+            immersionQueries.insertImmersionGoalAchievement(
+                id = achievement.id,
+                goalId = achievement.goalId,
+                milestoneKey = achievement.milestoneKey,
+                earnedAt = achievement.earnedAtEpochMillis,
+                targetSnapshot = achievement.targetSnapshot,
+            )
+            immersionQueries.incrementImmersionRevision(achievement.earnedAtEpochMillis)
+        }
+    }
+
+    override suspend fun getAchievements(goalId: String): List<ImmersionGoalAchievement> {
+        require(goalId.isNotBlank())
+        return handler.await {
+            immersionQueries.selectImmersionGoalAchievements(goalId).executeAsList().map { row ->
+                ImmersionGoalAchievement(
+                    id = row.id,
+                    goalId = row.goal_id,
+                    milestoneKey = row.milestone_key,
+                    earnedAtEpochMillis = row.earned_at,
+                    targetSnapshot = row.target_snapshot,
+                )
+            }
+        }
+    }
 
     override suspend fun activateSnapshot(
         snapshot: ImmersionAnkiSnapshot,
@@ -2085,6 +2466,43 @@ private data class AnalyticsSqlArgs(
     val maturityTiers: Collection<String>,
 )
 
+private data class TimelineAccumulator(
+    var eventCount: Long = 0,
+    var activeDuration: Long = 0,
+    var grossCharacters: Long = 0,
+    var uniqueSourceCharacters: Long = 0,
+    var netCharacters: Long = 0,
+    var lookupCount: Long = 0,
+    var cardsCreated: Long = 0,
+    var cardsUpdated: Long = 0,
+    val eventTypes: MutableSet<EventType> = linkedSetOf(),
+) {
+    fun toDomain(startEpochMillis: Long, endEpochMillis: Long) = AnalyticsTimelineBucket(
+        startEpochMillis = startEpochMillis,
+        endEpochMillis = endEpochMillis,
+        eventCount = eventCount,
+        activeDurationMillis = activeDuration,
+        grossCharacters = grossCharacters,
+        uniqueSourceCharacters = uniqueSourceCharacters,
+        netCharacters = netCharacters,
+        lookupCount = lookupCount,
+        cardsCreated = cardsCreated,
+        cardsUpdated = cardsUpdated,
+        eventTypes = eventTypes,
+    )
+}
+
+private fun String.toFtsQuery(): String? {
+    val terms = trim()
+        .split(Regex("\\s+"))
+        .filter(String::isNotBlank)
+        .take(8)
+    if (terms.isEmpty()) return null
+    return terms.joinToString(" AND ") { term ->
+        "\"${term.replace("\"", "\"\"")}\"*"
+    }
+}
+
 private fun StatsFilter.sqlArgs(): AnalyticsSqlArgs =
     AnalyticsSqlArgs(
         filterMediaKinds = mediaKinds.isNotEmpty().toLong(),
@@ -2500,6 +2918,7 @@ private fun identityConflict(message: String) =
     ImmersionDataException(PersistenceErrorCode.IDENTITY_CONFLICT, message)
 
 private const val MAX_PAGE_SIZE = 500
+private const val SOURCE_EXCERPT_LENGTH = 240
 private const val MILLIS_PER_DAY = 86_400_000L
 private const val MAX_ZONE_OFFSET_MILLIS = 18L * 60L * 60L * 1_000L
 private const val MAX_ROLLUP_EVENT_DURATION_MILLIS = 7L * MILLIS_PER_DAY

@@ -1,711 +1,711 @@
 package eu.kanade.tachiyomi.ui.stats
 
-import android.app.Application
-import androidx.compose.ui.util.fastDistinctBy
-import androidx.compose.ui.util.fastFilter
 import cafe.adriel.voyager.core.model.StateScreenModel
 import cafe.adriel.voyager.core.model.screenModelScope
-import chimahon.anki.AnkiProfile
-import com.canopus.chimareader.data.BookStorage
-import com.canopus.chimareader.data.Statistics
-import eu.kanade.core.util.fastCountNot
-import eu.kanade.presentation.more.stats.StatsDateScale
+import eu.kanade.presentation.more.stats.StatsFilterState
+import eu.kanade.presentation.more.stats.StatsLoadable
+import eu.kanade.presentation.more.stats.StatsRangePreset
 import eu.kanade.presentation.more.stats.StatsScreenState
-import eu.kanade.presentation.more.stats.data.StatsData
-import eu.kanade.presentation.more.stats.data.StatsType
-import eu.kanade.tachiyomi.data.download.DownloadManager
-import eu.kanade.tachiyomi.data.track.TrackerManager
-import eu.kanade.tachiyomi.source.model.SManga
+import eu.kanade.presentation.more.stats.StatsSections
+import eu.kanade.presentation.more.stats.StatsSelection
+import eu.kanade.presentation.more.stats.StatsTab
 import eu.kanade.tachiyomi.ui.dictionary.DictionaryPreferences
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
-import tachiyomi.domain.history.interactor.GetAllHistory
-import tachiyomi.domain.history.interactor.GetTotalReadDuration
-import tachiyomi.domain.history.model.History
-import tachiyomi.domain.history.model.ReadingSession
-import tachiyomi.domain.history.repository.HistoryRepository
-import tachiyomi.domain.library.model.LibraryManga
-import tachiyomi.domain.library.service.LibraryPreferences
-import tachiyomi.domain.manga.interactor.GetLibraryManga
-import tachiyomi.domain.manga.interactor.GetReadMangaNotInLibraryView
-import tachiyomi.domain.source.service.SourceManager
-import tachiyomi.domain.track.interactor.GetTracks
-import tachiyomi.domain.track.model.Track
-import tachiyomi.source.local.isLocal
+import kotlinx.coroutines.launch
+import tachiyomi.domain.immersion.model.AnalyticsBucketScale
+import tachiyomi.domain.immersion.model.AnalyticsPage
+import tachiyomi.domain.immersion.model.AnalyticsSort
+import tachiyomi.domain.immersion.model.CharacterMetric
+import tachiyomi.domain.immersion.model.ImmersionGoal
+import tachiyomi.domain.immersion.model.ImmersionLocalDate
+import tachiyomi.domain.immersion.model.LanguageTag
+import tachiyomi.domain.immersion.model.LocalDateRange
+import tachiyomi.domain.immersion.model.MediaKind
+import tachiyomi.domain.immersion.model.SessionPage
+import tachiyomi.domain.immersion.model.StatsFilter
+import tachiyomi.domain.immersion.model.TitleId
+import tachiyomi.domain.immersion.service.ImmersionAnalyticsService
+import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
-import java.time.DayOfWeek
 import java.time.LocalDate
-import java.time.YearMonth
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.time.format.TextStyle
-import java.time.temporal.ChronoUnit
-import java.util.Locale
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 
 class StatsScreenModel(
-    val titleId: String? = null,
-    val isNovel: Boolean = false,
-    val titleName: String? = null,
-    private val downloadManager: DownloadManager = Injekt.get(),
-    private val getLibraryManga: GetLibraryManga = Injekt.get(),
-    private val getTotalReadDuration: GetTotalReadDuration = Injekt.get(),
-    private val getAllHistory: GetAllHistory = Injekt.get(),
-    private val historyRepository: HistoryRepository = Injekt.get(),
-    private val getTracks: GetTracks = Injekt.get(),
-    private val preferences: LibraryPreferences = Injekt.get(),
-    private val trackerManager: TrackerManager = Injekt.get(),
-    private val getReadMangaNotInLibraryView: GetReadMangaNotInLibraryView = Injekt.get(),
-    private val context: Application = Injekt.get(),
+    titleId: String? = null,
+    private val analyticsService: ImmersionAnalyticsService = Injekt.get(),
+    private val preferences: ImmersionStatsPreferences = Injekt.get(),
     private val dictionaryPreferences: DictionaryPreferences = Injekt.get(),
-    private val sourceManager: SourceManager = Injekt.get(),
+    private val today: () -> LocalDate = LocalDate::now,
 ) : StateScreenModel<StatsScreenState>(StatsScreenState.Loading) {
 
-    private val loggedInTrackers by lazy { trackerManager.loggedInTrackers() }
-
-    private val _allRead = MutableStateFlow(true)
-    val allRead = _allRead.asStateFlow()
-
-    private val _dateScale = MutableStateFlow(StatsDateScale.Day)
-    val dateScale = _dateScale.asStateFlow()
-
-    private val _dateOffset = MutableStateFlow(0)
-    val dateOffset = _dateOffset.asStateFlow()
-
-    private val _statsType = MutableStateFlow(StatsType.All)
-    val statsType = _statsType.asStateFlow()
-
-    private val _activeProfileId = MutableStateFlow<String?>(null)
-    val activeProfileId = _activeProfileId.asStateFlow()
-
-    private val _profiles = MutableStateFlow<List<AnkiProfile>>(emptyList())
-    val profiles = _profiles.asStateFlow()
-
-    fun setProfileFilter(profileId: String?) {
-        _activeProfileId.value = profileId
+    private val fixedTitleId = titleId?.let { raw ->
+        runCatching { TitleId(raw) }.getOrNull()
     }
-
-    private data class CombinedFilters(
-        val allRead: Boolean,
-        val dateScale: StatsDateScale,
-        val dateOffset: Int,
-        val statsType: StatsType,
-        val activeProfileId: String?,
-    )
+    private val refreshGeneration = AtomicLong()
+    private var refreshJob: Job? = null
+    private var vocabularySearchJob: Job? = null
+    private var characterSearchJob: Job? = null
+    private var sourceSearchJob: Job? = null
 
     init {
-        val combinedFlow = combine(
-            _allRead,
-            _dateScale,
-            _dateOffset,
-            _statsType,
-            _activeProfileId,
-        ) { allRead, dateScale, dateOffset, statsType, activeProfileId ->
-            CombinedFilters(allRead, dateScale, dateOffset, statsType, activeProfileId)
+        val profiles = dictionaryPreferences.profileStore.getProfiles()
+        val profileId = preferences.dashboardProfileId().get().takeIf { selected ->
+            selected.isNotBlank() && profiles.any { it.id == selected }
         }
-
-        combine(
-            combinedFlow,
-            dictionaryPreferences.rawProfiles().changes(),
-        ) { tuple, rawProfilesJson ->
-            val allRead = tuple.allRead
-            val dateScale = tuple.dateScale
-            val dateOffset = tuple.dateOffset
-            val statsType = tuple.statsType
-            val activeProfileId = tuple.activeProfileId
-
-            val libraryManga = if (titleId != null) {
-                if (!isNovel) {
-                    val lm = getLibraryManga.await().find { it.id.toString() == titleId }
-                        ?: getReadMangaNotInLibraryView.await().find { it.id.toString() == titleId }
-                    if (lm != null) listOf(lm) else emptyList()
-                } else {
-                    emptyList()
-                }
+        val initialFilter = StatsFilterState(
+            rangePreset = preferences.dashboardRangePreset().get().enumOrDefault(StatsRangePreset.TODAY),
+            mediaKind = preferences.dashboardMediaKind().get()
+                .takeIf(String::isNotBlank)
+                ?.enumOrNull(),
+            profileId = profileId,
+            characterMetric = preferences.dashboardCharacterMetric().get(),
+            includeLegacy = preferences.includeLegacyAggregates().get(),
+            includeRereadsAndReplays = preferences.dashboardIncludeRereads().get(),
+            titleId = fixedTitleId?.value,
+        )
+        mutableState.value = StatsScreenState.Success(
+            filter = initialFilter,
+            selectedTab = if (fixedTitleId != null) {
+                StatsTab.TITLES
             } else {
-                getLibraryManga.await() + if (allRead) {
-                    getReadMangaNotInLibraryView.await()
-                } else {
-                    emptyList()
-                }
+                preferences.dashboardSelectedTab().get().enumOrDefault(StatsTab.OVERVIEW)
+            },
+            profiles = profiles,
+            sections = StatsSections(),
+            trendScale = preferences.dashboardTrendScale().get(),
+            titleSort = preferences.dashboardTitleSort().get(),
+            vocabularySort = preferences.dashboardVocabularySort().get(),
+            characterSort = preferences.dashboardCharacterSort().get(),
+        )
+        refresh()
+    }
+
+    fun refresh() {
+        refreshJob?.cancel()
+        val generation = refreshGeneration.incrementAndGet()
+        val current = successState() ?: return
+        mutableState.value = current.copy(
+            sections = current.sections.refreshing(),
+        )
+        refreshJob = screenModelScope.launch {
+            val filter = current.filter.toDomainFilter(today())
+            coroutineScope {
+                listOf(
+                    async { loadOverview(generation, filter) },
+                    async { loadTrends(generation, filter, current.trendScale) },
+                    async { loadTitles(generation, filter, current.titleSort) },
+                    async { loadVocabulary(generation, filter, current.vocabularySort) },
+                    async { loadCharacters(generation, filter, current.characterSort) },
+                    async { loadSessions(generation, filter) },
+                    async { loadGoals(generation, filter) },
+                    async { loadAnki(generation, filter) },
+                ).awaitAll()
             }
+        }
+    }
 
-            val distinctLibraryManga = libraryManga.fastDistinctBy { it.id }
+    fun selectTab(tab: StatsTab) {
+        preferences.dashboardSelectedTab().set(tab.name)
+        updateSuccess { it.copy(selectedTab = tab, selection = StatsSelection()) }
+    }
 
-            val profilesList = dictionaryPreferences.profileStore.getProfiles()
-            _profiles.value = profilesList
+    fun selectRange(preset: StatsRangePreset) {
+        preferences.dashboardRangePreset().set(preset.name)
+        updateFilter { it.copy(rangePreset = preset, periodOffset = 0) }
+    }
 
-            val resolver = dictionaryPreferences.profileResolver
+    fun movePeriod(offset: Int) {
+        updateFilter { it.copy(periodOffset = offset.coerceAtMost(0)) }
+    }
 
-            // Build full resolver map for all distinct library manga
-            val libraryMangaProfileMap = distinctLibraryManga.associate { lm ->
-                val dbManga = lm.manga
-                val source = dbManga.source.let { sourceManager.getOrStub(it) }
-                lm.id to resolver.resolve(
-                    mangaId = lm.id,
-                    sourceId = dbManga.source,
-                    sourceLang = source.lang,
-                ).id
-            }
-
-            // Filter library manga by active profile
-            val profileFilteredLibraryManga = if (activeProfileId != null) {
-                distinctLibraryManga.filter { libraryMangaProfileMap[it.id] == activeProfileId }
-            } else {
-                distinctLibraryManga
-            }
-
-            val filteredLibraryManga = when (statsType) {
-                StatsType.All -> profileFilteredLibraryManga
-                StatsType.Manga -> profileFilteredLibraryManga
-                StatsType.Novels -> emptyList()
-            }
-
-            // Build dynamic resolver map for manga
-            val allMangaStats = if (titleId != null) {
-                if (!isNovel) {
-                    com.canopus.chimareader.data.MangaStatsStorage.loadAll(context).filter { it.mangaId.toString() == titleId }
-                } else {
-                    emptyList()
-                }
-            } else {
-                com.canopus.chimareader.data.MangaStatsStorage.loadAll(context)
-            }
-            val uniqueMangaIds = allMangaStats.map { it.mangaId }.distinct()
-            val mangaProfileMap = uniqueMangaIds.associateWith { mangaId ->
-                if (mangaId == 0L) {
-                    ""
-                } else {
-                    val dbManga = distinctLibraryManga.find { it.id == mangaId }?.manga
-                    val source = dbManga?.source?.let { sourceManager.getOrStub(it) }
-                    resolver.resolve(
-                        mangaId = mangaId,
-                        sourceId = dbManga?.source ?: 0L,
-                        sourceLang = source?.lang ?: "",
-                    ).id
-                }
-            }
-
-            // Filter manga stats by profile
-            val profileFilteredMangaStats = if (activeProfileId != null) {
-                allMangaStats.filter { mangaProfileMap[it.mangaId] == activeProfileId }
-            } else {
-                allMangaStats
-            }
-
-            val libraryMangaIds = profileFilteredLibraryManga.map { it.id }.toSet()
-            val libraryFilteredMangaStats = if (allRead) profileFilteredMangaStats else profileFilteredMangaStats.filter { it.mangaId in libraryMangaIds || it.mangaId == 0L }
-            val filteredMangaStats = filterMangaStatsByScale(libraryFilteredMangaStats, dateScale, dateOffset)
-
-            // Load and filter novels
-            val allNovels = if (titleId != null) {
-                if (isNovel) {
-                    BookStorage.loadAllBooks(context).filter { it.id == titleId }
-                } else {
-                    emptyList()
-                }
-            } else if (statsType == StatsType.All || statsType == StatsType.Novels) {
-                BookStorage.loadAllBooks(context)
-            } else {
-                emptyList()
-            }
-
-            // Build dynamic resolver map for novels
-            val novelProfileMap = allNovels.associate { novel ->
-                novel.id to resolver.resolve(novelId = novel.id).id
-            }
-
-            val profileFilteredNovels = if (activeProfileId != null) {
-                allNovels.filter { novelProfileMap[it.id] == activeProfileId }
-            } else {
-                allNovels
-            }
-
-            val novelStats = profileFilteredNovels.associate { novel ->
-                val bookDir = BookStorage.getBookDirectory(context, novel.id)
-                novel.id to (BookStorage.loadStatistics(bookDir) ?: emptyList())
-            }
-
-            // Filter novel stats by profile (keys are already filtered)
-            val profileFilteredNovelStatsMap = novelStats
-
-            val allNovelStatsList = profileFilteredNovelStatsMap.values.flatten()
-            val filteredNovelStats = filterNovelStatsByScale(allNovelStatsList, dateScale, dateOffset)
-
-            val mangaReadDuration = filteredMangaStats.sumOf { it.readingTime }
-            val novelReadDurationSeconds = filteredNovelStats.sumOf { it.readingTime }
-            val novelReadDurationMs = (novelReadDurationSeconds * 1000).toLong()
-
-            val currentStatsType = if (titleId != null) {
-                if (isNovel) StatsType.Novels else StatsType.Manga
-            } else {
-                statsType
-            }
-
-            val totalReadDuration = when (currentStatsType) {
-                StatsType.All -> mangaReadDuration + novelReadDurationMs
-                StatsType.Manga -> mangaReadDuration
-                StatsType.Novels -> novelReadDurationMs
-            }
-
-            val mangaChars = filteredMangaStats.sumOf { it.charactersRead }
-            val mangaTimeMs = filteredMangaStats.sumOf { it.readingTime }
-
-            val novelChars = filteredNovelStats.sumOf { it.charactersRead }
-            val novelTimeMs = novelReadDurationMs
-
-            val totalChars = when (currentStatsType) {
-                StatsType.All -> mangaChars + novelChars
-                StatsType.Manga -> mangaChars
-                StatsType.Novels -> novelChars
-            }
-
-            val totalTimeMs = when (currentStatsType) {
-                StatsType.All -> mangaTimeMs + novelTimeMs
-                StatsType.Manga -> mangaTimeMs
-                StatsType.Novels -> novelTimeMs
-            }
-
-            val charactersPerHour = if (totalTimeMs > 0) {
-                (totalChars.toDouble() / (totalTimeMs / 3600000.0)).toInt()
-            } else {
-                null
-            }
-
-            val streak = calculateStreak(libraryFilteredMangaStats, allNovelStatsList)
-            val historyPoints = calculateHistoryPoints(libraryFilteredMangaStats, allNovelStatsList, dateScale, dateOffset)
-
-            // Calculate avg per day
-            val avgDurationPerDay = if (dateScale != StatsDateScale.Day && dateScale != StatsDateScale.AllTime) {
-                val (start, end) = getDateRange(dateScale, dateOffset)
-                val days = ChronoUnit.DAYS.between(start, end).coerceAtLeast(1) + 1
-                totalReadDuration / days
-            } else {
-                null
-            }
-
-            val ankiStats = com.canopus.chimareader.data.AnkiStatsStorage.loadAll(context)
-            val titleFilteredAnkiStats = if (titleId != null) {
-                ankiStats.filter { it.titleId == titleId }
-            } else {
-                ankiStats
-            }
-            val filteredAnkiStats = filterAnkiStatsByScale(titleFilteredAnkiStats, dateScale, dateOffset)
-            val firstProfileId = profilesList.firstOrNull()?.id
-            val profileFilteredAnkiStats = if (activeProfileId != null) {
-                filteredAnkiStats.filter {
-                    it.profileId == activeProfileId || (it.profileId.isEmpty() && activeProfileId == firstProfileId)
-                }
-            } else {
-                filteredAnkiStats
-            }
-            val totalAnkiCards = when (currentStatsType) {
-                StatsType.All -> profileFilteredAnkiStats.sumOf { it.mangaCards + it.novelCards }
-                StatsType.Manga -> profileFilteredAnkiStats.sumOf { it.mangaCards }
-                StatsType.Novels -> profileFilteredAnkiStats.sumOf { it.novelCards }
-            }
-
-            val overviewStatData = StatsData.Overview(
-                libraryMangaCount = when (currentStatsType) {
-                    StatsType.All -> filteredLibraryManga.size + profileFilteredNovels.size
-                    StatsType.Manga -> filteredLibraryManga.size
-                    StatsType.Novels -> profileFilteredNovels.size
-                },
-                completedMangaCount = calculateCompletedCount(filteredLibraryManga, profileFilteredNovels, currentStatsType),
-                totalReadDuration = totalReadDuration,
-                readingStreak = streak,
-                historyPoints = historyPoints,
-                avgDurationPerDay = avgDurationPerDay,
-                ankiCardsAdded = totalAnkiCards,
-                charactersRead = totalChars,
-                charactersPerHour = charactersPerHour,
+    fun setCustomRange(start: String, end: String): Boolean {
+        val parsedStart = runCatching { ImmersionLocalDate.from(LocalDate.parse(start.trim())) }.getOrNull()
+        val parsedEnd = runCatching { ImmersionLocalDate.from(LocalDate.parse(end.trim())) }.getOrNull()
+        if (parsedStart == null || parsedEnd == null || parsedStart > parsedEnd) return false
+        updateFilter {
+            it.copy(
+                rangePreset = StatsRangePreset.CUSTOM,
+                periodOffset = 0,
+                customStart = parsedStart,
+                customEnd = parsedEnd,
             )
+        }
+        return true
+    }
 
-            val titlesStatData = StatsData.Titles(
-                startedMangaCount = calculateStartedCount(filteredLibraryManga, allNovelStatsList, currentStatsType),
-                localMangaCount = when (currentStatsType) {
-                    StatsType.All -> filteredLibraryManga.count { it.manga.isLocal() } + profileFilteredNovels.size
-                    StatsType.Manga -> filteredLibraryManga.count { it.manga.isLocal() }
-                    StatsType.Novels -> profileFilteredNovels.size
-                },
-            )
+    fun selectMedia(mediaKind: MediaKind?) {
+        preferences.dashboardMediaKind().set(mediaKind?.name.orEmpty())
+        updateFilter { it.copy(mediaKind = mediaKind) }
+    }
 
-            // Chapter calculations for novels
-            var novelTotalChapters = 0
-            var novelReadChapters = 0
-            if (currentStatsType == StatsType.All || currentStatsType == StatsType.Novels) {
-                profileFilteredNovels.forEach { novel ->
-                    val bookDir = BookStorage.getBookDirectory(context, novel.id)
-                    val bookmark = BookStorage.loadBookmark(bookDir)
-                    val chapterStarts = novel.chapterStarts
-                    if (chapterStarts != null && chapterStarts.size > 1) {
-                        val exploredChars = bookmark?.characterCount ?: 0
-                        novelTotalChapters += chapterStarts.size - 1
-                        novelReadChapters += chapterStarts.drop(1).count { it <= exploredChars }
+    fun selectProfile(profileId: String?) {
+        preferences.dashboardProfileId().set(profileId.orEmpty())
+        updateFilter { it.copy(profileId = profileId) }
+    }
+
+    fun selectCharacterMetric(metric: CharacterMetric) {
+        preferences.dashboardCharacterMetric().set(metric)
+        updateFilter { it.copy(characterMetric = metric) }
+    }
+
+    fun setIncludeLegacy(include: Boolean) {
+        preferences.includeLegacyAggregates().set(include)
+        updateFilter { it.copy(includeLegacy = include) }
+    }
+
+    fun setIncludeRereads(include: Boolean) {
+        preferences.dashboardIncludeRereads().set(include)
+        updateFilter { it.copy(includeRereadsAndReplays = include) }
+    }
+
+    fun selectTrendScale(scale: AnalyticsBucketScale) {
+        preferences.dashboardTrendScale().set(scale)
+        updateSuccess { it.copy(trendScale = scale) }
+        refresh()
+    }
+
+    fun selectTitleSort(sort: AnalyticsSort) {
+        preferences.dashboardTitleSort().set(sort)
+        updateSuccess { it.copy(titleSort = sort) }
+        refresh()
+    }
+
+    fun selectVocabularySort(sort: AnalyticsSort) {
+        preferences.dashboardVocabularySort().set(sort)
+        updateSuccess { it.copy(vocabularySort = sort) }
+        refresh()
+    }
+
+    fun selectCharacterSort(sort: AnalyticsSort) {
+        preferences.dashboardCharacterSort().set(sort)
+        updateSuccess { it.copy(characterSort = sort) }
+        refresh()
+    }
+
+    fun searchTitles(query: String) {
+        updateSuccess { it.copy(titleSearch = query) }
+    }
+
+    fun searchVocabulary(query: String) {
+        updateSuccess { it.copy(vocabularySearch = query) }
+        vocabularySearchJob?.cancel()
+        vocabularySearchJob = screenModelScope.launch {
+            delay(250)
+            refresh()
+        }
+    }
+
+    fun searchCharacters(query: String) {
+        updateSuccess { it.copy(characterSearch = query) }
+        characterSearchJob?.cancel()
+        characterSearchJob = screenModelScope.launch {
+            delay(250)
+            refresh()
+        }
+    }
+
+    fun selectTitle(title: tachiyomi.domain.immersion.model.AnalyticsTitleRow?) {
+        updateSuccess { it.copy(selection = it.selection.copy(title = title)) }
+    }
+
+    fun selectWord(word: tachiyomi.domain.immersion.model.AnalyticsWordRow?) {
+        updateSuccess {
+            it.copy(
+                selection = it.selection.copy(word = word),
+                details = it.details.copy(
+                    wordOccurrences = if (word == null) {
+                        StatsLoadable()
                     } else {
-                        val info = BookStorage.loadBookInfo(bookDir)
-                        novelTotalChapters += info?.chapterInfo?.size ?: 0
-                        novelReadChapters += bookmark?.chapterIndex ?: 0
-                    }
+                        it.details.wordOccurrences.refreshing()
+                    },
+                ),
+            )
+        }
+        if (word != null) {
+            screenModelScope.launch {
+                val state = successState() ?: return@launch
+                val result = runCatching {
+                    analyticsService.wordOccurrences(
+                        state.filter.toDomainFilter(today()),
+                        word.id,
+                        0,
+                        DETAIL_PAGE_SIZE,
+                    )
+                }
+                updateSuccess {
+                    it.copy(
+                        details = it.details.copy(
+                            wordOccurrences = result.fold(
+                                onSuccess = { value -> StatsLoadable(value) },
+                                onFailure = { StatsLoadable(error = true) },
+                            ),
+                        ),
+                    )
                 }
             }
+        }
+    }
 
-            val chapterStatData = StatsData.Chapters(
-                totalChapterCount = when (currentStatsType) {
-                    StatsType.All -> filteredLibraryManga.sumOf { it.totalChapters }.toInt() + novelTotalChapters
-                    StatsType.Manga -> filteredLibraryManga.sumOf { it.totalChapters }.toInt()
-                    StatsType.Novels -> novelTotalChapters
-                },
-                readChapterCount = when (currentStatsType) {
-                    StatsType.All -> filteredLibraryManga.sumOf { it.readCount }.toInt() + novelReadChapters
-                    StatsType.Manga -> filteredLibraryManga.sumOf { it.readCount }.toInt()
-                    StatsType.Novels -> novelReadChapters
-                },
-                downloadCount = when (currentStatsType) {
-                    StatsType.All -> filteredLibraryManga.sumOf { downloadManager.getDownloadCount(it.manga) }
-                    StatsType.Manga -> filteredLibraryManga.sumOf { downloadManager.getDownloadCount(it.manga) }
-                    StatsType.Novels -> 0
-                },
+    fun selectCharacter(character: tachiyomi.domain.immersion.model.AnalyticsCharacterRow?) {
+        updateSuccess {
+            it.copy(
+                selection = it.selection.copy(character = character),
+                details = it.details.copy(
+                    characterOccurrences = if (character == null) {
+                        StatsLoadable()
+                    } else {
+                        it.details.characterOccurrences.refreshing()
+                    },
+                ),
             )
+        }
+        if (character != null) {
+            screenModelScope.launch {
+                val state = successState() ?: return@launch
+                val result = runCatching {
+                    analyticsService.characterOccurrences(
+                        state.filter.toDomainFilter(today()),
+                        character.codePoint,
+                        0,
+                        DETAIL_PAGE_SIZE,
+                    )
+                }
+                updateSuccess {
+                    it.copy(
+                        details = it.details.copy(
+                            characterOccurrences = result.fold(
+                                onSuccess = { value -> StatsLoadable(value) },
+                                onFailure = { StatsLoadable(error = true) },
+                            ),
+                        ),
+                    )
+                }
+            }
+        }
+    }
 
-            val trackers = if (titleId != null) emptyMap() else getMangaTrackMap(filteredLibraryManga)
-            val scoredTrackers = getScoredMangaTrackMap(trackers)
-            val trackerStatData = StatsData.Trackers(
-                trackedTitleCount = trackers.size,
-                meanScore = getTrackMeanScore(scoredTrackers),
-                trackerCount = if (titleId != null) 0 else loggedInTrackers.size,
+    fun selectSession(session: tachiyomi.domain.immersion.model.ImmersionSession?) {
+        updateSuccess {
+            it.copy(
+                selection = it.selection.copy(session = session),
+                details = it.details.copy(
+                    session = if (session == null) {
+                        StatsLoadable()
+                    } else {
+                        it.details.session.refreshing()
+                    },
+                ),
             )
+        }
+        if (session != null) {
+            screenModelScope.launch {
+                val state = successState() ?: return@launch
+                val result = runCatching {
+                    analyticsService.sessionDetail(
+                        state.filter.toDomainFilter(today()),
+                        session.id,
+                    )
+                }
+                updateSuccess {
+                    it.copy(
+                        details = it.details.copy(
+                            session = result.fold(
+                                onSuccess = { value -> StatsLoadable(value) },
+                                onFailure = { StatsLoadable(error = true) },
+                            ),
+                        ),
+                    )
+                }
+            }
+        }
+    }
 
-            mutableState.update {
-                StatsScreenState.Success(
-                    overview = overviewStatData,
-                    titles = titlesStatData,
-                    chapters = chapterStatData,
-                    trackers = trackerStatData,
-                    dateScale = dateScale,
-                    dateOffset = dateOffset,
-                    statsType = currentStatsType,
-                    activeProfileId = if (titleId != null) null else activeProfileId,
-                    profiles = if (titleId != null) emptyList() else profilesList,
+    fun searchSources(query: String) {
+        updateSuccess { it.copy(sourceSearch = query) }
+        sourceSearchJob?.cancel()
+        if (query.isBlank()) {
+            updateSuccess { it.copy(details = it.details.copy(sourceSearch = StatsLoadable())) }
+            return
+        }
+        sourceSearchJob = screenModelScope.launch {
+            delay(250)
+            val state = successState() ?: return@launch
+            updateSuccess {
+                it.copy(details = it.details.copy(sourceSearch = it.details.sourceSearch.refreshing()))
+            }
+            val result = runCatching {
+                analyticsService.sourceSearch(
+                    state.filter.toDomainFilter(today()),
+                    query,
+                    0,
+                    DETAIL_PAGE_SIZE,
                 )
             }
-        }.onEach { }.launchIn(screenModelScope)
-    }
-
-    private fun getDateRange(scale: StatsDateScale, offset: Int): Pair<LocalDate, LocalDate> {
-        val now = LocalDate.now()
-        return when (scale) {
-            StatsDateScale.Day -> {
-                val date = now.plusDays(offset.toLong())
-                date to date
-            }
-            StatsDateScale.Week -> {
-                val weekOffset = offset.toLong()
-                val start = now.plusWeeks(weekOffset).with(DayOfWeek.MONDAY)
-                val end = start.plusDays(6)
-                start to end
-            }
-            StatsDateScale.Month -> {
-                val monthOffset = offset.toLong()
-                val start = now.plusMonths(monthOffset).withDayOfMonth(1)
-                val end = start.plusMonths(1).minusDays(1)
-                start to end
-            }
-            StatsDateScale.Year -> {
-                val yearOffset = offset.toLong()
-                val start = now.plusYears(yearOffset).withDayOfYear(1)
-                val end = start.plusYears(1).minusDays(1)
-                start to end
-            }
-            StatsDateScale.AllTime -> {
-                LocalDate.of(2000, 1, 1) to now
+            updateSuccess {
+                it.copy(
+                    details = it.details.copy(
+                        sourceSearch = result.fold(
+                            onSuccess = { value -> StatsLoadable(value) },
+                            onFailure = { StatsLoadable(error = true) },
+                        ),
+                    ),
+                )
             }
         }
     }
 
-    private fun filterSessionsByScale(sessions: List<ReadingSession>, scale: StatsDateScale, offset: Int): List<ReadingSession> {
-        if (scale == StatsDateScale.AllTime) return sessions
-        val (start, end) = getDateRange(scale, offset)
-        val startMillis = start.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
-        val endMillis = end.plusDays(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
-
-        return sessions.filter {
-            it.readAt.time in startMillis until endMillis
-        }
-    }
-
-    private fun filterNovelStatsByScale(stats: List<Statistics>, scale: StatsDateScale, offset: Int): List<Statistics> {
-        if (scale == StatsDateScale.AllTime) return stats
-        val (start, end) = getDateRange(scale, offset)
-        val startStr = start.toString()
-        val endStr = end.toString()
-        return stats.filter { it.dateKey in startStr..endStr }
-    }
-
-    private fun filterAnkiStatsByScale(stats: List<com.canopus.chimareader.data.AnkiStats>, scale: StatsDateScale, offset: Int): List<com.canopus.chimareader.data.AnkiStats> {
-        if (scale == StatsDateScale.AllTime) return stats
-        val (start, end) = getDateRange(scale, offset)
-        val startStr = start.toString()
-        val endStr = end.toString()
-        return stats.filter { it.dateKey in startStr..endStr }
-    }
-
-    private fun filterMangaStatsByScale(stats: List<com.canopus.chimareader.data.MangaStats>, scale: StatsDateScale, offset: Int): List<com.canopus.chimareader.data.MangaStats> {
-        if (scale == StatsDateScale.AllTime) return stats
-        val (start, end) = getDateRange(scale, offset)
-        val startStr = start.toString()
-        val endStr = end.toString()
-        return stats.filter { it.dateKey in startStr..endStr }
-    }
-
-    private fun calculateStreak(mangaStats: List<com.canopus.chimareader.data.MangaStats>, novelStats: List<Statistics>): Int {
-        val mangaDays = mangaStats.mapNotNull {
-            try {
-                LocalDate.parse(it.dateKey)
-            } catch (e: Exception) {
-                null
+    fun loadMoreVocabulary() {
+        val state = successState() ?: return
+        val currentResult = state.sections.vocabulary.value ?: return
+        val offset = currentResult.value.nextOffset ?: return
+        screenModelScope.launch {
+            val result = runCatching {
+                analyticsService.vocabulary(
+                    state.filter.toDomainFilter(today()),
+                    state.vocabularySort,
+                    offset,
+                    PAGE_SIZE,
+                    state.vocabularySearch.takeIf(String::isNotBlank),
+                )
             }
-        }.toSet()
-        val novelDays = novelStats.mapNotNull {
-            try {
-                LocalDate.parse(it.dateKey)
-            } catch (e: Exception) {
-                null
-            }
-        }.toSet()
-
-        val allDays = (mangaDays + novelDays).sortedDescending()
-        if (allDays.isEmpty()) return 0
-
-        var streak = 0
-        var current = LocalDate.now()
-
-        if (!allDays.contains(current)) {
-            current = current.minusDays(1)
-        }
-
-        for (day in allDays) {
-            if (day == current) {
-                streak++
-                current = current.minusDays(1)
-            } else if (day.isBefore(current)) {
-                break
-            }
-        }
-        return streak
-    }
-
-    private fun calculateCompletedCount(libraryManga: List<LibraryManga>, novels: List<com.canopus.chimareader.data.BookMetadata>, type: StatsType): Int {
-        val mangaCompleted = libraryManga.count {
-            it.manga.status.toInt() == SManga.COMPLETED && it.unreadCount == 0L
-        }
-        val novelCompleted = 0
-
-        return when (type) {
-            StatsType.All -> mangaCompleted + novelCompleted
-            StatsType.Manga -> mangaCompleted
-            StatsType.Novels -> novelCompleted
-        }
-    }
-
-    private fun calculateStartedCount(libraryManga: List<LibraryManga>, novelStats: List<Statistics>, type: StatsType): Int {
-        val mangaStarted = libraryManga.count { it.hasStarted }
-        val novelStarted = novelStats.map { it.title }.distinct().size
-
-        return when (type) {
-            StatsType.All -> (libraryManga.filter { it.hasStarted }.map { it.manga.title } + novelStats.map { it.title }).distinct().size
-            StatsType.Manga -> mangaStarted
-            StatsType.Novels -> novelStarted
-        }
-    }
-
-    private suspend fun getMangaTrackMap(libraryManga: List<LibraryManga>): Map<Long, List<Track>> {
-        val loggedInTrackerIds = loggedInTrackers.map { it.id }.toHashSet()
-        return libraryManga.mapNotNull { manga ->
-            val tracks = getTracks.await(manga.id)
-                .fastFilter { it.trackerId in loggedInTrackerIds }
-
-            if (tracks.isEmpty()) null else manga.id to tracks
-        }.toMap()
-    }
-
-    private fun getScoredMangaTrackMap(mangaTrackMap: Map<Long, List<Track>>): Map<Long, List<Track>> {
-        return mangaTrackMap.mapNotNull { (mangaId, tracks) ->
-            val trackList = tracks.mapNotNull { track ->
-                track.takeIf { it.score > 0.0 }
-            }
-            if (trackList.isEmpty()) return@mapNotNull null
-            mangaId to trackList
-        }.toMap()
-    }
-
-    private fun getTrackMeanScore(scoredMangaTrackMap: Map<Long, List<Track>>): Double {
-        return scoredMangaTrackMap
-            .map { (_, tracks) ->
-                tracks.map(::get10PointScore).average()
-            }
-            .fastFilter { !it.isNaN() }
-            .average()
-    }
-
-    private fun get10PointScore(track: Track): Double {
-        val service = trackerManager.get(track.trackerId)!!
-        return service.get10PointScore(track)
-    }
-
-    fun toggleReadManga() {
-        _allRead.update { !it }
-    }
-
-    fun setDateScale(scale: StatsDateScale) {
-        _dateScale.value = scale
-        _dateOffset.value = 0
-    }
-
-    fun setDateOffset(offset: Int) {
-        _dateOffset.value = offset
-    }
-
-    fun setStatsType(type: StatsType) {
-        _statsType.value = type
-    }
-
-    private fun calculateHistoryPoints(
-        mangaStats: List<com.canopus.chimareader.data.MangaStats>,
-        novelStats: List<Statistics>,
-        scale: StatsDateScale,
-        offset: Int,
-    ): List<StatsData.HistoryPoint> {
-        val now = LocalDate.now()
-        val (start, _) = getDateRange(scale, offset)
-
-        return when (scale) {
-            StatsDateScale.Day -> {
-                val weekStart = start.with(DayOfWeek.MONDAY)
-                (0..6).map { daysIntoWeek ->
-                    val date = weekStart.plusDays(daysIntoWeek.toLong())
-                    val label = date.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.getDefault())
-                    val value = aggregateForDate(date, mangaStats, novelStats)
-                    val pOffset = ChronoUnit.DAYS.between(now, date).toInt()
-                    StatsData.HistoryPoint(label, value, pOffset)
-                }
-            }
-            StatsDateScale.Week -> {
-                val monthStart = start.plusDays(3).withDayOfMonth(1)
-                val monthEnd = monthStart.plusMonths(1).minusDays(1)
-                val firstMonday = monthStart.with(DayOfWeek.MONDAY)
-                val lastMonday = monthEnd.with(DayOfWeek.MONDAY)
-                val weeksInMonth = (ChronoUnit.WEEKS.between(firstMonday, lastMonday).toInt() + 1).coerceAtLeast(4)
-
-                (0 until weeksInMonth).map { weeksIntoMonth ->
-                    val wStart = firstMonday.plusWeeks(weeksIntoMonth.toLong())
-                    val wEnd = wStart.plusDays(6)
-                    val label = "W${wStart.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR)}"
-                    val value = aggregateForRange(wStart, wEnd, mangaStats, novelStats)
-                    val pOffset = ChronoUnit.WEEKS.between(
-                        now.with(DayOfWeek.MONDAY),
-                        wStart,
-                    ).toInt()
-                    StatsData.HistoryPoint(label, value, pOffset)
-                }
-            }
-            StatsDateScale.Month -> {
-                val yearStart = start.withDayOfYear(1)
-                (0..11).map { monthsIntoYear ->
-                    val mDate = yearStart.plusMonths(monthsIntoYear.toLong())
-                    val label = mDate.month.getDisplayName(TextStyle.SHORT, Locale.getDefault())
-                    val value = aggregateForMonth(mDate, mangaStats, novelStats)
-                    val pOffset = ChronoUnit.MONTHS.between(
-                        now.withDayOfMonth(1),
-                        mDate.withDayOfMonth(1),
-                    ).toInt()
-                    StatsData.HistoryPoint(label, value, pOffset)
-                }
-            }
-            StatsDateScale.Year, StatsDateScale.AllTime -> {
-                (0..4).reversed().map { yearsAgo ->
-                    val yDate = now.minusYears(yearsAgo.toLong())
-                    val label = yDate.year.toString()
-                    val yStart = yDate.withDayOfYear(1)
-                    val yEnd = yDate.withDayOfYear(yDate.lengthOfYear())
-                    val value = aggregateForRange(yStart, yEnd, mangaStats, novelStats)
-                    val pOffset = -yearsAgo
-                    StatsData.HistoryPoint(label, value, pOffset)
+            updateSuccess { latest ->
+                if (result.isFailure) {
+                    latest.copy(sections = latest.sections.copy(vocabulary = latest.sections.vocabulary.copy(error = true)))
+                } else {
+                    val next = result.getOrThrow()
+                    val mergedPage = AnalyticsPage(
+                        items = currentResult.value.items + next.value.items,
+                        nextOffset = next.value.nextOffset,
+                    )
+                    latest.copy(
+                        sections = latest.sections.copy(
+                            vocabulary = StatsLoadable(next.copy(value = mergedPage)),
+                        ),
+                    )
                 }
             }
         }
     }
 
-    private fun aggregateForDate(
-        date: LocalDate,
-        mangaStats: List<com.canopus.chimareader.data.MangaStats>,
-        novelStats: List<Statistics>,
-    ): Long {
-        val dateKey = date.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
-        val mangaValue = mangaStats
-            .filter { it.dateKey == dateKey }
-            .sumOf { it.readingTime }
-
-        val novelValue = novelStats
-            .filter { it.dateKey == dateKey }
-            .sumOf { (it.readingTime * 1000).toLong() }
-
-        return mangaValue + novelValue
-    }
-
-    private fun aggregateForRange(
-        start: LocalDate,
-        end: LocalDate,
-        mangaStats: List<com.canopus.chimareader.data.MangaStats>,
-        novelStats: List<Statistics>,
-    ): Long {
-        val startStr = start.toString()
-        val endStr = end.toString()
-
-        val mangaValue = mangaStats
-            .filter { it.dateKey in startStr..endStr }
-            .sumOf { it.readingTime }
-
-        val novelValue = novelStats
-            .filter { it.dateKey in startStr..endStr }
-            .sumOf { (it.readingTime * 1000).toLong() }
-
-        return mangaValue + novelValue
-    }
-
-    private fun aggregateForMonth(
-        monthDate: LocalDate,
-        mangaStats: List<com.canopus.chimareader.data.MangaStats>,
-        novelStats: List<Statistics>,
-    ): Long {
-        val yearMonth = YearMonth.from(monthDate)
-
-        val mangaValue = mangaStats
-            .filter { s ->
-                try {
-                    val entryDate = LocalDate.parse(s.dateKey)
-                    YearMonth.from(entryDate) == yearMonth
-                } catch (e: Exception) {
-                    false
+    fun loadMoreCharacters() {
+        val state = successState() ?: return
+        val currentResult = state.sections.characters.value ?: return
+        val offset = currentResult.value.nextOffset ?: return
+        screenModelScope.launch {
+            val result = runCatching {
+                analyticsService.characters(
+                    state.filter.toDomainFilter(today()),
+                    state.characterSort,
+                    offset,
+                    PAGE_SIZE,
+                    state.characterSearch.takeIf(String::isNotBlank),
+                )
+            }
+            updateSuccess { latest ->
+                if (result.isFailure) {
+                    latest.copy(sections = latest.sections.copy(characters = latest.sections.characters.copy(error = true)))
+                } else {
+                    val next = result.getOrThrow()
+                    val mergedPage = AnalyticsPage(
+                        items = currentResult.value.items + next.value.items,
+                        nextOffset = next.value.nextOffset,
+                    )
+                    latest.copy(
+                        sections = latest.sections.copy(
+                            characters = StatsLoadable(next.copy(value = mergedPage)),
+                        ),
+                    )
                 }
             }
-            .sumOf { it.readingTime }
+        }
+    }
 
-        val novelValue = novelStats
-            .filter { s ->
-                try {
-                    val entryDate = LocalDate.parse(s.dateKey)
-                    YearMonth.from(entryDate) == yearMonth
-                } catch (e: Exception) {
-                    false
+    fun loadMoreSessions() {
+        val state = successState() ?: return
+        val currentResult = state.sections.sessions.value ?: return
+        val cursor = currentResult.value.nextCursor ?: return
+        screenModelScope.launch {
+            val result = runCatching {
+                analyticsService.sessions(state.filter.toDomainFilter(today()), cursor, PAGE_SIZE)
+            }
+            updateSuccess { latest ->
+                if (result.isFailure) {
+                    latest.copy(sections = latest.sections.copy(sessions = latest.sections.sessions.copy(error = true)))
+                } else {
+                    val next = result.getOrThrow()
+                    val mergedPage = SessionPage(
+                        items = currentResult.value.items + next.value.items,
+                        nextCursor = next.value.nextCursor,
+                    )
+                    latest.copy(
+                        sections = latest.sections.copy(
+                            sessions = StatsLoadable(next.copy(value = mergedPage)),
+                        ),
+                    )
                 }
             }
-            .sumOf { (it.readingTime * 1000).toLong() }
+        }
+    }
 
-        return mangaValue + novelValue
+    fun createGoal(metric: String, target: Double, daily: Boolean): Boolean {
+        if (!target.isFinite() || target <= 0 || metric !in GOAL_METRICS) return false
+        val now = System.currentTimeMillis()
+        val goal = ImmersionGoal(
+            id = UUID.randomUUID().toString(),
+            type = if (daily) "PERPETUAL_DAILY" else "DATE_BOUND_TOTAL",
+            metric = metric,
+            target = target,
+            period = if (daily) "DAILY" else "TOTAL",
+            startDate = ImmersionLocalDate.from(today()),
+            endDate = null,
+            mediaKind = successState()?.filter?.mediaKind,
+            profileId = successState()?.filter?.profileId,
+            languageTag = null,
+            titleId = fixedTitleId,
+            weekdayMultipliers = null,
+            restDayPolicy = "SKIP",
+            state = "ACTIVE",
+            createdAtEpochMillis = now,
+            updatedAtEpochMillis = now,
+        )
+        screenModelScope.launch {
+            analyticsService.saveGoal(goal)
+            refresh()
+        }
+        return true
+    }
+
+    fun archiveGoal(goal: ImmersionGoal) {
+        screenModelScope.launch {
+            analyticsService.saveGoal(
+                goal.copy(
+                    state = "ARCHIVED",
+                    updatedAtEpochMillis = System.currentTimeMillis(),
+                ),
+            )
+            refresh()
+        }
+    }
+
+    fun checkInGoal(goalId: String) {
+        screenModelScope.launch {
+            analyticsService.checkIn(
+                goalId = goalId,
+                date = ImmersionLocalDate.from(today()),
+                completed = true,
+                note = null,
+            )
+            refresh()
+        }
+    }
+
+    private fun updateFilter(transform: (StatsFilterState) -> StatsFilterState) {
+        updateSuccess { it.copy(filter = transform(it.filter), selection = StatsSelection()) }
+        refresh()
+    }
+
+    private suspend fun loadOverview(generation: Long, filter: StatsFilter) =
+        updateSection(generation, { it.overview }, { sections, result ->
+            sections.copy(overview = result)
+        }) {
+            analyticsService.overview(filter)
+        }
+
+    private suspend fun loadTrends(
+        generation: Long,
+        filter: StatsFilter,
+        scale: AnalyticsBucketScale,
+    ) = updateSection(generation, { it.trends }, { sections, result ->
+        sections.copy(trends = result)
+    }) {
+        analyticsService.trends(filter, scale)
+    }
+
+    private suspend fun loadTitles(
+        generation: Long,
+        filter: StatsFilter,
+        sort: AnalyticsSort,
+    ) = updateSection(generation, { it.titles }, { sections, result ->
+        sections.copy(titles = result)
+    }) {
+        analyticsService.titles(filter, sort)
+    }
+
+    private suspend fun loadVocabulary(
+        generation: Long,
+        filter: StatsFilter,
+        sort: AnalyticsSort,
+    ) = updateSection(generation, { it.vocabulary }, { sections, result ->
+        sections.copy(vocabulary = result)
+    }) {
+        analyticsService.vocabulary(
+            filter,
+            sort,
+            0,
+            PAGE_SIZE,
+            successState()?.vocabularySearch?.takeIf(String::isNotBlank),
+        )
+    }
+
+    private suspend fun loadCharacters(
+        generation: Long,
+        filter: StatsFilter,
+        sort: AnalyticsSort,
+    ) = updateSection(generation, { it.characters }, { sections, result ->
+        sections.copy(characters = result)
+    }) {
+        analyticsService.characters(
+            filter,
+            sort,
+            0,
+            PAGE_SIZE,
+            successState()?.characterSearch?.takeIf(String::isNotBlank),
+        )
+    }
+
+    private suspend fun loadSessions(
+        generation: Long,
+        filter: StatsFilter,
+    ) = updateSection(generation, { it.sessions }, { sections, result ->
+        sections.copy(sessions = result)
+    }) {
+        analyticsService.sessions(filter, null, PAGE_SIZE)
+    }
+
+    private suspend fun loadGoals(
+        generation: Long,
+        filter: StatsFilter,
+    ) = updateSection(generation, { it.goals }, { sections, result ->
+        sections.copy(goals = result)
+    }) {
+        analyticsService.goals(filter)
+    }
+
+    private suspend fun loadAnki(
+        generation: Long,
+        filter: StatsFilter,
+    ) = updateSection(generation, { it.anki }, { sections, result ->
+        sections.copy(anki = result)
+    }) {
+        analyticsService.anki(filter)
+    }
+
+    private suspend fun <T> updateSection(
+        generation: Long,
+        current: (StatsSections) -> StatsLoadable<T>,
+        replace: (StatsSections, StatsLoadable<T>) -> StatsSections,
+        query: suspend () -> T,
+    ) {
+        val result = runCatching { query() }
+        if (refreshGeneration.get() != generation) return
+        updateSuccess { state ->
+            val previous = current(state.sections)
+            state.copy(
+                sections = replace(
+                    state.sections,
+                    if (result.isSuccess) {
+                        StatsLoadable(value = result.getOrThrow())
+                    } else {
+                        previous.copy(refreshing = false, error = true)
+                    },
+                ),
+            )
+        }
+    }
+
+    private fun updateSuccess(transform: (StatsScreenState.Success) -> StatsScreenState.Success) {
+        mutableState.update { state ->
+            (state as? StatsScreenState.Success)?.let(transform) ?: state
+        }
+    }
+
+    private fun successState(): StatsScreenState.Success? = mutableState.value as? StatsScreenState.Success
+
+    private fun StatsFilterState.toDomainFilter(now: LocalDate): StatsFilter {
+        val selectedProfile = profileId
+        val profile = selectedProfile?.let { id ->
+            dictionaryPreferences.profileStore.getProfiles().find { it.id == id }
+        }
+        return StatsFilter(
+            dateRange = dateRange(now),
+            mediaKinds = mediaKind?.let(::setOf).orEmpty(),
+            profileIds = selectedProfile?.let(::setOf).orEmpty(),
+            languageTags = profile?.languageCode
+                ?.takeIf(String::isNotBlank)
+                ?.let { runCatching { LanguageTag.from(it) }.getOrNull() }
+                ?.let(::setOf)
+                .orEmpty(),
+            titleIds = fixedTitleId?.let(::setOf).orEmpty(),
+            includeLegacyAggregates = includeLegacy,
+            characterMetric = characterMetric,
+            includeRereadsAndReplays = includeRereadsAndReplays,
+        )
+    }
+
+    private fun StatsFilterState.dateRange(now: LocalDate): LocalDateRange? {
+        if (rangePreset == StatsRangePreset.ALL) return null
+        if (rangePreset == StatsRangePreset.CUSTOM) {
+            val start = customStart ?: return LocalDateRange(
+                ImmersionLocalDate.from(now),
+                ImmersionLocalDate.from(now),
+            )
+            val end = customEnd ?: start
+            return LocalDateRange(start, end)
+        }
+        val days = when (rangePreset) {
+            StatsRangePreset.TODAY -> 1
+            StatsRangePreset.SEVEN_DAYS -> 7
+            StatsRangePreset.THIRTY_DAYS -> 30
+            StatsRangePreset.NINETY_DAYS -> 90
+            StatsRangePreset.YEAR -> 365
+            StatsRangePreset.ALL, StatsRangePreset.CUSTOM -> error("Handled above")
+        }
+        val end = now.plusDays(periodOffset.toLong() * days)
+        val start = end.minusDays((days - 1).toLong())
+        return LocalDateRange(
+            ImmersionLocalDate.from(start),
+            ImmersionLocalDate.from(end),
+        )
+    }
+
+    private companion object {
+        const val PAGE_SIZE = 100
+        const val DETAIL_PAGE_SIZE = 50
+        val GOAL_METRICS = setOf(
+            "active_time_ms",
+            "gross_characters",
+            "unique_source_characters",
+            "net_characters",
+            "sessions",
+            "lookups",
+            "cards",
+            "new_words",
+            "new_characters",
+            "manual",
+        )
     }
 }
+
+private fun StatsSections.refreshing(): StatsSections = copy(
+    overview = overview.refreshing(),
+    trends = trends.refreshing(),
+    titles = titles.refreshing(),
+    vocabulary = vocabulary.refreshing(),
+    characters = characters.refreshing(),
+    sessions = sessions.refreshing(),
+    goals = goals.refreshing(),
+    anki = anki.refreshing(),
+)
+
+private inline fun <reified T : Enum<T>> String.enumOrNull(): T? =
+    runCatching { enumValueOf<T>(this) }.getOrNull()
+
+private inline fun <reified T : Enum<T>> String.enumOrDefault(default: T): T =
+    enumOrNull() ?: default

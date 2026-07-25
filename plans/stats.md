@@ -2401,6 +2401,12 @@ Disable capture/UI flags or return to old query path if:
 - [ ] Exercise upgrade from several supported app versions.
 - [ ] Validate release build, min SDK device behavior, and database migration.
 - [ ] Update home widget and backup authority before stopping legacy writes.
+- [ ] Before release, dual-license the user's copyrightable stats contributions in both
+  SubMiner and GameSentenceMiner under each repository's existing license **or CC0-1.0**:
+  identify the exact contributor identities/commits/files from Git history, add the official
+  CC0 legal code and a scoped contribution manifest, add per-file SPDX notices only where the
+  whole file is covered, avoid making claims over co-authored or third-party code, merge only
+  into the user's forks, and record the resulting commit/tag references in the release notes.
 - [ ] Announce legacy read-only transition in release notes.
 - [ ] Keep a rollback reader for old JSON through the agreed compatibility window.
 - [ ] Delete obsolete code only in a separate, reviewable commit/PR after evidence is captured.

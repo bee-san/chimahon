@@ -4,8 +4,11 @@ import kotlinx.coroutines.flow.Flow
 import tachiyomi.domain.immersion.model.AnalyticsAnkiSummary
 import tachiyomi.domain.immersion.model.AnalyticsCharacterRow
 import tachiyomi.domain.immersion.model.AnalyticsDataQuality
+import tachiyomi.domain.immersion.model.AnalyticsInventoryMetrics
 import tachiyomi.domain.immersion.model.AnalyticsPage
+import tachiyomi.domain.immersion.model.AnalyticsSessionDetail
 import tachiyomi.domain.immersion.model.AnalyticsSort
+import tachiyomi.domain.immersion.model.AnalyticsSourceOccurrence
 import tachiyomi.domain.immersion.model.AnalyticsTitleMetadata
 import tachiyomi.domain.immersion.model.AnalyticsWordRow
 import tachiyomi.domain.immersion.model.ExposureEvent
@@ -13,6 +16,8 @@ import tachiyomi.domain.immersion.model.ImmersionAnkiItem
 import tachiyomi.domain.immersion.model.ImmersionAnkiSnapshot
 import tachiyomi.domain.immersion.model.ImmersionDailyRollup
 import tachiyomi.domain.immersion.model.ImmersionGoal
+import tachiyomi.domain.immersion.model.ImmersionGoalAchievement
+import tachiyomi.domain.immersion.model.ImmersionGoalCheckIn
 import tachiyomi.domain.immersion.model.ImmersionIntegrityReport
 import tachiyomi.domain.immersion.model.ImmersionOverview
 import tachiyomi.domain.immersion.model.ImmersionReindexRequest
@@ -119,6 +124,10 @@ interface ImmersionAnalyticsRepository {
         range: tachiyomi.domain.immersion.model.LocalDateRange,
     ): List<ImmersionDailyRollup>
 
+    suspend fun inventoryMetrics(filter: StatsFilter): AnalyticsInventoryMetrics
+
+    suspend fun titleInventoryMetrics(filter: StatsFilter): Map<TitleId, AnalyticsInventoryMetrics>
+
     suspend fun titleMetadata(titleIds: Set<TitleId>): List<AnalyticsTitleMetadata>
 
     suspend fun dataQuality(
@@ -131,6 +140,7 @@ interface ImmersionAnalyticsRepository {
         sort: AnalyticsSort,
         offset: Long,
         limit: Int,
+        searchQuery: String? = null,
     ): AnalyticsPage<AnalyticsWordRow>
 
     suspend fun characterPage(
@@ -138,6 +148,7 @@ interface ImmersionAnalyticsRepository {
         sort: AnalyticsSort,
         offset: Long,
         limit: Int,
+        searchQuery: String? = null,
     ): AnalyticsPage<AnalyticsCharacterRow>
 
     suspend fun filteredSessionsPage(
@@ -145,6 +156,32 @@ interface ImmersionAnalyticsRepository {
         cursor: SessionCursor?,
         limit: Int,
     ): SessionPage
+
+    suspend fun sessionDetail(
+        sessionId: SessionId,
+        maxTimelineBuckets: Int,
+    ): AnalyticsSessionDetail?
+
+    suspend fun sourceSearch(
+        filter: StatsFilter,
+        query: String,
+        offset: Long,
+        limit: Int,
+    ): AnalyticsPage<AnalyticsSourceOccurrence>
+
+    suspend fun wordOccurrences(
+        filter: StatsFilter,
+        wordId: String,
+        offset: Long,
+        limit: Int,
+    ): AnalyticsPage<AnalyticsSourceOccurrence>
+
+    suspend fun characterOccurrences(
+        filter: StatsFilter,
+        codePoint: UnicodeCodePoint,
+        offset: Long,
+        limit: Int,
+    ): AnalyticsPage<AnalyticsSourceOccurrence>
 
     suspend fun ankiSummary(filter: StatsFilter): AnalyticsAnkiSummary
 
@@ -173,6 +210,14 @@ interface ImmersionGoalRepository {
     suspend fun upsertGoal(goal: ImmersionGoal)
 
     suspend fun getGoals(): List<ImmersionGoal>
+
+    suspend fun upsertCheckIn(checkIn: ImmersionGoalCheckIn)
+
+    suspend fun getCheckIns(goalId: String): List<ImmersionGoalCheckIn>
+
+    suspend fun recordAchievement(achievement: ImmersionGoalAchievement)
+
+    suspend fun getAchievements(goalId: String): List<ImmersionGoalAchievement>
 }
 
 interface ImmersionAnkiRepository {

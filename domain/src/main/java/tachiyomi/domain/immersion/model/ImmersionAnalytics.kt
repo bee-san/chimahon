@@ -17,6 +17,7 @@ enum class AnalyticsSort {
     MOST_OCCURRENCES,
     FIRST_SEEN,
     ALPHABETICAL,
+    FREQUENCY_RANK,
 }
 
 @Serializable
@@ -126,6 +127,23 @@ data class AnalyticsOverview(
 )
 
 @Serializable
+data class AnalyticsInventoryMetrics(
+    val distinctCharacters: Long = 0,
+    val newCharacters: Long = 0,
+    val uniqueWords: Long = 0,
+    val newWords: Long = 0,
+    val charactersRepresentedInAnki: Long = 0,
+) {
+    init {
+        require(distinctCharacters >= 0)
+        require(newCharacters in 0..distinctCharacters)
+        require(uniqueWords >= 0)
+        require(newWords in 0..uniqueWords)
+        require(charactersRepresentedInAnki in 0..distinctCharacters)
+    }
+}
+
+@Serializable
 data class AnalyticsTrendPoint(
     val range: LocalDateRange,
     val metrics: ReadingMetrics,
@@ -221,6 +239,61 @@ data class AnalyticsCharacterRow(
 }
 
 @Serializable
+data class AnalyticsSourceOccurrence(
+    val sourceUnitId: SourceUnitId,
+    val titleId: TitleId,
+    val displayTitle: String,
+    val sessionId: SessionId,
+    val mediaKind: MediaKind,
+    val sourceKind: SourceKind,
+    val canonicalLocator: String,
+    val occurredAtEpochMillis: Long,
+    val excerpt: String?,
+    val rawTextAvailable: Boolean,
+) {
+    init {
+        require(displayTitle.isNotBlank())
+        require(canonicalLocator.isNotBlank())
+        require(occurredAtEpochMillis >= 0)
+    }
+}
+
+@Serializable
+data class AnalyticsTimelineBucket(
+    val startEpochMillis: Long,
+    val endEpochMillis: Long,
+    val eventCount: Long,
+    val activeDurationMillis: Long,
+    val grossCharacters: Long,
+    val uniqueSourceCharacters: Long,
+    val netCharacters: Long,
+    val lookupCount: Long,
+    val cardsCreated: Long,
+    val cardsUpdated: Long,
+    val eventTypes: Set<EventType>,
+) {
+    init {
+        require(startEpochMillis >= 0)
+        require(endEpochMillis >= startEpochMillis)
+        require(eventCount >= 0)
+        require(activeDurationMillis >= 0)
+        require(grossCharacters >= 0)
+        require(uniqueSourceCharacters >= 0)
+        require(lookupCount >= 0)
+        require(cardsCreated >= 0)
+        require(cardsUpdated >= 0)
+    }
+}
+
+@Serializable
+data class AnalyticsSessionDetail(
+    val session: ImmersionSession,
+    val displayTitle: String,
+    val timeline: List<AnalyticsTimelineBucket>,
+    val sources: List<AnalyticsSourceOccurrence>,
+)
+
+@Serializable
 data class AnalyticsPage<T>(
     val items: List<T>,
     val nextOffset: Long?,
@@ -238,6 +311,14 @@ data class AnalyticsGoalProgress(
     val pacePerDay: Double?,
     val projectedCompletionDate: ImmersionLocalDate?,
     val achievedAtEpochMillis: Long?,
+    val targetToDate: Double = target,
+    val requiredPacePerActiveDay: Double? = null,
+    val rollingSevenDayPace: Double? = null,
+    val rollingThirtyDayPace: Double? = null,
+    val currentStreakDays: Int = 0,
+    val longestStreakDays: Int = 0,
+    val isRestDay: Boolean = false,
+    val forecastConfidence: CapabilityState = CapabilityState.UNAVAILABLE,
 )
 
 @Serializable
@@ -248,12 +329,26 @@ data class AnalyticsAnkiSummary(
     val characterCoverageEncountered: Long,
     val characterCoverageKnown: Long,
     val reviewHistoryAvailable: Boolean,
+    val maturityDistribution: Map<MaturityTier, Long> = emptyMap(),
+    val cardsCreated: Long = 0,
+    val cardsUpdated: Long = 0,
+    val linkedOperationCount: Long = 0,
+    val unattributedOperationCount: Long = 0,
+    val meanReadingToCardLagMillis: Long? = null,
+    val missingHighFrequencyWords: List<AnalyticsWordRow> = emptyList(),
+    val missingHighFrequencyCharacters: List<AnalyticsCharacterRow> = emptyList(),
 ) {
     init {
         require(wordCoverageEncountered >= 0)
         require(wordCoverageKnown in 0..wordCoverageEncountered)
         require(characterCoverageEncountered >= 0)
         require(characterCoverageKnown in 0..characterCoverageEncountered)
+        require(maturityDistribution.values.all { it >= 0 })
+        require(cardsCreated >= 0)
+        require(cardsUpdated >= 0)
+        require(linkedOperationCount >= 0)
+        require(unattributedOperationCount >= 0)
+        require(meanReadingToCardLagMillis == null || meanReadingToCardLagMillis >= 0)
     }
 }
 
