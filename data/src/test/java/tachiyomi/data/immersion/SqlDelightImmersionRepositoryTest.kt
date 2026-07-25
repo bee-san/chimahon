@@ -36,9 +36,13 @@ import tachiyomi.domain.immersion.model.EventId
 import tachiyomi.domain.immersion.model.EventType
 import tachiyomi.domain.immersion.model.ExposureEvent
 import tachiyomi.domain.immersion.model.ImmersionDataException
+import tachiyomi.domain.immersion.model.ImmersionReindexRequest
 import tachiyomi.domain.immersion.model.ImmersionSessionStart
 import tachiyomi.domain.immersion.model.ImmersionSourceUnit
 import tachiyomi.domain.immersion.model.ImmersionTitle
+import tachiyomi.domain.immersion.model.IndexTerminalReason
+import tachiyomi.domain.immersion.model.IndexedCharacter
+import tachiyomi.domain.immersion.model.IndexedWord
 import tachiyomi.domain.immersion.model.LanguageTag
 import tachiyomi.domain.immersion.model.LegacyDailyAggregate
 import tachiyomi.domain.immersion.model.LegacyImportBatch
@@ -59,6 +63,7 @@ import tachiyomi.domain.immersion.model.SessionStatus
 import tachiyomi.domain.immersion.model.SourceKind
 import tachiyomi.domain.immersion.model.SourceUnitId
 import tachiyomi.domain.immersion.model.TitleId
+import tachiyomi.domain.immersion.model.UnicodeCodePoint
 import tachiyomi.domain.immersion.service.AnkiOperationToken
 import tachiyomi.domain.immersion.service.PendingAnkiOperation
 import java.util.UUID
@@ -597,6 +602,145 @@ class SqlDelightImmersionRepositoryTest {
     }
 
     @Test
+    fun `index claim retry schedule and terminal requeue are deterministic`() = runTest {
+        prepareSession()
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = 81).let {
+                it.copy(source = it.source.copy(rawText = "猫"))
+            },
+        )
+
+        val first = repository.claimWork(targetVersion = 1, limit = 10, nowEpochMillis = 1_000).single()
+        first.languageTag shouldBe LanguageTag("ja")
+        first.attemptCount shouldBe 0
+        repository.markFailure(first.sourceUnitId, "TOKENIZER_FAILURE", nextAttemptAtEpochMillis = 5_000)
+        repository.claimWork(targetVersion = 1, limit = 10, nowEpochMillis = 4_999) shouldBe emptyList()
+        repository.claimWork(targetVersion = 1, limit = 10, nowEpochMillis = 5_000).single().attemptCount shouldBe 1
+
+        repository.storeIndexResult(
+            sourceUnitId = first.sourceUnitId,
+            tokenizerId = "characters-only",
+            tokenizerVersion = 1,
+            normalizationVersion = 1,
+            indexedVersion = 1,
+            indexedAtEpochMillis = 5_000,
+            tokenizationConfidence = null,
+            terminalReason = IndexTerminalReason.UNSUPPORTED_LANGUAGE,
+            words = emptyList(),
+            characters = listOf(indexedCharacter('猫', 1)),
+        )
+        queryLong("SELECT count(*) FROM immersion_source_unit WHERE indexing_status = 'UNAVAILABLE'") shouldBe 1
+        repository.pendingCount(1) shouldBe 0
+
+        repository.requeue(
+            ImmersionReindexRequest(languageTag = LanguageTag("ja"), titleId = TITLE_ID),
+            targetVersion = 1,
+        ) shouldBe 1
+        repository.pendingCount(1) shouldBe 1
+    }
+
+    @Test
+    fun `reindex replaces split merge occurrences preserves first seen and cleans validated orphans`() = runTest {
+        prepareSession()
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = 82).let {
+                it.copy(
+                    source = it.source.copy(
+                        rawText = "猫を見る",
+                        firstExposedAtEpochMillis = 1_000,
+                        lastExposedAtEpochMillis = 1_100,
+                    ),
+                )
+            },
+        )
+        val sourceId = SOURCE_ID
+        repository.storeIndexResult(
+            sourceUnitId = sourceId,
+            tokenizerId = "test-v1",
+            tokenizerVersion = 1,
+            normalizationVersion = 1,
+            indexedVersion = 1,
+            indexedAtEpochMillis = 2_000,
+            tokenizationConfidence = 0.9,
+            terminalReason = null,
+            words = listOf(indexedWord("word-cat", "猫", ordinal = 0)),
+            characters = listOf(indexedCharacter('猫', 1)),
+        )
+
+        repository.requeue(ImmersionReindexRequest(titleId = TITLE_ID), targetVersion = 2) shouldBe 1
+        repository.claimWork(targetVersion = 2, limit = 10, nowEpochMillis = 3_000).single().sourceUnitId shouldBe sourceId
+        repository.storeIndexResult(
+            sourceUnitId = sourceId,
+            tokenizerId = "test-v2",
+            tokenizerVersion = 2,
+            normalizationVersion = 1,
+            indexedVersion = 2,
+            indexedAtEpochMillis = 3_000,
+            tokenizationConfidence = 0.95,
+            terminalReason = null,
+            words = listOf(
+                indexedWord("word-see", "見る", "みる", ordinal = 0),
+                indexedWord("word-cat-see", "猫を見る", "ねこをみる", ordinal = 1),
+            ),
+            characters = listOf(
+                indexedCharacter('猫', 1),
+                indexedCharacter('見', 1, firstOrdinal = 1),
+            ),
+        )
+
+        queryLong("SELECT count(*) FROM immersion_word WHERE id = 'word-cat'") shouldBe 0
+        queryLong("SELECT count(*) FROM immersion_word_occurrence") shouldBe 2
+        queryLong("SELECT first_seen_at FROM immersion_word WHERE id = 'word-see'") shouldBe 1_000
+        queryLong("SELECT count(*) FROM immersion_character WHERE rendered = '猫'") shouldBe 1
+        queryLong("SELECT count(*) FROM immersion_character WHERE rendered = '見'") shouldBe 1
+        queryStrings("SELECT tokenizer_id FROM immersion_source_unit") shouldContainExactly listOf("test-v2")
+        queryLong("SELECT countable_characters FROM immersion_source_unit") shouldBe 2
+        queryLong("SELECT han_characters FROM immersion_source_unit") shouldBe 2
+    }
+
+    @Test
+    fun `identical text at different locators keeps distinct source provenance`() = runTest {
+        prepareSession()
+        val secondSourceId = SourceUnitId("00000000-0000-0000-0000-000000000102")
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = 83).let {
+                it.copy(source = it.source.copy(rawText = "猫"))
+            },
+        )
+        repository.appendExposure(
+            exposure(sequence = 2, eventNumber = 84).let {
+                it.copy(
+                    source = it.source.copy(
+                        id = secondSourceId,
+                        canonicalLocator = "novel:test:chapter-2:0-100",
+                        chapterOrSectionId = "chapter-2",
+                        rawText = "猫",
+                    ),
+                )
+            },
+        )
+
+        listOf(SOURCE_ID, secondSourceId).forEach { sourceId ->
+            repository.storeIndexResult(
+                sourceUnitId = sourceId,
+                tokenizerId = "test-v1",
+                tokenizerVersion = 1,
+                normalizationVersion = 1,
+                indexedVersion = 1,
+                indexedAtEpochMillis = 2_000,
+                tokenizationConfidence = 1.0,
+                terminalReason = null,
+                words = listOf(indexedWord("word-cat", "猫", ordinal = 0)),
+                characters = listOf(indexedCharacter('猫', 1)),
+            )
+        }
+
+        queryLong("SELECT count(*) FROM immersion_source_unit WHERE normalized_text_hash = 'sha256:test'") shouldBe 2
+        queryLong("SELECT count(*) FROM immersion_word_occurrence WHERE word_id = 'word-cat'") shouldBe 2
+        queryLong("SELECT count(DISTINCT source_unit_id) FROM immersion_word_occurrence") shouldBe 2
+    }
+
+    @Test
     fun `integrity report is healthy for valid event backed data`() = runTest {
         prepareSession()
         repository.appendExposure(exposure(sequence = 1, eventNumber = 1))
@@ -692,6 +836,35 @@ class SqlDelightImmersionRepositoryTest {
             uniqueSource = NonNegativeCounter(90),
             netProgress = NetCharacterProgress(80),
         ),
+    )
+
+    private fun indexedWord(
+        id: String,
+        headword: String,
+        reading: String = "",
+        ordinal: Long,
+    ) = IndexedWord(
+        id = id,
+        languageTag = LanguageTag("ja"),
+        normalizedHeadword = headword,
+        normalizedReading = reading,
+        displayHeadword = headword,
+        displayReading = reading.takeIf(String::isNotEmpty),
+        tokenOrdinal = ordinal,
+        surfaceText = headword,
+    )
+
+    private fun indexedCharacter(
+        character: Char,
+        count: Long,
+        firstOrdinal: Long = 0,
+    ) = IndexedCharacter(
+        codePoint = UnicodeCodePoint(character.code),
+        unicodeName = Character.getName(character.code),
+        unicodeCategory = "OTHER_LETTER",
+        unicodeScript = Character.UnicodeScript.of(character.code).name,
+        occurrenceCount = NonNegativeCounter(count),
+        firstOrdinal = firstOrdinal,
     )
 
     private fun queryLong(sql: String): Long = queryLong(driver, sql)

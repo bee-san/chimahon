@@ -6,10 +6,12 @@ import tachiyomi.domain.immersion.model.ImmersionAnkiSnapshot
 import tachiyomi.domain.immersion.model.ImmersionGoal
 import tachiyomi.domain.immersion.model.ImmersionIntegrityReport
 import tachiyomi.domain.immersion.model.ImmersionOverview
+import tachiyomi.domain.immersion.model.ImmersionReindexRequest
 import tachiyomi.domain.immersion.model.ImmersionSession
 import tachiyomi.domain.immersion.model.ImmersionSessionStart
 import tachiyomi.domain.immersion.model.ImmersionSourceUnit
 import tachiyomi.domain.immersion.model.ImmersionTitle
+import tachiyomi.domain.immersion.model.IndexTerminalReason
 import tachiyomi.domain.immersion.model.IndexWorkItem
 import tachiyomi.domain.immersion.model.IndexedCharacter
 import tachiyomi.domain.immersion.model.IndexedWord
@@ -50,18 +52,37 @@ interface ImmersionRecorderRepository {
 }
 
 interface ImmersionIndexRepository {
-    suspend fun claimWork(targetVersion: Int, limit: Int): List<IndexWorkItem>
+    suspend fun claimWork(
+        targetVersion: Int,
+        limit: Int,
+        nowEpochMillis: Long,
+    ): List<IndexWorkItem>
 
     suspend fun storeIndexResult(
         sourceUnitId: SourceUnitId,
+        tokenizerId: String,
         tokenizerVersion: Int,
+        normalizationVersion: Int,
         indexedVersion: Int,
         indexedAtEpochMillis: Long,
+        tokenizationConfidence: Double?,
+        terminalReason: IndexTerminalReason?,
         words: List<IndexedWord>,
         characters: List<IndexedCharacter>,
     )
 
-    suspend fun markFailure(sourceUnitId: SourceUnitId, errorCode: String)
+    suspend fun markFailure(
+        sourceUnitId: SourceUnitId,
+        errorCode: String,
+        nextAttemptAtEpochMillis: Long,
+    )
+
+    suspend fun requeue(
+        request: ImmersionReindexRequest,
+        targetVersion: Int,
+    ): Long
+
+    suspend fun pendingCount(targetVersion: Int): Long
 }
 
 interface ImmersionStatsRepository {

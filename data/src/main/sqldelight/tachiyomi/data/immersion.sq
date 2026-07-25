@@ -134,6 +134,12 @@ CREATE TABLE immersion_source_unit(
     other_characters INTEGER NOT NULL DEFAULT 0,
     ocr_quality TEXT
         CHECK(ocr_quality IS NULL OR ocr_quality IN ('AVAILABLE', 'PARTIAL', 'UNAVAILABLE', 'STALE')),
+    tokenizer_id TEXT NOT NULL DEFAULT '',
+    normalization_version INTEGER NOT NULL DEFAULT 0,
+    tokenization_confidence REAL,
+    index_attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_index_attempt_at INTEGER,
+    indexing_terminal_reason TEXT,
     FOREIGN KEY(title_id) REFERENCES immersion_title(id) ON DELETE CASCADE,
     UNIQUE(title_id, source_kind, canonical_locator, normalized_text_hash),
     CHECK(source_start IS NULL OR source_start >= 0),
@@ -1155,38 +1161,166 @@ SELECT changes();
 
 selectImmersionIndexWork:
 SELECT
-    id,
-    title_id,
-    source_kind,
-    normalized_text_hash,
-    raw_text,
-    tokenizer_version,
-    indexed_version
-FROM immersion_source_unit
+    source.id,
+    source.title_id,
+    source.source_kind,
+    title.language_tag,
+    title.profile_id,
+    source.normalized_text_hash,
+    source.raw_text,
+    source.tokenizer_version,
+    source.indexed_version,
+    source.index_attempt_count
+FROM immersion_source_unit AS source
+JOIN immersion_title AS title ON title.id = source.title_id
 WHERE
-    indexed_version < :targetVersion
-    AND indexing_status IN ('PENDING', 'FAILED')
-ORDER BY first_exposed_at, id
+    source.indexed_version < :targetVersion
+    AND source.indexing_status IN ('PENDING', 'FAILED')
+    AND source.indexing_terminal_reason IS NULL
+    AND (source.next_index_attempt_at IS NULL OR source.next_index_attempt_at <= :nowEpochMillis)
+ORDER BY source.first_exposed_at, source.id
 LIMIT :limit;
 
 markImmersionIndexWorkClaimed:
 UPDATE immersion_source_unit
-SET indexing_status = 'IN_PROGRESS', index_error_code = NULL
+SET
+    indexing_status = 'IN_PROGRESS',
+    index_error_code = NULL,
+    next_index_attempt_at = NULL,
+    index_attempt_count = index_attempt_count + 1
 WHERE id IN :ids;
 
 markImmersionSourceIndexed:
 UPDATE immersion_source_unit
 SET
+    tokenizer_id = :tokenizerId,
     tokenizer_version = :tokenizerVersion,
+    normalization_version = :normalizationVersion,
+    tokenization_confidence = :tokenizationConfidence,
     indexed_version = :indexedVersion,
-    indexing_status = 'INDEXED',
-    index_error_code = NULL
+    indexing_status = CASE WHEN :terminalReason IS NULL THEN 'INDEXED' ELSE 'UNAVAILABLE' END,
+    index_error_code = NULL,
+    next_index_attempt_at = NULL,
+    indexing_terminal_reason = :terminalReason,
+    countable_characters = coalesce(:countableCharacters, countable_characters),
+    han_characters = coalesce(:hanCharacters, han_characters),
+    hiragana_characters = coalesce(:hiraganaCharacters, hiragana_characters),
+    katakana_characters = coalesce(:katakanaCharacters, katakana_characters),
+    hangul_characters = coalesce(:hangulCharacters, hangul_characters),
+    latin_characters = coalesce(:latinCharacters, latin_characters),
+    other_characters = coalesce(:otherCharacters, other_characters)
 WHERE id = :id;
 
 markImmersionSourceIndexFailed:
 UPDATE immersion_source_unit
-SET indexing_status = 'FAILED', index_error_code = :errorCode
+SET
+    indexing_status = 'FAILED',
+    index_error_code = :errorCode,
+    next_index_attempt_at = :nextAttemptAt
 WHERE id = :id;
+
+deleteImmersionWordOccurrencesForSource:
+DELETE FROM immersion_word_occurrence
+WHERE source_unit_id = :sourceUnitId;
+
+deleteImmersionCharacterOccurrencesForSource:
+DELETE FROM immersion_character_occurrence
+WHERE source_unit_id = :sourceUnitId;
+
+recomputeImmersionWordSeenTimes:
+UPDATE immersion_word
+SET
+    first_seen_at = (
+        SELECT min(source.first_exposed_at)
+        FROM immersion_word_occurrence AS occurrence
+        JOIN immersion_source_unit AS source ON source.id = occurrence.source_unit_id
+        WHERE occurrence.word_id = immersion_word.id
+    ),
+    last_seen_at = (
+        SELECT max(source.last_exposed_at)
+        FROM immersion_word_occurrence AS occurrence
+        JOIN immersion_source_unit AS source ON source.id = occurrence.source_unit_id
+        WHERE occurrence.word_id = immersion_word.id
+    )
+WHERE EXISTS (
+    SELECT 1
+    FROM immersion_word_occurrence AS occurrence
+    WHERE occurrence.word_id = immersion_word.id
+);
+
+recomputeImmersionCharacterSeenTimes:
+UPDATE immersion_character
+SET
+    first_seen_at = (
+        SELECT min(source.first_exposed_at)
+        FROM immersion_character_occurrence AS occurrence
+        JOIN immersion_source_unit AS source ON source.id = occurrence.source_unit_id
+        WHERE occurrence.character_code_point = immersion_character.code_point
+    ),
+    last_seen_at = (
+        SELECT max(source.last_exposed_at)
+        FROM immersion_character_occurrence AS occurrence
+        JOIN immersion_source_unit AS source ON source.id = occurrence.source_unit_id
+        WHERE occurrence.character_code_point = immersion_character.code_point
+    )
+WHERE EXISTS (
+    SELECT 1
+    FROM immersion_character_occurrence AS occurrence
+    WHERE occurrence.character_code_point = immersion_character.code_point
+);
+
+deleteOrphanImmersionWords:
+DELETE FROM immersion_word
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM immersion_word_occurrence AS occurrence
+    WHERE occurrence.word_id = immersion_word.id
+);
+
+deleteOrphanImmersionCharacters:
+DELETE FROM immersion_character
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM immersion_character_occurrence AS occurrence
+    WHERE occurrence.character_code_point = immersion_character.code_point
+);
+
+requeueImmersionSourceUnits:
+UPDATE immersion_source_unit
+SET
+    indexed_version = 0,
+    indexing_status = 'PENDING',
+    index_error_code = NULL,
+    next_index_attempt_at = NULL,
+    indexing_terminal_reason = NULL
+WHERE
+    (:titleId IS NULL OR title_id = :titleId)
+    AND (:exposedFrom IS NULL OR last_exposed_at >= :exposedFrom)
+    AND (:exposedUntil IS NULL OR first_exposed_at <= :exposedUntil)
+    AND (
+        :languageTag IS NULL OR EXISTS (
+            SELECT 1
+            FROM immersion_title AS title
+            WHERE title.id = immersion_source_unit.title_id
+                AND title.language_tag = :languageTag
+        )
+    );
+
+countPendingImmersionSourceUnits:
+SELECT count(*)
+FROM immersion_source_unit
+WHERE
+    indexed_version < :targetVersion
+    AND indexing_status IN ('PENDING', 'FAILED', 'IN_PROGRESS')
+    AND indexing_terminal_reason IS NULL;
+
+isImmersionIndexEntityExcluded:
+SELECT count(*)
+FROM immersion_exclusion
+WHERE
+    entity_type = :entityType
+    AND entity_id = :entityId
+    AND scope_key IN :scopeKeys;
 
 upsertImmersionWord:
 INSERT INTO immersion_word(
@@ -1198,6 +1332,10 @@ INSERT INTO immersion_word(
     display_reading,
     part_of_speech,
     tokenization_confidence,
+    frequency_corpus,
+    frequency_rank,
+    jlpt_level,
+    grade_level,
     first_seen_at,
     last_seen_at
 )
@@ -1210,6 +1348,10 @@ VALUES (
     :displayReading,
     :partOfSpeech,
     :tokenizationConfidence,
+    :frequencyCorpus,
+    :frequencyRank,
+    :jlptLevel,
+    :gradeLevel,
     :firstSeenAt,
     :lastSeenAt
 )
@@ -1218,6 +1360,10 @@ ON CONFLICT(language_tag, normalized_headword, normalized_reading) DO UPDATE SET
     display_reading = excluded.display_reading,
     part_of_speech = excluded.part_of_speech,
     tokenization_confidence = excluded.tokenization_confidence,
+    frequency_corpus = coalesce(excluded.frequency_corpus, frequency_corpus),
+    frequency_rank = coalesce(excluded.frequency_rank, frequency_rank),
+    jlpt_level = coalesce(excluded.jlpt_level, jlpt_level),
+    grade_level = coalesce(excluded.grade_level, grade_level),
     last_seen_at = max(last_seen_at, excluded.last_seen_at);
 
 insertImmersionWordOccurrence:

@@ -1,5 +1,8 @@
 package eu.kanade.domain
 
+import mihon.feature.stats.indexing.DictionaryBackedJapaneseTokenizer
+import mihon.feature.stats.indexing.ImmersionIndexJob
+import mihon.feature.stats.indexing.SqlImmersionIndexExclusionPolicy
 import mihon.feature.stats.legacy.LegacyStatsImporter
 import mihon.feature.stats.recorder.ImmersionRecorderLifecycleCoordinator
 import tachiyomi.data.immersion.SqlDelightImmersionRepository
@@ -8,6 +11,7 @@ import tachiyomi.data.libraryUpdateError.LibraryUpdateErrorWithRelationsReposito
 import tachiyomi.data.libraryUpdateErrorMessage.LibraryUpdateErrorMessageRepositoryImpl
 import tachiyomi.domain.immersion.interactor.GetLegacyAggregateTotals
 import tachiyomi.domain.immersion.model.AnkiOperationEvent
+import tachiyomi.domain.immersion.model.ExposureEvent
 import tachiyomi.domain.immersion.repository.FeatureFlaggedImmersionRecorderRepository
 import tachiyomi.domain.immersion.repository.ImmersionAnkiRepository
 import tachiyomi.domain.immersion.repository.ImmersionGoalRepository
@@ -19,18 +23,24 @@ import tachiyomi.domain.immersion.repository.ImmersionStatsRepository
 import tachiyomi.domain.immersion.repository.NoOpImmersionRecorderRepository
 import tachiyomi.domain.immersion.service.AnkiOperationRecorder
 import tachiyomi.domain.immersion.service.AnkiOperationRepairWriter
+import tachiyomi.domain.immersion.service.BoundaryImmersionTokenizer
 import tachiyomi.domain.immersion.service.DefaultAnkiOperationRecorder
 import tachiyomi.domain.immersion.service.DefaultImmersionRecorder
 import tachiyomi.domain.immersion.service.DefaultLookupTelemetry
+import tachiyomi.domain.immersion.service.DefaultSourceTextNormalizer
 import tachiyomi.domain.immersion.service.ImmersionDeviceIdProvider
 import tachiyomi.domain.immersion.service.ImmersionEventPersistenceObserver
+import tachiyomi.domain.immersion.service.ImmersionIndexExclusionPolicy
+import tachiyomi.domain.immersion.service.ImmersionIndexingEngine
 import tachiyomi.domain.immersion.service.ImmersionRecorder
 import tachiyomi.domain.immersion.service.ImmersionRecorderConfiguration
+import tachiyomi.domain.immersion.service.ImmersionReindexController
 import tachiyomi.domain.immersion.service.ImmersionShadowMonitor
 import tachiyomi.domain.immersion.service.ImmersionStatsDiagnosticsStore
 import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
 import tachiyomi.domain.immersion.service.LookupTelemetry
 import tachiyomi.domain.immersion.service.PreferenceAnkiOperationRepairStore
+import tachiyomi.domain.immersion.service.SourceTextNormalizer
 import tachiyomi.domain.libraryUpdateError.interactor.DeleteLibraryUpdateErrors
 import tachiyomi.domain.libraryUpdateError.interactor.GetLibraryUpdateErrorWithRelations
 import tachiyomi.domain.libraryUpdateError.interactor.GetLibraryUpdateErrors
@@ -70,6 +80,24 @@ class KMKDomainModule : InjektModule {
         addSingletonFactory<ImmersionMaintenanceRepository> { get<SqlDelightImmersionRepository>() }
         addSingletonFactory<ImmersionGoalRepository> { get<SqlDelightImmersionRepository>() }
         addSingletonFactory<ImmersionAnkiRepository> { get<SqlDelightImmersionRepository>() }
+        addSingletonFactory<SourceTextNormalizer> { DefaultSourceTextNormalizer() }
+        addSingletonFactory { DictionaryBackedJapaneseTokenizer(get(), get(), get()) }
+        addSingletonFactory { BoundaryImmersionTokenizer() }
+        addSingletonFactory<ImmersionIndexExclusionPolicy> {
+            SqlImmersionIndexExclusionPolicy(get())
+        }
+        addSingletonFactory {
+            ImmersionIndexingEngine(
+                repository = get(),
+                normalizer = get(),
+                tokenizers = listOf(
+                    get<DictionaryBackedJapaneseTokenizer>(),
+                    get<BoundaryImmersionTokenizer>(),
+                ),
+                exclusionPolicy = get(),
+            )
+        }
+        addSingletonFactory { ImmersionReindexController(get(), get()) }
         addSingletonFactory {
             PreferenceAnkiOperationRepairStore(get())
         }
@@ -84,6 +112,12 @@ class KMKDomainModule : InjektModule {
                 eventPersistenceObserver = ImmersionEventPersistenceObserver { events ->
                     events.filterIsInstance<AnkiOperationEvent>().forEach {
                         ankiRepairStore.remove(it.operationId)
+                    }
+                    if (
+                        events.any { it is ExposureEvent } &&
+                        preferences.indexingEnabled().get()
+                    ) {
+                        ImmersionIndexJob.start(get())
                     }
                 },
                 configuration = ImmersionRecorderConfiguration(
