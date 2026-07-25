@@ -320,15 +320,49 @@ data class IndexWorkItem(
     val sourceUnitId: SourceUnitId,
     val titleId: TitleId,
     val sourceKind: SourceKind,
+    val languageTag: LanguageTag?,
+    val profileId: String,
     val normalizedTextHash: String,
     val rawText: String?,
     val tokenizerVersion: Int,
     val indexedVersion: Int,
+    val attemptCount: Int = 0,
 ) {
     init {
         require(normalizedTextHash.isNotBlank()) { "Normalized text hash cannot be blank" }
         require(tokenizerVersion >= 0) { "Tokenizer version cannot be negative" }
         require(indexedVersion >= 0) { "Indexed version cannot be negative" }
+        require(attemptCount >= 0) { "Index attempt count cannot be negative" }
+    }
+}
+
+@Serializable
+enum class IndexTerminalReason {
+    UNSUPPORTED_LANGUAGE,
+    RAW_TEXT_UNAVAILABLE,
+}
+
+@Serializable
+data class ImmersionReindexRequest(
+    val languageTag: LanguageTag? = null,
+    val titleId: TitleId? = null,
+    val exposedFromEpochMillis: Long? = null,
+    val exposedUntilEpochMillis: Long? = null,
+) {
+    init {
+        require(exposedFromEpochMillis == null || exposedFromEpochMillis >= 0) {
+            "Reindex start cannot be negative"
+        }
+        require(exposedUntilEpochMillis == null || exposedUntilEpochMillis >= 0) {
+            "Reindex end cannot be negative"
+        }
+        require(
+            exposedFromEpochMillis == null ||
+                exposedUntilEpochMillis == null ||
+                exposedUntilEpochMillis >= exposedFromEpochMillis,
+        ) {
+            "Reindex end cannot precede its start"
+        }
     }
 }
 
@@ -342,6 +376,10 @@ data class IndexedWord(
     val displayReading: String? = null,
     val partOfSpeech: String? = null,
     val tokenizationConfidence: Double? = null,
+    val frequencyCorpus: String? = null,
+    val frequencyRank: Long? = null,
+    val jlptLevel: Int? = null,
+    val gradeLevel: Int? = null,
     val tokenOrdinal: Long,
     val surfaceText: String? = null,
     val sourceStart: Long? = null,
@@ -353,6 +391,7 @@ data class IndexedWord(
         require(normalizedHeadword.isNotBlank()) { "Normalized headword cannot be blank" }
         require(displayHeadword.isNotBlank()) { "Display headword cannot be blank" }
         require(tokenOrdinal >= 0) { "Token ordinal cannot be negative" }
+        require(frequencyRank == null || frequencyRank > 0) { "Frequency rank must be positive" }
     }
 }
 

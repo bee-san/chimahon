@@ -20,10 +20,12 @@ import tachiyomi.domain.immersion.model.ImmersionGoal
 import tachiyomi.domain.immersion.model.ImmersionIntegrityReport
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
 import tachiyomi.domain.immersion.model.ImmersionOverview
+import tachiyomi.domain.immersion.model.ImmersionReindexRequest
 import tachiyomi.domain.immersion.model.ImmersionSession
 import tachiyomi.domain.immersion.model.ImmersionSessionStart
 import tachiyomi.domain.immersion.model.ImmersionSourceUnit
 import tachiyomi.domain.immersion.model.ImmersionTitle
+import tachiyomi.domain.immersion.model.IndexTerminalReason
 import tachiyomi.domain.immersion.model.IndexWorkItem
 import tachiyomi.domain.immersion.model.IndexedCharacter
 import tachiyomi.domain.immersion.model.IndexedWord
@@ -194,12 +196,21 @@ class SqlDelightImmersionRepository(
             immersionQueries.selectImmersionSessionById(sessionId.value).executeAsOneOrNull()?.toDomain()
         }
 
-    override suspend fun claimWork(targetVersion: Int, limit: Int): List<IndexWorkItem> {
+    override suspend fun claimWork(
+        targetVersion: Int,
+        limit: Int,
+        nowEpochMillis: Long,
+    ): List<IndexWorkItem> {
         require(targetVersion > 0) { "Target version must be positive" }
         require(limit in 1..MAX_PAGE_SIZE) { "Index claim limit must be between 1 and $MAX_PAGE_SIZE" }
+        require(nowEpochMillis >= 0) { "Index claim timestamp cannot be negative" }
         return handler.await(inTransaction = true) {
             val rows = immersionQueries
-                .selectImmersionIndexWork(targetVersion.toLong(), limit.toLong())
+                .selectImmersionIndexWork(
+                    targetVersion = targetVersion.toLong(),
+                    nowEpochMillis = nowEpochMillis,
+                    limit = limit.toLong(),
+                )
                 .executeAsList()
             if (rows.isNotEmpty()) {
                 immersionQueries.markImmersionIndexWorkClaimed(rows.map { it.id })
@@ -210,19 +221,31 @@ class SqlDelightImmersionRepository(
 
     override suspend fun storeIndexResult(
         sourceUnitId: SourceUnitId,
+        tokenizerId: String,
         tokenizerVersion: Int,
+        normalizationVersion: Int,
         indexedVersion: Int,
         indexedAtEpochMillis: Long,
+        tokenizationConfidence: Double?,
+        terminalReason: IndexTerminalReason?,
         words: List<IndexedWord>,
         characters: List<IndexedCharacter>,
     ) {
+        require(tokenizerId.isNotBlank()) { "Tokenizer ID cannot be blank" }
         require(tokenizerVersion > 0) { "Tokenizer version must be positive" }
+        require(normalizationVersion > 0) { "Normalization version must be positive" }
         require(indexedVersion > 0) { "Indexed version must be positive" }
         require(indexedAtEpochMillis >= 0) { "Indexed timestamp cannot be negative" }
+        require(tokenizationConfidence == null || tokenizationConfidence in 0.0..1.0) {
+            "Tokenization confidence must be between zero and one"
+        }
         handler.await(inTransaction = true) {
-            if (immersionQueries.selectImmersionSourceUnitById(sourceUnitId.value).executeAsOneOrNull() == null) {
+            val source = immersionQueries.selectImmersionSourceUnitById(sourceUnitId.value).executeAsOneOrNull()
+            if (source == null) {
                 throw identityConflict("Source unit ${sourceUnitId.value} does not exist")
             }
+            immersionQueries.deleteImmersionWordOccurrencesForSource(sourceUnitId.value)
+            immersionQueries.deleteImmersionCharacterOccurrencesForSource(sourceUnitId.value)
             words.forEach { word ->
                 immersionQueries.upsertImmersionWord(
                     id = word.id,
@@ -233,8 +256,12 @@ class SqlDelightImmersionRepository(
                     displayReading = word.displayReading,
                     partOfSpeech = word.partOfSpeech,
                     tokenizationConfidence = word.tokenizationConfidence,
-                    firstSeenAt = indexedAtEpochMillis,
-                    lastSeenAt = indexedAtEpochMillis,
+                    frequencyCorpus = word.frequencyCorpus,
+                    frequencyRank = word.frequencyRank,
+                    jlptLevel = word.jlptLevel?.toLong(),
+                    gradeLevel = word.gradeLevel?.toLong(),
+                    firstSeenAt = source.first_exposed_at,
+                    lastSeenAt = source.last_exposed_at,
                 )
                 immersionQueries.insertImmersionWordOccurrence(
                     wordId = word.id,
@@ -254,8 +281,8 @@ class SqlDelightImmersionRepository(
                     unicodeName = character.unicodeName,
                     unicodeCategory = character.unicodeCategory,
                     unicodeScript = character.unicodeScript,
-                    firstSeenAt = indexedAtEpochMillis,
-                    lastSeenAt = indexedAtEpochMillis,
+                    firstSeenAt = source.first_exposed_at,
+                    lastSeenAt = source.last_exposed_at,
                 )
                 immersionQueries.insertImmersionCharacterOccurrence(
                     characterCodePoint = character.codePoint.value.toLong(),
@@ -264,9 +291,36 @@ class SqlDelightImmersionRepository(
                     firstOrdinal = character.firstOrdinal,
                 )
             }
+            immersionQueries.recomputeImmersionWordSeenTimes()
+            immersionQueries.recomputeImmersionCharacterSeenTimes()
+            immersionQueries.deleteOrphanImmersionWords()
+            immersionQueries.deleteOrphanImmersionCharacters()
+            val characterTotals = if (terminalReason == IndexTerminalReason.RAW_TEXT_UNAVAILABLE) {
+                null
+            } else {
+                characters.groupingBy { character ->
+                    when (character.unicodeScript) {
+                        "HAN", "HIRAGANA", "KATAKANA", "HANGUL", "LATIN" -> character.unicodeScript
+                        else -> "OTHER"
+                    }
+                }.fold(0L) { total, character ->
+                    Math.addExact(total, character.occurrenceCount.value)
+                }
+            }
             immersionQueries.markImmersionSourceIndexed(
+                tokenizerId = tokenizerId,
                 tokenizerVersion = tokenizerVersion.toLong(),
+                normalizationVersion = normalizationVersion.toLong(),
+                tokenizationConfidence = tokenizationConfidence,
                 indexedVersion = indexedVersion.toLong(),
+                terminalReason = terminalReason?.name,
+                countableCharacters = characterTotals?.values?.sum(),
+                hanCharacters = characterTotals?.get("HAN"),
+                hiraganaCharacters = characterTotals?.get("HIRAGANA"),
+                katakanaCharacters = characterTotals?.get("KATAKANA"),
+                hangulCharacters = characterTotals?.get("HANGUL"),
+                latinCharacters = characterTotals?.get("LATIN"),
+                otherCharacters = characterTotals?.get("OTHER"),
                 id = sourceUnitId.value,
             )
             checkExactlyOneChange("marking source unit indexed")
@@ -274,11 +328,60 @@ class SqlDelightImmersionRepository(
         }
     }
 
-    override suspend fun markFailure(sourceUnitId: SourceUnitId, errorCode: String) {
+    override suspend fun markFailure(
+        sourceUnitId: SourceUnitId,
+        errorCode: String,
+        nextAttemptAtEpochMillis: Long,
+    ) {
         require(errorCode.isNotBlank()) { "Index error code cannot be blank" }
+        require(nextAttemptAtEpochMillis >= 0) { "Next index attempt cannot be negative" }
         handler.await(inTransaction = true) {
-            immersionQueries.markImmersionSourceIndexFailed(errorCode, sourceUnitId.value)
+            immersionQueries.markImmersionSourceIndexFailed(
+                errorCode = errorCode,
+                nextAttemptAt = nextAttemptAtEpochMillis,
+                id = sourceUnitId.value,
+            )
             checkExactlyOneChange("marking source unit index failure")
+        }
+    }
+
+    override suspend fun requeue(
+        request: ImmersionReindexRequest,
+        targetVersion: Int,
+    ): Long {
+        require(targetVersion > 0) { "Target version must be positive" }
+        return handler.await(inTransaction = true) {
+            immersionQueries.requeueImmersionSourceUnits(
+                titleId = request.titleId?.value,
+                exposedFrom = request.exposedFromEpochMillis,
+                exposedUntil = request.exposedUntilEpochMillis,
+                languageTag = request.languageTag?.value,
+            )
+            immersionQueries.selectImmersionChanges().executeAsOne()
+        }
+    }
+
+    override suspend fun pendingCount(targetVersion: Int): Long {
+        require(targetVersion > 0) { "Target version must be positive" }
+        return handler.await {
+            immersionQueries.countPendingImmersionSourceUnits(targetVersion.toLong()).executeAsOne()
+        }
+    }
+
+    suspend fun isIndexEntityExcluded(
+        entityType: String,
+        entityId: String,
+        scopeKeys: Collection<String>,
+    ): Boolean {
+        require(entityType.isNotBlank()) { "Exclusion entity type cannot be blank" }
+        require(entityId.isNotBlank()) { "Exclusion entity ID cannot be blank" }
+        require(scopeKeys.isNotEmpty()) { "At least one exclusion scope is required" }
+        return handler.await {
+            immersionQueries.isImmersionIndexEntityExcluded(
+                entityType = entityType,
+                entityId = entityId,
+                scopeKeys = scopeKeys,
+            ).executeAsOne() > 0
         }
     }
 
@@ -995,10 +1098,13 @@ private fun SelectImmersionIndexWork.toDomain(): IndexWorkItem =
             sourceUnitId = SourceUnitId(id),
             titleId = TitleId(title_id),
             sourceKind = SourceKind.valueOf(source_kind),
+            languageTag = language_tag?.let(::LanguageTag),
+            profileId = profile_id,
             normalizedTextHash = normalized_text_hash,
             rawText = raw_text?.decodeUtf8Strict(),
             tokenizerVersion = tokenizer_version.toIntExact("tokenizer version"),
             indexedVersion = indexed_version.toIntExact("indexed version"),
+            attemptCount = index_attempt_count.toIntExact("index attempt count"),
         )
     }
 

@@ -1,0 +1,17 @@
+ALTER TABLE immersion_source_unit
+ADD COLUMN tokenizer_id TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE immersion_source_unit
+ADD COLUMN normalization_version INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE immersion_source_unit
+ADD COLUMN tokenization_confidence REAL;
+
+ALTER TABLE immersion_source_unit
+ADD COLUMN index_attempt_count INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE immersion_source_unit
+ADD COLUMN next_index_attempt_at INTEGER;
+
+ALTER TABLE immersion_source_unit
+ADD COLUMN indexing_terminal_reason TEXT;

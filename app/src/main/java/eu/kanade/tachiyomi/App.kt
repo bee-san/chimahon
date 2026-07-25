@@ -251,6 +251,9 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
         if (Injekt.get<tachiyomi.domain.immersion.service.ImmersionStatsPreferences>().uiEnabled().get()) {
             mihon.feature.stats.legacy.LegacyStatsImportJob.start(this)
         }
+        if (Injekt.get<tachiyomi.domain.immersion.service.ImmersionStatsPreferences>().indexingEnabled().get()) {
+            mihon.feature.stats.indexing.ImmersionIndexJob.start(this)
+        }
         // Chimahon <--
     }
 
