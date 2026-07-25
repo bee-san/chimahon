@@ -332,10 +332,10 @@ class ImmersionIndexingEngine(
         language: LanguageTag,
         ordinal: Long,
     ): IndexedWord {
-        val normalizedHeadword = normalizeIdentity(headword, language)
-        val normalizedReading = reading?.let { normalizeReading(it) }.orEmpty()
+        val normalizedHeadword = ImmersionLexemeNormalizer.normalizeHeadword(headword, language)
+        val normalizedReading = reading?.let { ImmersionLexemeNormalizer.normalizeReading(it) }.orEmpty()
         val identity = "$normalizedHeadword\u0000$normalizedReading"
-        val id = stableWordId(language, identity)
+        val id = ImmersionLexemeNormalizer.stableWordId(language, identity)
         return IndexedWord(
             id = id,
             languageTag = language,
@@ -419,37 +419,39 @@ class ImmersionReindexController(
     }
 }
 
-private fun normalizeIdentity(
-    value: String,
-    language: LanguageTag,
-): String {
-    val normalized = Normalizer.normalize(value, Normalizer.Form.NFC).trim()
-    return if (language.value.substringBefore('-') in setOf("ja", "ko", "zh")) {
-        normalized
-    } else {
-        normalized.lowercase(Locale.forLanguageTag(language.value))
-    }
-}
-
-private fun normalizeReading(value: String): String =
-    Normalizer.normalize(value, Normalizer.Form.NFKC)
-        .trim()
-        .map { character ->
-            if (character in '\u30A1'..'\u30F6') {
-                (character.code - KATAKANA_TO_HIRAGANA_OFFSET).toChar()
-            } else {
-                character
-            }
+object ImmersionLexemeNormalizer {
+    fun normalizeHeadword(
+        value: String,
+        language: LanguageTag,
+    ): String {
+        val normalized = Normalizer.normalize(value, Normalizer.Form.NFC).trim()
+        return if (language.value.substringBefore('-') in setOf("ja", "ko", "zh")) {
+            normalized
+        } else {
+            normalized.lowercase(Locale.forLanguageTag(language.value))
         }
-        .joinToString("")
+    }
 
-private fun stableWordId(
-    language: LanguageTag,
-    identity: String,
-): String =
-    MessageDigest.getInstance("SHA-256")
-        .digest("${language.value}\u0000$identity".toByteArray(StandardCharsets.UTF_8))
-        .joinToString("") { "%02x".format(it) }
+    fun normalizeReading(value: String): String =
+        Normalizer.normalize(value, Normalizer.Form.NFKC)
+            .trim()
+            .map { character ->
+                if (character in '\u30A1'..'\u30F6') {
+                    (character.code - KATAKANA_TO_HIRAGANA_OFFSET).toChar()
+                } else {
+                    character
+                }
+            }
+            .joinToString("")
+
+    fun stableWordId(
+        language: LanguageTag,
+        identity: String,
+    ): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest("${language.value}\u0000$identity".toByteArray(StandardCharsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+}
 
 private fun unicodeCategory(codePoint: Int): String = when (Character.getType(codePoint)) {
     Character.UPPERCASE_LETTER.toInt() -> "UPPERCASE_LETTER"

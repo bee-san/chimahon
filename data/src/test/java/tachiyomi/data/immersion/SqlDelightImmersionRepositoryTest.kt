@@ -26,15 +26,20 @@ import tachiyomi.data.Mangas
 import tachiyomi.data.MemoColumnAdapter
 import tachiyomi.data.Reading_sessions
 import tachiyomi.data.StringListColumnAdapter
+import tachiyomi.domain.immersion.model.AnkiInventoryFailure
+import tachiyomi.domain.immersion.model.AnkiMatchConfidence
 import tachiyomi.domain.immersion.model.AnkiOperationEvent
 import tachiyomi.domain.immersion.model.AnkiOperationId
 import tachiyomi.domain.immersion.model.AnkiOperationStatus
 import tachiyomi.domain.immersion.model.AnkiOperationType
+import tachiyomi.domain.immersion.model.AnkiSnapshotStatus
 import tachiyomi.domain.immersion.model.CapabilityState
 import tachiyomi.domain.immersion.model.CharacterVolume
 import tachiyomi.domain.immersion.model.EventId
 import tachiyomi.domain.immersion.model.EventType
 import tachiyomi.domain.immersion.model.ExposureEvent
+import tachiyomi.domain.immersion.model.ImmersionAnkiItem
+import tachiyomi.domain.immersion.model.ImmersionAnkiSnapshot
 import tachiyomi.domain.immersion.model.ImmersionDataException
 import tachiyomi.domain.immersion.model.ImmersionReindexRequest
 import tachiyomi.domain.immersion.model.ImmersionSessionStart
@@ -51,6 +56,7 @@ import tachiyomi.domain.immersion.model.LegacyImportResultState
 import tachiyomi.domain.immersion.model.LegacyImportSourceKind
 import tachiyomi.domain.immersion.model.LookupEvent
 import tachiyomi.domain.immersion.model.LookupStatus
+import tachiyomi.domain.immersion.model.MaturityTier
 import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.MillisecondDuration
 import tachiyomi.domain.immersion.model.NetCharacterProgress
@@ -111,6 +117,7 @@ class SqlDelightImmersionRepositoryTest {
             "immersion_anki_operation",
             "immersion_anki_snapshot",
             "immersion_anki_item",
+            "immersion_anki_character",
             "immersion_daily_rollup",
             "immersion_lifetime_rollup",
             "immersion_applied_event",
@@ -157,6 +164,18 @@ class SqlDelightImmersionRepositoryTest {
             queryLong(
                 migrationDriver,
                 "SELECT count(*) FROM pragma_table_info('immersion_source_unit') WHERE name = 'ocr_quality'",
+            ) shouldBe 1
+            queryLong(
+                migrationDriver,
+                "SELECT count(*) FROM pragma_table_info('immersion_anki_snapshot') WHERE name = 'is_current'",
+            ) shouldBe 1
+            queryLong(
+                migrationDriver,
+                "SELECT count(*) FROM pragma_table_info('immersion_anki_item') WHERE name = 'match_confidence'",
+            ) shouldBe 1
+            queryLong(
+                migrationDriver,
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'immersion_anki_character'",
             ) shouldBe 1
             queryImmersionSchema(migrationDriver) shouldContainExactly queryImmersionSchema(driver)
             assertLegacySessionConstraints(migrationDriver)
@@ -741,6 +760,81 @@ class SqlDelightImmersionRepositoryTest {
     }
 
     @Test
+    fun `Anki snapshots activate atomically retain failed cache and recompute maturity locally`() = runTest {
+        repository.upsertTitle(title().copy(profileId = "profile")) shouldBe PersistenceResult.Applied
+        repository.createSession(sessionStart().copy(profileId = "profile")) shouldBe PersistenceResult.Applied
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = 85).let {
+                it.copy(source = it.source.copy(rawText = "猫語"))
+            },
+        )
+        repository.storeIndexResult(
+            sourceUnitId = SOURCE_ID,
+            tokenizerId = "test",
+            tokenizerVersion = 1,
+            normalizationVersion = 1,
+            indexedVersion = 1,
+            indexedAtEpochMillis = 1_000,
+            tokenizationConfidence = 1.0,
+            terminalReason = null,
+            words = listOf(indexedWord("word-cat-language", "猫語", "ねこご", 0)),
+            characters = listOf(indexedCharacter('猫', 1), indexedCharacter('語', 1, 1)),
+        )
+        repository.activateSnapshot(
+            ankiSnapshot("snapshot-1", requestedAt = 1_000),
+            listOf(ankiItem("snapshot-1", intervalDays = 10, tier = MaturityTier.YOUNG)),
+        )
+        repository.getCurrentSnapshot("profile")?.id shouldBe "snapshot-1"
+        repository.getCurrentItems("profile").single().characters shouldBe
+            setOf(UnicodeCodePoint('猫'.code), UnicodeCodePoint('語'.code))
+        repository.getWordCoverage("profile", LanguageTag("ja")).let {
+            it.encountered shouldBe 1
+            it.coveredReadingAware shouldBe 1
+            it.coveredHeadwordOrCharacter shouldBe 1
+        }
+        repository.getCharacterCoverage("profile", LanguageTag("ja")).let {
+            it.encountered shouldBe 2
+            it.coveredHeadwordOrCharacter shouldBe 2
+        }
+
+        repository.activateSnapshot(
+            ankiSnapshot("snapshot-2", requestedAt = 2_000),
+            listOf(ankiItem("snapshot-2", intervalDays = 30, tier = MaturityTier.MATURE)),
+        )
+        queryLong("SELECT count(*) FROM immersion_anki_snapshot WHERE is_current = 1") shouldBe 1
+        queryStrings("SELECT id FROM immersion_anki_snapshot WHERE is_current = 1") shouldContainExactly
+            listOf("snapshot-2")
+        queryLong("SELECT is_stale FROM immersion_anki_snapshot WHERE id = 'snapshot-1'") shouldBe 1
+
+        repository.recordSnapshotAttempt(
+            ankiSnapshot(
+                id = "snapshot-failed",
+                requestedAt = 3_000,
+                status = AnkiSnapshotStatus.FAILED,
+                failure = AnkiInventoryFailure.PROVIDER_ERROR,
+                current = false,
+            ),
+        )
+        repository.getCurrentSnapshot("profile")?.let {
+            it.id shouldBe "snapshot-2"
+            it.isStale shouldBe true
+        } shouldNotBe null
+        repository.getLatestSnapshot("profile")?.id shouldBe "snapshot-failed"
+
+        repository.recomputeCurrentMaturity(
+            profileId = "profile",
+            matureIntervalDays = 40,
+            recomputedAtEpochMillis = 4_000,
+        )
+        repository.getCurrentItems("profile").single().maturityTier shouldBe MaturityTier.YOUNG
+        repository.getCurrentSnapshot("profile")?.matureIntervalDays shouldBe 40
+
+        repository.clearSnapshots("profile")
+        repository.getCurrentSnapshot("profile") shouldBe null
+        queryLong("SELECT count(*) FROM immersion_anki_item") shouldBe 0
+    }
+
+    @Test
     fun `integrity report is healthy for valid event backed data`() = runTest {
         prepareSession()
         repository.appendExposure(exposure(sequence = 1, eventNumber = 1))
@@ -867,6 +961,65 @@ class SqlDelightImmersionRepositoryTest {
         firstOrdinal = firstOrdinal,
     )
 
+    private fun ankiSnapshot(
+        id: String,
+        requestedAt: Long,
+        status: AnkiSnapshotStatus = AnkiSnapshotStatus.COMPLETE,
+        failure: AnkiInventoryFailure? = null,
+        current: Boolean = true,
+    ) = ImmersionAnkiSnapshot(
+        id = id,
+        profileId = "profile",
+        deckScope = "Mining",
+        requestedAtEpochMillis = requestedAt,
+        completedAtEpochMillis = requestedAt + 100,
+        capabilityVersion = 1,
+        capabilityState = CapabilityState.AVAILABLE,
+        providerVersion = "2.24",
+        supportsNoteModificationTime = true,
+        supportsCardModificationTime = false,
+        supportsReviewHistory = false,
+        status = status,
+        errorCode = failure,
+        itemCount = if (status == AnkiSnapshotStatus.COMPLETE) 1 else 0,
+        noteCount = if (status == AnkiSnapshotStatus.COMPLETE) 1 else 0,
+        matureIntervalDays = 21,
+        mappingHash = "mapping",
+        queryDurationMillis = 10,
+        isComplete = status == AnkiSnapshotStatus.COMPLETE,
+        isPartial = failure == AnkiInventoryFailure.PARTIAL_RESULT,
+        isCurrent = current,
+        isStale = false,
+    )
+
+    private fun ankiItem(
+        snapshotId: String,
+        intervalDays: Int,
+        tier: MaturityTier,
+    ) = ImmersionAnkiItem(
+        snapshotId = snapshotId,
+        noteId = 1,
+        cardId = 10,
+        noteTypeId = 20,
+        deckId = 30,
+        languageTag = LanguageTag("ja"),
+        normalizedWord = "猫語",
+        normalizedReading = "ねこご",
+        characters = setOf(UnicodeCodePoint('猫'.code), UnicodeCodePoint('語'.code)),
+        cardType = 2,
+        queue = 2,
+        intervalDays = intervalDays,
+        due = 100,
+        repetitions = 4,
+        lapses = 1,
+        ease = 2_500,
+        noteModifiedAtEpochSeconds = 900,
+        matchConfidence = AnkiMatchConfidence.READING_AWARE,
+        ambiguityCount = 1,
+        maturityTier = tier,
+        firstMatureAtEpochMillis = if (tier == MaturityTier.MATURE) 2_000 else null,
+    )
+
     private fun queryLong(sql: String): Long = queryLong(driver, sql)
 
     private fun queryStrings(
@@ -972,7 +1125,12 @@ class SqlDelightImmersionRepositoryTest {
                         AND sql IS NOT NULL
                         AND NOT (
                             type = 'table'
-                            AND name IN ('immersion_session', 'immersion_source_unit')
+                            AND name IN (
+                                'immersion_session',
+                                'immersion_source_unit',
+                                'immersion_anki_snapshot',
+                                'immersion_anki_item'
+                            )
                         )
                     ORDER BY type, name
                 """.trimIndent(),

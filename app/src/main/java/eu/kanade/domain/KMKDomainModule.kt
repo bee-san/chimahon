@@ -1,5 +1,6 @@
 package eu.kanade.domain
 
+import chimahon.anki.AnkiDroidInventoryProvider
 import mihon.feature.stats.indexing.DictionaryBackedJapaneseTokenizer
 import mihon.feature.stats.indexing.ImmersionIndexJob
 import mihon.feature.stats.indexing.SqlImmersionIndexExclusionPolicy
@@ -21,6 +22,9 @@ import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
 import tachiyomi.domain.immersion.repository.ImmersionRecorderRepository
 import tachiyomi.domain.immersion.repository.ImmersionStatsRepository
 import tachiyomi.domain.immersion.repository.NoOpImmersionRecorderRepository
+import tachiyomi.domain.immersion.service.AnkiInventoryProvider
+import tachiyomi.domain.immersion.service.AnkiInventorySynchronizer
+import tachiyomi.domain.immersion.service.AnkiKnownnessResolver
 import tachiyomi.domain.immersion.service.AnkiOperationRecorder
 import tachiyomi.domain.immersion.service.AnkiOperationRepairWriter
 import tachiyomi.domain.immersion.service.BoundaryImmersionTokenizer
@@ -80,6 +84,9 @@ class KMKDomainModule : InjektModule {
         addSingletonFactory<ImmersionMaintenanceRepository> { get<SqlDelightImmersionRepository>() }
         addSingletonFactory<ImmersionGoalRepository> { get<SqlDelightImmersionRepository>() }
         addSingletonFactory<ImmersionAnkiRepository> { get<SqlDelightImmersionRepository>() }
+        addSingletonFactory<AnkiInventoryProvider> { AnkiDroidInventoryProvider(get()) }
+        addSingletonFactory { AnkiInventorySynchronizer(get(), get()) }
+        addSingletonFactory { AnkiKnownnessResolver(get()) }
         addSingletonFactory<SourceTextNormalizer> { DefaultSourceTextNormalizer() }
         addSingletonFactory { DictionaryBackedJapaneseTokenizer(get(), get(), get()) }
         addSingletonFactory { BoundaryImmersionTokenizer() }

@@ -1,8 +1,10 @@
 package tachiyomi.data.immersion
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import tachiyomi.data.Database
 import tachiyomi.data.DatabaseHandler
+import tachiyomi.data.Immersion_anki_item
 import tachiyomi.data.Immersion_anki_snapshot
 import tachiyomi.data.Immersion_goal
 import tachiyomi.data.Immersion_import_ledger
@@ -10,10 +12,14 @@ import tachiyomi.data.Immersion_session
 import tachiyomi.data.Immersion_source_unit
 import tachiyomi.data.SelectImmersionIndexWork
 import tachiyomi.data.SelectLegacyImmersionAggregates
+import tachiyomi.domain.immersion.model.AnkiInventoryFailure
+import tachiyomi.domain.immersion.model.AnkiMatchConfidence
 import tachiyomi.domain.immersion.model.AnkiOperationEvent
 import tachiyomi.domain.immersion.model.AnkiOperationStatus
 import tachiyomi.domain.immersion.model.AnkiOperationType
+import tachiyomi.domain.immersion.model.AnkiSnapshotStatus
 import tachiyomi.domain.immersion.model.ExposureEvent
+import tachiyomi.domain.immersion.model.ImmersionAnkiItem
 import tachiyomi.domain.immersion.model.ImmersionAnkiSnapshot
 import tachiyomi.domain.immersion.model.ImmersionDataException
 import tachiyomi.domain.immersion.model.ImmersionGoal
@@ -37,6 +43,7 @@ import tachiyomi.domain.immersion.model.LegacyImportResult
 import tachiyomi.domain.immersion.model.LegacyImportResultState
 import tachiyomi.domain.immersion.model.LookupEvent
 import tachiyomi.domain.immersion.model.LookupStatus
+import tachiyomi.domain.immersion.model.MaturityTier
 import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.MillisecondDuration
 import tachiyomi.domain.immersion.model.NetCharacterProgress
@@ -52,6 +59,7 @@ import tachiyomi.domain.immersion.model.SessionStatus
 import tachiyomi.domain.immersion.model.SourceKind
 import tachiyomi.domain.immersion.model.SourceUnitId
 import tachiyomi.domain.immersion.model.TitleId
+import tachiyomi.domain.immersion.model.UnicodeCodePoint
 import tachiyomi.domain.immersion.repository.ImmersionAnkiRepository
 import tachiyomi.domain.immersion.repository.ImmersionGoalRepository
 import tachiyomi.domain.immersion.repository.ImmersionIndexRepository
@@ -59,6 +67,7 @@ import tachiyomi.domain.immersion.repository.ImmersionLegacyImportRepository
 import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
 import tachiyomi.domain.immersion.repository.ImmersionRecorderRepository
 import tachiyomi.domain.immersion.repository.ImmersionStatsRepository
+import tachiyomi.domain.immersion.service.AnkiCoverage
 import tachiyomi.domain.immersion.service.PendingAnkiOperation
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
@@ -547,26 +556,74 @@ class SqlDelightImmersionRepository(
             immersionQueries.selectImmersionGoals().executeAsList().map(Immersion_goal::toDomain)
         }
 
-    override suspend fun upsertSnapshot(snapshot: ImmersionAnkiSnapshot) {
+    override suspend fun activateSnapshot(
+        snapshot: ImmersionAnkiSnapshot,
+        items: List<ImmersionAnkiItem>,
+    ) {
+        require(snapshot.isComplete && snapshot.isCurrent)
         handler.await(inTransaction = true) {
-            immersionQueries.upsertImmersionAnkiSnapshot(
-                id = snapshot.id,
-                profileId = snapshot.profileId,
-                deckScope = snapshot.deckScope,
-                requestedAt = snapshot.requestedAtEpochMillis,
-                completedAt = snapshot.completedAtEpochMillis,
-                capabilityVersion = snapshot.capabilityVersion.toLong(),
-                status = snapshot.status,
-                errorCode = snapshot.errorCode,
-                isComplete = snapshot.isComplete.toLong(),
-                isPartial = snapshot.isPartial.toLong(),
-                isStale = snapshot.isStale.toLong(),
-            )
+            immersionQueries.clearCurrentImmersionAnkiSnapshot(snapshot.profileId)
+            upsertAnkiSnapshot(snapshot, isCurrent = false)
+            immersionQueries.deleteImmersionAnkiSnapshotItems(snapshot.id)
+            items.forEach { item ->
+                require(item.snapshotId == snapshot.id)
+                immersionQueries.insertImmersionAnkiItem(
+                    snapshotId = item.snapshotId,
+                    noteId = item.noteId,
+                    cardId = item.cardId,
+                    noteTypeId = item.noteTypeId,
+                    deckId = item.deckId,
+                    languageTag = item.languageTag.value,
+                    normalizedWord = item.normalizedWord,
+                    normalizedReading = item.normalizedReading,
+                    cardType = item.cardType?.toLong(),
+                    queue = item.queue?.toLong(),
+                    intervalDays = item.intervalDays?.toLong(),
+                    due = item.due,
+                    repetitions = item.repetitions?.toLong(),
+                    lapses = item.lapses?.toLong(),
+                    ease = item.ease?.toLong(),
+                    noteModifiedAt = item.noteModifiedAtEpochSeconds,
+                    matchConfidence = item.matchConfidence.name,
+                    ambiguityCount = item.ambiguityCount.toLong(),
+                    maturityTier = item.maturityTier.name,
+                    firstMatureAt = item.firstMatureAtEpochMillis,
+                )
+                item.characters.forEach { character ->
+                    immersionQueries.insertImmersionAnkiCharacter(
+                        snapshotId = item.snapshotId,
+                        cardId = item.cardId,
+                        codePoint = character.value.toLong(),
+                    )
+                }
+            }
+            immersionQueries.setCurrentImmersionAnkiSnapshot(snapshot.id)
             immersionQueries.incrementImmersionRevision(
                 snapshot.completedAtEpochMillis ?: snapshot.requestedAtEpochMillis,
             )
         }
     }
+
+    override suspend fun recordSnapshotAttempt(snapshot: ImmersionAnkiSnapshot) {
+        require(!snapshot.isCurrent)
+        handler.await(inTransaction = true) {
+            upsertAnkiSnapshot(snapshot, isCurrent = false)
+            if (snapshot.status != AnkiSnapshotStatus.COMPLETE) {
+                immersionQueries.markCurrentImmersionAnkiSnapshotStale(snapshot.profileId)
+            }
+            immersionQueries.incrementImmersionRevision(
+                snapshot.completedAtEpochMillis ?: snapshot.requestedAtEpochMillis,
+            )
+        }
+    }
+
+    override suspend fun getCurrentSnapshot(profileId: String): ImmersionAnkiSnapshot? =
+        handler.await {
+            immersionQueries
+                .selectCurrentImmersionAnkiSnapshot(profileId)
+                .executeAsOneOrNull()
+                ?.toDomain()
+        }
 
     override suspend fun getLatestSnapshot(profileId: String): ImmersionAnkiSnapshot? =
         handler.await {
@@ -575,6 +632,160 @@ class SqlDelightImmersionRepository(
                 .executeAsOneOrNull()
                 ?.toDomain()
         }
+
+    override fun observeLatestSnapshot(profileId: String): Flow<ImmersionAnkiSnapshot?> =
+        handler.subscribeToOneOrNull {
+            immersionQueries.selectLatestImmersionAnkiSnapshot(profileId)
+        }.map { it?.toDomain() }
+
+    override suspend fun getCurrentItems(profileId: String): List<ImmersionAnkiItem> =
+        handler.await {
+            val characters = immersionQueries
+                .selectCurrentImmersionAnkiCharacters(profileId)
+                .executeAsList()
+                .groupBy(
+                    keySelector = { it.card_id },
+                    valueTransform = { UnicodeCodePoint(it.code_point.toIntExact("Anki character")) },
+                )
+            immersionQueries.selectCurrentImmersionAnkiItems(profileId)
+                .executeAsList()
+                .map { it.toDomain(characters[it.card_id].orEmpty().toSet()) }
+        }
+
+    override suspend fun findWordItems(
+        profileId: String,
+        languageTag: LanguageTag,
+        normalizedWord: String,
+        normalizedReading: String,
+    ): List<ImmersionAnkiItem> =
+        handler.await {
+            immersionQueries.selectImmersionAnkiWordItems(
+                profileId = profileId,
+                languageTag = languageTag.value,
+                normalizedWord = normalizedWord,
+                normalizedReading = normalizedReading,
+            ).executeAsList().map { item ->
+                item.toDomain(
+                    immersionQueries.selectImmersionAnkiCharactersForCard(
+                        snapshotId = item.snapshot_id,
+                        cardId = item.card_id,
+                    ).executeAsList()
+                        .map { UnicodeCodePoint(it.toIntExact("Anki character")) }
+                        .toSet(),
+                )
+            }
+        }
+
+    override suspend fun findCharacterItems(
+        profileId: String,
+        codePoint: UnicodeCodePoint,
+    ): List<ImmersionAnkiItem> =
+        handler.await {
+            immersionQueries.selectImmersionAnkiCharacterItems(
+                profileId = profileId,
+                codePoint = codePoint.value.toLong(),
+            ).executeAsList().map { item ->
+                item.toDomain(
+                    immersionQueries.selectImmersionAnkiCharactersForCard(
+                        snapshotId = item.snapshot_id,
+                        cardId = item.card_id,
+                    ).executeAsList()
+                        .map { UnicodeCodePoint(it.toIntExact("Anki character")) }
+                        .toSet(),
+                )
+            }
+        }
+
+    override suspend fun getWordCoverage(
+        profileId: String,
+        languageTag: LanguageTag,
+    ): AnkiCoverage =
+        handler.await {
+            immersionQueries.selectImmersionAnkiWordCoverage(
+                profileId = profileId,
+                languageTag = languageTag.value,
+            ).executeAsOne().let {
+                AnkiCoverage(
+                    encountered = it.encountered_count,
+                    coveredReadingAware = it.reading_aware_count,
+                    coveredHeadwordOrCharacter = it.headword_count,
+                )
+            }
+        }
+
+    override suspend fun getCharacterCoverage(
+        profileId: String,
+        languageTag: LanguageTag,
+    ): AnkiCoverage =
+        handler.await {
+            immersionQueries.selectImmersionAnkiCharacterCoverage(
+                profileId = profileId,
+                languageTag = languageTag.value,
+            ).executeAsOne().let {
+                AnkiCoverage(
+                    encountered = it.encountered_count,
+                    coveredReadingAware = it.covered_count,
+                    coveredHeadwordOrCharacter = it.covered_count,
+                )
+            }
+        }
+
+    override suspend fun recomputeCurrentMaturity(
+        profileId: String,
+        matureIntervalDays: Int,
+        recomputedAtEpochMillis: Long,
+    ) {
+        require(matureIntervalDays > 0)
+        handler.await(inTransaction = true) {
+            immersionQueries.recomputeCurrentImmersionAnkiMaturity(
+                matureIntervalDays = matureIntervalDays.toLong(),
+                recomputedAt = recomputedAtEpochMillis,
+                profileId = profileId,
+            )
+            immersionQueries.updateCurrentImmersionAnkiMatureInterval(
+                matureIntervalDays = matureIntervalDays.toLong(),
+                profileId = profileId,
+            )
+            immersionQueries.incrementImmersionRevision(recomputedAtEpochMillis)
+        }
+    }
+
+    override suspend fun clearSnapshots(profileId: String) {
+        handler.await(inTransaction = true) {
+            immersionQueries.deleteImmersionAnkiSnapshots(profileId)
+            immersionQueries.incrementImmersionRevision(System.currentTimeMillis())
+        }
+    }
+
+    private fun Database.upsertAnkiSnapshot(
+        snapshot: ImmersionAnkiSnapshot,
+        isCurrent: Boolean,
+    ) {
+        immersionQueries.upsertImmersionAnkiSnapshot(
+            id = snapshot.id,
+            profileId = snapshot.profileId,
+            deckScope = snapshot.deckScope,
+            requestedAt = snapshot.requestedAtEpochMillis,
+            completedAt = snapshot.completedAtEpochMillis,
+            capabilityVersion = snapshot.capabilityVersion.toLong(),
+            capabilityState = snapshot.capabilityState.name,
+            providerVersion = snapshot.providerVersion,
+            supportsNoteModification = snapshot.supportsNoteModificationTime.toLong(),
+            supportsCardModification = snapshot.supportsCardModificationTime.toLong(),
+            supportsReviewHistory = snapshot.supportsReviewHistory.toLong(),
+            status = snapshot.status.name,
+            errorCode = snapshot.errorCode?.name,
+            itemCount = snapshot.itemCount.toLong(),
+            noteCount = snapshot.noteCount.toLong(),
+            matureIntervalDays = snapshot.matureIntervalDays.toLong(),
+            mappingHash = snapshot.mappingHash,
+            queryDurationMillis = snapshot.queryDurationMillis,
+            isComplete = snapshot.isComplete.toLong(),
+            isPartial = snapshot.isPartial.toLong(),
+            isCurrent = isCurrent.toLong(),
+            isStale = snapshot.isStale.toLong(),
+        )
+    }
 
     override suspend fun importLegacyBatch(batch: LegacyImportBatch): LegacyImportResult =
         handler.await(inTransaction = true) {
@@ -1139,11 +1350,57 @@ private fun Immersion_anki_snapshot.toDomain(): ImmersionAnkiSnapshot =
             requestedAtEpochMillis = requested_at,
             completedAtEpochMillis = completed_at,
             capabilityVersion = capability_version.toIntExact("capability version"),
-            status = status,
-            errorCode = error_code,
+            capabilityState = enumValueOf(capability_state),
+            providerVersion = provider_version,
+            supportsNoteModificationTime = supports_note_modification.toBooleanExact(
+                "note modification capability",
+            ),
+            supportsCardModificationTime = supports_card_modification.toBooleanExact(
+                "card modification capability",
+            ),
+            supportsReviewHistory = supports_review_history.toBooleanExact(
+                "review history capability",
+            ),
+            status = enumValueOf<AnkiSnapshotStatus>(status),
+            errorCode = error_code?.let { enumValueOf<AnkiInventoryFailure>(it) },
+            itemCount = item_count.toIntExact("Anki item count"),
+            noteCount = note_count.toIntExact("Anki note count"),
+            matureIntervalDays = mature_interval_days.toIntExact("mature interval"),
+            mappingHash = mapping_hash,
+            queryDurationMillis = query_duration_ms,
             isComplete = is_complete.toBooleanExact("complete flag"),
             isPartial = is_partial.toBooleanExact("partial flag"),
+            isCurrent = is_current.toBooleanExact("current flag"),
             isStale = is_stale.toBooleanExact("stale flag"),
+        )
+    }
+
+private fun Immersion_anki_item.toDomain(
+    characters: Set<UnicodeCodePoint>,
+): ImmersionAnkiItem =
+    mapCorruption("Anki item $card_id") {
+        ImmersionAnkiItem(
+            snapshotId = snapshot_id,
+            noteId = note_id,
+            cardId = card_id,
+            noteTypeId = note_type_id,
+            deckId = deck_id,
+            languageTag = LanguageTag(language_tag),
+            normalizedWord = requireNotNull(normalized_word),
+            normalizedReading = normalized_reading.orEmpty(),
+            characters = characters,
+            cardType = card_type?.toIntExact("card type"),
+            queue = queue?.toIntExact("card queue"),
+            intervalDays = interval_days?.toIntExact("card interval"),
+            due = due,
+            repetitions = repetitions?.toIntExact("card repetitions"),
+            lapses = lapses?.toIntExact("card lapses"),
+            ease = ease?.toIntExact("card ease"),
+            noteModifiedAtEpochSeconds = note_modified_at,
+            matchConfidence = enumValueOf<AnkiMatchConfidence>(match_confidence),
+            ambiguityCount = ambiguity_count.toIntExact("match ambiguity"),
+            maturityTier = enumValueOf<MaturityTier>(maturity_tier),
+            firstMatureAtEpochMillis = first_mature_at,
         )
     }
 

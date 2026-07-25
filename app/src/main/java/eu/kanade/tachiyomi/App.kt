@@ -88,6 +88,7 @@ import logcat.LogPriority
 import logcat.LogcatLogger
 import mihon.core.migration.Migrator
 import mihon.core.migration.migrations.migrations
+import mihon.feature.stats.anki.AnkiInventorySyncJob
 import mihon.feature.stats.recorder.ImmersionRecorderLifecycleCoordinator
 import mihon.telemetry.TelemetryConfig
 import org.conscrypt.Conscrypt
@@ -254,6 +255,7 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
         if (Injekt.get<tachiyomi.domain.immersion.service.ImmersionStatsPreferences>().indexingEnabled().get()) {
             mihon.feature.stats.indexing.ImmersionIndexJob.start(this)
         }
+        AnkiInventorySyncJob.setupTask(this)
         // Chimahon <--
     }
 

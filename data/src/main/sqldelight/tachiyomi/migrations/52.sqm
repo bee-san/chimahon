@@ -1,0 +1,44 @@
+ALTER TABLE immersion_anki_snapshot ADD COLUMN capability_state TEXT NOT NULL DEFAULT 'UNAVAILABLE';
+ALTER TABLE immersion_anki_snapshot ADD COLUMN provider_version TEXT;
+ALTER TABLE immersion_anki_snapshot ADD COLUMN item_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE immersion_anki_snapshot ADD COLUMN note_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE immersion_anki_snapshot ADD COLUMN mature_interval_days INTEGER NOT NULL DEFAULT 21;
+ALTER TABLE immersion_anki_snapshot ADD COLUMN mapping_hash TEXT NOT NULL DEFAULT 'legacy';
+ALTER TABLE immersion_anki_snapshot ADD COLUMN query_duration_ms INTEGER;
+ALTER TABLE immersion_anki_snapshot ADD COLUMN is_current INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE immersion_anki_snapshot ADD COLUMN supports_note_modification INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE immersion_anki_snapshot ADD COLUMN supports_card_modification INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE immersion_anki_snapshot ADD COLUMN supports_review_history INTEGER NOT NULL DEFAULT 0;
+
+CREATE UNIQUE INDEX immersion_anki_snapshot_current_profile_index
+ON immersion_anki_snapshot(profile_id)
+WHERE is_current = 1;
+
+ALTER TABLE immersion_anki_item ADD COLUMN note_type_id INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE immersion_anki_item ADD COLUMN deck_id INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE immersion_anki_item ADD COLUMN language_tag TEXT NOT NULL DEFAULT 'und';
+ALTER TABLE immersion_anki_item ADD COLUMN repetitions INTEGER;
+ALTER TABLE immersion_anki_item ADD COLUMN note_modified_at INTEGER;
+ALTER TABLE immersion_anki_item ADD COLUMN match_confidence TEXT NOT NULL DEFAULT 'HEADWORD_ONLY';
+ALTER TABLE immersion_anki_item ADD COLUMN ambiguity_count INTEGER NOT NULL DEFAULT 0;
+
+DROP INDEX immersion_anki_item_character_index;
+ALTER TABLE immersion_anki_item DROP COLUMN character_code_point;
+
+DROP INDEX immersion_anki_item_word_index;
+CREATE INDEX immersion_anki_item_word_index
+ON immersion_anki_item(language_tag, normalized_word, normalized_reading, snapshot_id);
+
+CREATE INDEX immersion_anki_item_note_index
+ON immersion_anki_item(snapshot_id, note_id);
+
+CREATE TABLE immersion_anki_character(
+    snapshot_id TEXT NOT NULL,
+    card_id INTEGER NOT NULL,
+    code_point INTEGER NOT NULL,
+    PRIMARY KEY(snapshot_id, card_id, code_point),
+    FOREIGN KEY(snapshot_id, card_id) REFERENCES immersion_anki_item(snapshot_id, card_id) ON DELETE CASCADE
+);
+
+CREATE INDEX immersion_anki_character_lookup_index
+ON immersion_anki_character(code_point, snapshot_id);

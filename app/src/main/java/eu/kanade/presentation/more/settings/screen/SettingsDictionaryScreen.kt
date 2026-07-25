@@ -118,9 +118,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
+import mihon.feature.stats.anki.AnkiInventorySyncJob
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
 import tachiyomi.core.common.i18n.stringResource
+import tachiyomi.domain.immersion.repository.ImmersionAnkiRepository
 import tachiyomi.i18n.MR
 import tachiyomi.i18n.kmk.KMR
 import tachiyomi.presentation.core.i18n.stringResource
@@ -1857,6 +1859,11 @@ object SettingsDictionaryScreen : SearchableSettings {
         val cropMode = activeProfile.ankiCropMode
         val cropPreset = activeProfile.ankiCropPreset
         val enabled = activeProfile.ankiEnabled
+        val statsExpressionField = activeProfile.ankiStatsExpressionField
+        val statsReadingField = activeProfile.ankiStatsReadingField
+        val statsCharacterField = activeProfile.ankiStatsCharacterField
+        val statsMatureIntervalDays = activeProfile.ankiStatsMatureIntervalDays
+        val statsMaturityAggregation = activeProfile.ankiStatsMaturityAggregation
 
         var decks by remember { mutableStateOf<List<String>>(emptyList()) }
         var models by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -2018,6 +2025,18 @@ object SettingsDictionaryScreen : SearchableSettings {
             "full" to "Full",
         ) + CropPresets.ASPECT_RATIO_PRESETS.map { it.key to it.label }
         val cropPresetMap = cropPresetEntries.associate { it.first to it.second }.toPersistentMap()
+        val statsFieldEntries = buildMap {
+            put("", stringResource(KMR.strings.stats_anki_field_automatic))
+            modelFields.forEach { put(it, it) }
+        }.toPersistentMap()
+        val statsCharacterFieldEntries = buildMap {
+            put("", stringResource(KMR.strings.stats_anki_character_from_expression))
+            modelFields.forEach { put(it, it) }
+        }.toPersistentMap()
+        val statsAggregationEntries = persistentListOf(
+            "MAX_INTERVAL" to stringResource(KMR.strings.stats_anki_aggregation_any_card),
+            "MIN_INTERVAL" to stringResource(KMR.strings.stats_anki_aggregation_all_cards),
+        ).associate { it.first to it.second }.toPersistentMap()
 
         val preferenceItems = buildList<Preference.PreferenceItem<*, *>> {
             add(
@@ -2107,6 +2126,119 @@ object SettingsDictionaryScreen : SearchableSettings {
                         ),
                     )
                 }
+
+                add(
+                    Preference.PreferenceItem.CustomPreference(
+                        title = stringResource(KMR.strings.stats_anki_inventory),
+                        content = {
+                            PreferenceGroupHeader(
+                                title = stringResource(KMR.strings.stats_anki_inventory),
+                            )
+                        },
+                    ),
+                )
+                if (statsFieldEntries.size > 1) {
+                    add(
+                        Preference.PreferenceItem.BasicListPreference(
+                            value = statsExpressionField,
+                            entries = statsFieldEntries,
+                            title = stringResource(KMR.strings.stats_anki_expression_field),
+                            onValueChanged = {
+                                updateProfile { copy(ankiStatsExpressionField = it) }
+                            },
+                        ),
+                    )
+                    add(
+                        Preference.PreferenceItem.BasicListPreference(
+                            value = statsReadingField,
+                            entries = statsFieldEntries,
+                            title = stringResource(KMR.strings.stats_anki_reading_field),
+                            onValueChanged = {
+                                updateProfile { copy(ankiStatsReadingField = it) }
+                            },
+                        ),
+                    )
+                    add(
+                        Preference.PreferenceItem.BasicListPreference(
+                            value = statsCharacterField,
+                            entries = statsCharacterFieldEntries,
+                            title = stringResource(KMR.strings.stats_anki_character_field),
+                            onValueChanged = {
+                                updateProfile { copy(ankiStatsCharacterField = it) }
+                            },
+                        ),
+                    )
+                }
+                add(
+                    Preference.PreferenceItem.SliderPreference(
+                        value = statsMatureIntervalDays,
+                        title = stringResource(KMR.strings.stats_anki_mature_interval),
+                        subtitle = stringResource(
+                            KMR.strings.stats_anki_mature_interval_days,
+                            statsMatureIntervalDays,
+                        ),
+                        valueRange = 1..365,
+                        steps = 363,
+                        onValueChanged = {
+                            updateProfile { copy(ankiStatsMatureIntervalDays = it) }
+                            scope.launch {
+                                Injekt.get<ImmersionAnkiRepository>().recomputeCurrentMaturity(
+                                    profileId = activeProfile.id,
+                                    matureIntervalDays = it,
+                                    recomputedAtEpochMillis = System.currentTimeMillis(),
+                                )
+                            }
+                        },
+                    ),
+                )
+                add(
+                    Preference.PreferenceItem.BasicListPreference(
+                        value = statsMaturityAggregation.takeIf { it in statsAggregationEntries }
+                            ?: "MAX_INTERVAL",
+                        entries = statsAggregationEntries,
+                        title = stringResource(KMR.strings.stats_anki_multi_card_rule),
+                        onValueChanged = {
+                            updateProfile { copy(ankiStatsMaturityAggregation = it) }
+                        },
+                    ),
+                )
+                add(
+                    Preference.PreferenceItem.CustomPreference(
+                        title = stringResource(KMR.strings.stats_anki_cache_controls),
+                        content = {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                OutlinedButton(
+                                    onClick = { AnkiInventorySyncJob.refreshNow(context) },
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Text(stringResource(KMR.strings.stats_anki_refresh))
+                                }
+                                OutlinedButton(
+                                    onClick = { AnkiInventorySyncJob.cancel(context) },
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Text(stringResource(KMR.strings.stats_anki_cancel))
+                                }
+                                TextButton(
+                                    onClick = {
+                                        scope.launch {
+                                            Injekt.get<ImmersionAnkiRepository>()
+                                                .clearSnapshots(activeProfile.id)
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Text(stringResource(KMR.strings.stats_anki_clear_cache))
+                                }
+                            }
+                        },
+                    ),
+                )
 
                 add(
                     Preference.PreferenceItem.CustomPreference(
