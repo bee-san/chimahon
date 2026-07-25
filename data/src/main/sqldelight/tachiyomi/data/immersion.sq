@@ -55,6 +55,17 @@ CREATE TABLE immersion_session(
     schema_version INTEGER NOT NULL,
     legacy_import INTEGER NOT NULL DEFAULT 0,
     sync_origin TEXT,
+    legacy_local_date INTEGER
+        CHECK(legacy_import = 0 OR legacy_local_date IS NOT NULL),
+    legacy_metric_quality TEXT
+        CHECK(legacy_metric_quality IS NULL OR legacy_metric_quality = 'LEGACY_AMBIGUOUS'),
+    legacy_reading_time_seconds REAL
+        CHECK(legacy_reading_time_seconds IS NULL OR legacy_reading_time_seconds >= 0),
+    legacy_cards_total INTEGER NOT NULL DEFAULT 0
+        CHECK(legacy_cards_total >= 0),
+    legacy_completed INTEGER
+        CHECK(legacy_completed IS NULL OR legacy_completed IN (0, 1)),
+    legacy_metadata_json TEXT,
     FOREIGN KEY(title_id) REFERENCES immersion_title(id) ON DELETE RESTRICT,
     CHECK(status IN ('ACTIVE', 'COMPLETED', 'ABANDONED', 'DELETED')),
     CHECK(active_duration_ms >= 0),
@@ -86,6 +97,9 @@ ON immersion_session(device_id, started_at DESC, id DESC);
 
 CREATE INDEX immersion_session_profile_language_time_index
 ON immersion_session(profile_id, language_tag, started_at DESC, id DESC);
+
+CREATE INDEX immersion_session_legacy_date_index
+ON immersion_session(legacy_import, legacy_local_date DESC, media_kind, title_id, id);
 
 CREATE TABLE immersion_source_unit(
     id TEXT NOT NULL PRIMARY KEY,
@@ -513,6 +527,9 @@ CREATE TABLE immersion_import_ledger(
     CHECK(failed_count >= 0)
 );
 
+CREATE INDEX immersion_import_ledger_time_index
+ON immersion_import_ledger(imported_at DESC, source_key, content_hash);
+
 CREATE TABLE immersion_rollup_state(
     scope_key TEXT NOT NULL PRIMARY KEY,
     schema_version INTEGER NOT NULL,
@@ -665,6 +682,81 @@ selectImmersionSessionById:
 SELECT *
 FROM immersion_session
 WHERE id = :id;
+
+insertLegacyImmersionSession:
+INSERT INTO immersion_session(
+    id,
+    device_id,
+    title_id,
+    media_kind,
+    language_tag,
+    profile_id,
+    started_at,
+    ended_at,
+    start_zone_id,
+    start_offset_seconds,
+    status,
+    active_duration_ms,
+    elapsed_duration_ms,
+    gross_characters,
+    net_characters,
+    cards_created,
+    capture_version,
+    schema_version,
+    legacy_import,
+    sync_origin,
+    legacy_local_date,
+    legacy_metric_quality,
+    legacy_reading_time_seconds,
+    legacy_cards_total,
+    legacy_completed,
+    legacy_metadata_json
+)
+VALUES (
+    :id,
+    'legacy-import',
+    :titleId,
+    :mediaKind,
+    :languageTag,
+    :profileId,
+    :startedAt,
+    NULL,
+    :startZoneId,
+    :startOffsetSeconds,
+    'COMPLETED',
+    :activeDurationMs,
+    :activeDurationMs,
+    :characters,
+    :characters,
+    0,
+    :captureVersion,
+    :schemaVersion,
+    1,
+    :syncOrigin,
+    :localDate,
+    'LEGACY_AMBIGUOUS',
+    :readingTimeSeconds,
+    :cardsTotal,
+    :completed,
+    :metadataJson
+)
+ON CONFLICT(id) DO UPDATE SET
+    title_id = excluded.title_id,
+    media_kind = excluded.media_kind,
+    language_tag = excluded.language_tag,
+    profile_id = excluded.profile_id,
+    started_at = excluded.started_at,
+    active_duration_ms = excluded.active_duration_ms,
+    elapsed_duration_ms = excluded.elapsed_duration_ms,
+    gross_characters = excluded.gross_characters,
+    net_characters = excluded.net_characters,
+    sync_origin = excluded.sync_origin,
+    legacy_local_date = excluded.legacy_local_date,
+    legacy_reading_time_seconds = excluded.legacy_reading_time_seconds,
+    legacy_cards_total = excluded.legacy_cards_total,
+    legacy_completed = excluded.legacy_completed,
+    legacy_metadata_json = excluded.legacy_metadata_json
+WHERE immersion_session.legacy_import = 1;
 
 selectImmersionSessionsFirstPage:
 SELECT *
@@ -1096,6 +1188,54 @@ SET
     updated_at = :updatedAt,
     revision = revision + 1
 WHERE scope_key = 'global';
+
+selectImmersionImportLedger:
+SELECT *
+FROM immersion_import_ledger
+WHERE
+    source_key = :sourceKey
+    AND source_version = :sourceVersion
+    AND content_hash = :contentHash;
+
+insertImmersionImportLedger:
+INSERT INTO immersion_import_ledger(
+    source_key,
+    source_version,
+    content_hash,
+    imported_at,
+    result,
+    imported_count,
+    skipped_count,
+    failed_count,
+    error_code
+)
+VALUES (
+    :sourceKey,
+    :sourceVersion,
+    :contentHash,
+    :importedAt,
+    :result,
+    :importedCount,
+    :skippedCount,
+    :failedCount,
+    :errorCode
+);
+
+selectLegacyImmersionAggregates:
+SELECT
+    legacy_local_date,
+    media_kind,
+    profile_id,
+    language_tag,
+    title_id,
+    sum(active_duration_ms) AS active_duration_ms,
+    sum(gross_characters) AS characters,
+    sum(legacy_cards_total) AS cards_total,
+    count(*) AS record_count
+FROM immersion_session
+WHERE legacy_import = 1
+GROUP BY legacy_local_date, media_kind, profile_id, language_tag, title_id
+ORDER BY legacy_local_date DESC, media_kind, profile_id, language_tag, title_id;
 
 upsertImmersionGoal:
 INSERT INTO immersion_goal(

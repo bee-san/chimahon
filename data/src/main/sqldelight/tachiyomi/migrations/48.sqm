@@ -1,0 +1,28 @@
+ALTER TABLE immersion_session
+ADD COLUMN legacy_local_date INTEGER
+CHECK(legacy_import = 0 OR legacy_local_date IS NOT NULL);
+
+ALTER TABLE immersion_session
+ADD COLUMN legacy_metric_quality TEXT
+CHECK(legacy_metric_quality IS NULL OR legacy_metric_quality = 'LEGACY_AMBIGUOUS');
+
+ALTER TABLE immersion_session
+ADD COLUMN legacy_reading_time_seconds REAL
+CHECK(legacy_reading_time_seconds IS NULL OR legacy_reading_time_seconds >= 0);
+
+ALTER TABLE immersion_session
+ADD COLUMN legacy_cards_total INTEGER NOT NULL DEFAULT 0
+CHECK(legacy_cards_total >= 0);
+
+ALTER TABLE immersion_session
+ADD COLUMN legacy_completed INTEGER
+CHECK(legacy_completed IS NULL OR legacy_completed IN (0, 1));
+
+ALTER TABLE immersion_session
+ADD COLUMN legacy_metadata_json TEXT;
+
+CREATE INDEX immersion_session_legacy_date_index
+ON immersion_session(legacy_import, legacy_local_date DESC, media_kind, title_id, id);
+
+CREATE INDEX immersion_import_ledger_time_index
+ON immersion_import_ledger(imported_at DESC, source_key, content_hash);

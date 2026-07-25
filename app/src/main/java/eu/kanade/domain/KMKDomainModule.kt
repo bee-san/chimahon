@@ -1,13 +1,16 @@
 package eu.kanade.domain
 
+import mihon.feature.stats.legacy.LegacyStatsImporter
 import tachiyomi.data.immersion.SqlDelightImmersionRepository
 import tachiyomi.data.libraryUpdateError.LibraryUpdateErrorRepositoryImpl
 import tachiyomi.data.libraryUpdateError.LibraryUpdateErrorWithRelationsRepositoryImpl
 import tachiyomi.data.libraryUpdateErrorMessage.LibraryUpdateErrorMessageRepositoryImpl
+import tachiyomi.domain.immersion.interactor.GetLegacyAggregateTotals
 import tachiyomi.domain.immersion.repository.FeatureFlaggedImmersionRecorderRepository
 import tachiyomi.domain.immersion.repository.ImmersionAnkiRepository
 import tachiyomi.domain.immersion.repository.ImmersionGoalRepository
 import tachiyomi.domain.immersion.repository.ImmersionIndexRepository
+import tachiyomi.domain.immersion.repository.ImmersionLegacyImportRepository
 import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
 import tachiyomi.domain.immersion.repository.ImmersionRecorderRepository
 import tachiyomi.domain.immersion.repository.ImmersionStatsRepository
@@ -47,10 +50,21 @@ class KMKDomainModule : InjektModule {
             )
         }
         addSingletonFactory<ImmersionIndexRepository> { get<SqlDelightImmersionRepository>() }
+        addSingletonFactory<ImmersionLegacyImportRepository> { get<SqlDelightImmersionRepository>() }
         addSingletonFactory<ImmersionStatsRepository> { get<SqlDelightImmersionRepository>() }
         addSingletonFactory<ImmersionMaintenanceRepository> { get<SqlDelightImmersionRepository>() }
         addSingletonFactory<ImmersionGoalRepository> { get<SqlDelightImmersionRepository>() }
         addSingletonFactory<ImmersionAnkiRepository> { get<SqlDelightImmersionRepository>() }
+        addFactory { GetLegacyAggregateTotals(get()) }
+        addSingletonFactory {
+            LegacyStatsImporter(
+                application = get(),
+                repository = get(),
+                getManga = get(),
+                dictionaryPreferences = get(),
+                sourceManager = get(),
+            )
+        }
 
         addSingletonFactory<LibraryUpdateErrorWithRelationsRepository> {
             LibraryUpdateErrorWithRelationsRepositoryImpl(get())

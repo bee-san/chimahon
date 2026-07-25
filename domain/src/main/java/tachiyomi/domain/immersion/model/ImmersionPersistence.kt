@@ -156,7 +156,7 @@ data class ImmersionSession(
         require(endedAtEpochMillis == null || endedAtEpochMillis >= startedAtEpochMillis) {
             "End timestamp cannot precede start"
         }
-        require(status == SessionStatus.ACTIVE || endedAtEpochMillis != null) {
+        require(status == SessionStatus.ACTIVE || endedAtEpochMillis != null || legacyImport) {
             "A finalized session must have an end timestamp"
         }
         require(lastSequence >= 0) { "Last sequence cannot be negative" }

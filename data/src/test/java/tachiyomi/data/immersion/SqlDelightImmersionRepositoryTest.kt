@@ -34,6 +34,11 @@ import tachiyomi.domain.immersion.model.ImmersionSessionStart
 import tachiyomi.domain.immersion.model.ImmersionSourceUnit
 import tachiyomi.domain.immersion.model.ImmersionTitle
 import tachiyomi.domain.immersion.model.LanguageTag
+import tachiyomi.domain.immersion.model.LegacyDailyAggregate
+import tachiyomi.domain.immersion.model.LegacyImportBatch
+import tachiyomi.domain.immersion.model.LegacyImportIdentity
+import tachiyomi.domain.immersion.model.LegacyImportResultState
+import tachiyomi.domain.immersion.model.LegacyImportSourceKind
 import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.MillisecondDuration
 import tachiyomi.domain.immersion.model.NetCharacterProgress
@@ -110,7 +115,7 @@ class SqlDelightImmersionRepositoryTest {
     }
 
     @Test
-    fun `migration 47 is additive and preserves an existing database`() {
+    fun `migration chain from 47 is additive and preserves an existing database`() {
         val migrationDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
         try {
             migrationDriver.execute(null, "CREATE TABLE preexisting_sentinel(value TEXT NOT NULL)", 0).value
@@ -128,10 +133,90 @@ class SqlDelightImmersionRepositoryTest {
                 migrationDriver,
                 "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'immersion_event'",
             ) shouldBe 1
+            queryLong(
+                migrationDriver,
+                "SELECT count(*) FROM pragma_table_info('immersion_session') WHERE name = 'legacy_cards_total'",
+            ) shouldBe 1
             queryImmersionSchema(migrationDriver) shouldContainExactly queryImmersionSchema(driver)
+            assertLegacySessionConstraints(migrationDriver)
         } finally {
             migrationDriver.close()
         }
+    }
+
+    @Test
+    fun `legacy import is atomic replay safe and creates no fabricated detail`() = runTest {
+        val batch = legacyBatch()
+
+        repository.importLegacyBatch(batch).state shouldBe LegacyImportResultState.IMPORTED
+        repository.importLegacyBatch(batch).state shouldBe LegacyImportResultState.ALREADY_IMPORTED
+
+        queryLong("SELECT count(*) FROM immersion_session WHERE legacy_import = 1") shouldBe 1
+        queryLong("SELECT count(*) FROM immersion_import_ledger") shouldBe 1
+        queryLong("SELECT count(*) FROM immersion_event") shouldBe 0
+        queryLong("SELECT count(*) FROM immersion_source_unit") shouldBe 0
+        repository.getLegacyAggregates().single().let { row ->
+            row.activeDuration shouldBe MillisecondDuration(90_050)
+            row.characters shouldBe NonNegativeCounter(2_000)
+            row.cardsTotal shouldBe NonNegativeCounter(4)
+            row.recordCount shouldBe NonNegativeCounter(1)
+        }
+    }
+
+    @Test
+    fun `new source hash updates a stable legacy session instead of duplicating it`() = runTest {
+        repository.importLegacyBatch(legacyBatch())
+
+        repository.importLegacyBatch(
+            legacyBatch(
+                contentHash = "b".repeat(64),
+                characters = 2_500,
+            ),
+        ).state shouldBe LegacyImportResultState.IMPORTED
+
+        queryLong("SELECT count(*) FROM immersion_session WHERE legacy_import = 1") shouldBe 1
+        queryLong("SELECT gross_characters FROM immersion_session WHERE legacy_import = 1") shouldBe 2_500
+        queryLong("SELECT count(*) FROM immersion_import_ledger") shouldBe 2
+    }
+
+    @Test
+    fun `ledger failure rolls the whole legacy source transaction back`() = runTest {
+        driver.execute(
+            null,
+            """
+            CREATE TRIGGER simulate_legacy_ledger_crash
+            BEFORE INSERT ON immersion_import_ledger
+            BEGIN
+                SELECT RAISE(ABORT, 'simulated crash');
+            END
+            """.trimIndent(),
+            0,
+        ).value
+
+        runCatching { repository.importLegacyBatch(legacyBatch()) }
+            .exceptionOrNull() shouldNotBe null
+
+        queryLong("SELECT count(*) FROM immersion_title") shouldBe 0
+        queryLong("SELECT count(*) FROM immersion_session") shouldBe 0
+        queryLong("SELECT count(*) FROM immersion_import_ledger") shouldBe 0
+    }
+
+    @Test
+    fun `partial legacy import persists typed counts with its aggregate`() = runTest {
+        val batch = legacyBatch().copy(
+            failedCount = NonNegativeCounter(2),
+            errorSummary = "INVALID_DATE:2",
+        )
+
+        val result = repository.importLegacyBatch(batch)
+
+        result.state shouldBe LegacyImportResultState.PARTIAL
+        result.importedCount shouldBe NonNegativeCounter(1)
+        result.failedCount shouldBe NonNegativeCounter(2)
+        repository.getImportResult(batch.identity)?.let { stored ->
+            stored.state shouldBe LegacyImportResultState.PARTIAL
+            stored.errorSummary shouldBe "INVALID_DATE:2"
+        } shouldNotBe null
     }
 
     @Test
@@ -417,6 +502,40 @@ class SqlDelightImmersionRepositoryTest {
         column: Int = 0,
     ): List<String> = queryStrings(driver, sql, column)
 
+    private fun legacyBatch(
+        contentHash: String = "a".repeat(64),
+        characters: Long = 2_000,
+    ) = LegacyImportBatch(
+        identity = LegacyImportIdentity(
+            sourceKey = "novels/test/statistics.json",
+            sourceVersion = 1,
+            contentHash = contentHash,
+        ),
+        sourceKind = LegacyImportSourceKind.NOVEL_JSON,
+        aggregates = listOf(
+            LegacyDailyAggregate(
+                sessionId = sessionId(900),
+                titleId = TITLE_ID,
+                titleSourceKey = "legacy:novel:test",
+                displayTitle = "Legacy test",
+                mediaKind = MediaKind.NOVEL,
+                profileId = "default",
+                languageTag = LanguageTag("ja"),
+                localDate = tachiyomi.domain.immersion.model.ImmersionLocalDate.parse("2024-01-02"),
+                startAnchorEpochMillis = 1_704_153_600_000,
+                startZoneId = "UTC",
+                startOffsetSeconds = 0,
+                activeDuration = MillisecondDuration(90_050),
+                originalReadingTimeSeconds = 90.05,
+                characters = NonNegativeCounter(characters),
+                cardsTotal = NonNegativeCounter(4),
+                completed = true,
+                metadataJson = """{"maximumReadingSpeed":2400}""",
+            ),
+        ),
+        importedAtEpochMillis = 1_704_153_700_000,
+    )
+
     companion object {
         private val TITLE_ID = TitleId("00000000-0000-0000-0000-000000000001")
         private val SESSION_ID = sessionId(1)
@@ -471,26 +590,101 @@ class SqlDelightImmersionRepositoryTest {
             parameters = 0,
         ).value
 
-        private fun queryImmersionSchema(driver: JdbcSqliteDriver): List<String> = driver.executeQuery(
-            identifier = null,
-            sql = """
-                SELECT type, name, sql
-                FROM sqlite_master
-                WHERE name LIKE 'immersion_%'
-                    AND sql IS NOT NULL
-                ORDER BY type, name
-            """.trimIndent(),
-            mapper = { cursor ->
-                val result = mutableListOf<String>()
-                while (cursor.next().value) {
-                    val sql = cursor.getString(2)!!
-                        .replace(Regex("\\s+"), " ")
-                        .trim()
-                    result += "${cursor.getString(0)}|${cursor.getString(1)}|$sql"
-                }
-                QueryResult.Value(result)
-            },
-            parameters = 0,
-        ).value
+        private fun queryImmersionSchema(driver: JdbcSqliteDriver): List<String> {
+            val definitions = driver.executeQuery(
+                identifier = null,
+                sql = """
+                    SELECT type, name, sql
+                    FROM sqlite_master
+                    WHERE name LIKE 'immersion_%'
+                        AND sql IS NOT NULL
+                        AND NOT (type = 'table' AND name = 'immersion_session')
+                    ORDER BY type, name
+                """.trimIndent(),
+                mapper = { cursor ->
+                    val result = mutableListOf<String>()
+                    while (cursor.next().value) {
+                        val sql = cursor.getString(2)!!
+                            .replace(Regex("\\s+"), " ")
+                            .trim()
+                        result += "${cursor.getString(0)}|${cursor.getString(1)}|$sql"
+                    }
+                    QueryResult.Value(result)
+                },
+                parameters = 0,
+            ).value
+            val sessionColumns = driver.executeQuery(
+                identifier = null,
+                sql = "PRAGMA table_info('immersion_session')",
+                mapper = { cursor ->
+                    val result = mutableListOf<String>()
+                    while (cursor.next().value) {
+                        result += listOf(
+                            cursor.getString(1),
+                            cursor.getString(2),
+                            cursor.getLong(3),
+                            cursor.getString(4),
+                            cursor.getLong(5),
+                        ).joinToString("|", prefix = "column|")
+                    }
+                    QueryResult.Value(result)
+                },
+                parameters = 0,
+            ).value
+            return definitions + sessionColumns
+        }
+
+        private fun assertLegacySessionConstraints(driver: JdbcSqliteDriver) {
+            driver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+            driver.execute(
+                null,
+                """
+                INSERT INTO immersion_title(
+                    id, media_kind, source_key, display_title, created_at, updated_at
+                ) VALUES (
+                    '00000000-0000-0000-0000-000000009999',
+                    'NOVEL',
+                    'constraint-test',
+                    'Constraint test',
+                    0,
+                    0
+                )
+                """.trimIndent(),
+                0,
+            ).value
+            runCatching {
+                driver.execute(
+                    null,
+                    """
+                    INSERT INTO immersion_session(
+                        id,
+                        device_id,
+                        title_id,
+                        media_kind,
+                        started_at,
+                        start_zone_id,
+                        start_offset_seconds,
+                        status,
+                        capture_version,
+                        schema_version,
+                        legacy_import
+                    ) VALUES (
+                        '00000000-0000-0000-0000-000000009998',
+                        'test',
+                        '00000000-0000-0000-0000-000000009999',
+                        'NOVEL',
+                        0,
+                        'UTC',
+                        0,
+                        'COMPLETED',
+                        1,
+                        1,
+                        1
+                    )
+                    """.trimIndent(),
+                    0,
+                ).value
+            }.exceptionOrNull() shouldNotBe null
+        }
     }
 }

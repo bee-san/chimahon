@@ -5,9 +5,11 @@ import tachiyomi.data.Database
 import tachiyomi.data.DatabaseHandler
 import tachiyomi.data.Immersion_anki_snapshot
 import tachiyomi.data.Immersion_goal
+import tachiyomi.data.Immersion_import_ledger
 import tachiyomi.data.Immersion_session
 import tachiyomi.data.Immersion_source_unit
 import tachiyomi.data.SelectImmersionIndexWork
+import tachiyomi.data.SelectLegacyImmersionAggregates
 import tachiyomi.domain.immersion.model.ExposureEvent
 import tachiyomi.domain.immersion.model.ImmersionAnkiSnapshot
 import tachiyomi.domain.immersion.model.ImmersionDataException
@@ -23,6 +25,11 @@ import tachiyomi.domain.immersion.model.IndexWorkItem
 import tachiyomi.domain.immersion.model.IndexedCharacter
 import tachiyomi.domain.immersion.model.IndexedWord
 import tachiyomi.domain.immersion.model.LanguageTag
+import tachiyomi.domain.immersion.model.LegacyAggregateRow
+import tachiyomi.domain.immersion.model.LegacyImportBatch
+import tachiyomi.domain.immersion.model.LegacyImportIdentity
+import tachiyomi.domain.immersion.model.LegacyImportResult
+import tachiyomi.domain.immersion.model.LegacyImportResultState
 import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.MillisecondDuration
 import tachiyomi.domain.immersion.model.NetCharacterProgress
@@ -39,6 +46,7 @@ import tachiyomi.domain.immersion.model.TitleId
 import tachiyomi.domain.immersion.repository.ImmersionAnkiRepository
 import tachiyomi.domain.immersion.repository.ImmersionGoalRepository
 import tachiyomi.domain.immersion.repository.ImmersionIndexRepository
+import tachiyomi.domain.immersion.repository.ImmersionLegacyImportRepository
 import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
 import tachiyomi.domain.immersion.repository.ImmersionRecorderRepository
 import tachiyomi.domain.immersion.repository.ImmersionStatsRepository
@@ -55,7 +63,8 @@ class SqlDelightImmersionRepository(
     ImmersionStatsRepository,
     ImmersionMaintenanceRepository,
     ImmersionGoalRepository,
-    ImmersionAnkiRepository {
+    ImmersionAnkiRepository,
+    ImmersionLegacyImportRepository {
 
     override suspend fun upsertTitle(title: ImmersionTitle): PersistenceResult =
         handler.await(inTransaction = true) {
@@ -396,6 +405,104 @@ class SqlDelightImmersionRepository(
                 ?.toDomain()
         }
 
+    override suspend fun importLegacyBatch(batch: LegacyImportBatch): LegacyImportResult =
+        handler.await(inTransaction = true) {
+            val existing = immersionQueries.selectImmersionImportLedger(
+                sourceKey = batch.identity.sourceKey,
+                sourceVersion = batch.identity.sourceVersion.toLong(),
+                contentHash = batch.identity.contentHash,
+            ).executeAsOneOrNull()
+            if (existing != null) {
+                return@await existing.toDomain(alreadyImported = true)
+            }
+
+            batch.aggregates.forEach { aggregate ->
+                val existingSession = immersionQueries
+                    .selectImmersionSessionById(aggregate.sessionId.value)
+                    .executeAsOneOrNull()
+                if (existingSession != null && existingSession.legacy_import != 1L) {
+                    throw identityConflict(
+                        "Legacy session ${aggregate.sessionId.value} conflicts with event-backed data",
+                    )
+                }
+                upsertTitleInDatabase(
+                    ImmersionTitle(
+                        id = aggregate.titleId,
+                        mediaKind = aggregate.mediaKind,
+                        sourceKey = aggregate.titleSourceKey,
+                        profileId = aggregate.profileId,
+                        languageTag = aggregate.languageTag,
+                        displayTitle = aggregate.displayTitle,
+                        createdAtEpochMillis = batch.importedAtEpochMillis,
+                        updatedAtEpochMillis = batch.importedAtEpochMillis,
+                    ),
+                )
+                immersionQueries.insertLegacyImmersionSession(
+                    id = aggregate.sessionId.value,
+                    titleId = aggregate.titleId.value,
+                    mediaKind = aggregate.mediaKind.name,
+                    languageTag = aggregate.languageTag?.value,
+                    profileId = aggregate.profileId,
+                    startedAt = aggregate.startAnchorEpochMillis,
+                    startZoneId = aggregate.startZoneId,
+                    startOffsetSeconds = aggregate.startOffsetSeconds.toLong(),
+                    activeDurationMs = aggregate.activeDuration.value,
+                    characters = aggregate.characters.value,
+                    captureVersion = 1,
+                    schemaVersion = 1,
+                    syncOrigin = "legacy:${batch.sourceKind.name}:${batch.identity.sourceKey}",
+                    localDate = aggregate.localDate.epochDay,
+                    readingTimeSeconds = aggregate.originalReadingTimeSeconds,
+                    cardsTotal = aggregate.cardsTotal.value,
+                    completed = aggregate.completed?.toLong(),
+                    metadataJson = aggregate.metadataJson,
+                )
+            }
+
+            val state = when {
+                batch.failedCount.value == 0L -> LegacyImportResultState.IMPORTED
+                batch.aggregates.isEmpty() -> LegacyImportResultState.FAILED
+                else -> LegacyImportResultState.PARTIAL
+            }
+            immersionQueries.insertImmersionImportLedger(
+                sourceKey = batch.identity.sourceKey,
+                sourceVersion = batch.identity.sourceVersion.toLong(),
+                contentHash = batch.identity.contentHash,
+                importedAt = batch.importedAtEpochMillis,
+                result = state.name,
+                importedCount = batch.aggregates.size.toLong(),
+                skippedCount = batch.skippedCount.value,
+                failedCount = batch.failedCount.value,
+                errorCode = batch.errorSummary,
+            )
+            immersionQueries.incrementImmersionRevision(batch.importedAtEpochMillis)
+            LegacyImportResult(
+                identity = batch.identity,
+                state = state,
+                importedCount = NonNegativeCounter(batch.aggregates.size.toLong()),
+                skippedCount = batch.skippedCount,
+                failedCount = batch.failedCount,
+                errorSummary = batch.errorSummary,
+            )
+        }
+
+    override suspend fun getImportResult(identity: LegacyImportIdentity): LegacyImportResult? =
+        handler.await {
+            immersionQueries.selectImmersionImportLedger(
+                sourceKey = identity.sourceKey,
+                sourceVersion = identity.sourceVersion.toLong(),
+                contentHash = identity.contentHash,
+            ).executeAsOneOrNull()?.toDomain(alreadyImported = false)
+        }
+
+    override suspend fun getLegacyAggregates(): List<LegacyAggregateRow> =
+        handler.await {
+            immersionQueries
+                .selectLegacyImmersionAggregates()
+                .executeAsList()
+                .map(SelectLegacyImmersionAggregates::toDomain)
+        }
+
     private fun Database.upsertTitleInDatabase(title: ImmersionTitle): PersistenceResult {
         val existing = immersionQueries.selectImmersionTitleById(title.id.value).executeAsOneOrNull()
         if (
@@ -671,6 +778,49 @@ private fun Immersion_anki_snapshot.toDomain(): ImmersionAnkiSnapshot =
             isComplete = is_complete.toBooleanExact("complete flag"),
             isPartial = is_partial.toBooleanExact("partial flag"),
             isStale = is_stale.toBooleanExact("stale flag"),
+        )
+    }
+
+private fun Immersion_import_ledger.toDomain(alreadyImported: Boolean): LegacyImportResult =
+    mapCorruption("legacy import ledger") {
+        LegacyImportResult(
+            identity = LegacyImportIdentity(
+                sourceKey = source_key,
+                sourceVersion = source_version.toIntExact("legacy import source version"),
+                contentHash = content_hash,
+            ),
+            state = if (alreadyImported) {
+                LegacyImportResultState.ALREADY_IMPORTED
+            } else {
+                LegacyImportResultState.valueOf(result)
+            },
+            importedCount = NonNegativeCounter(imported_count),
+            skippedCount = NonNegativeCounter(skipped_count),
+            failedCount = NonNegativeCounter(failed_count),
+            errorSummary = error_code,
+        )
+    }
+
+private fun SelectLegacyImmersionAggregates.toDomain(): LegacyAggregateRow =
+    mapCorruption("legacy aggregate") {
+        LegacyAggregateRow(
+            localDate = ImmersionLocalDate(
+                requireNotNull(legacy_local_date) { "Legacy aggregate date is missing" },
+            ),
+            mediaKind = MediaKind.valueOf(media_kind),
+            profileId = profile_id,
+            languageTag = language_tag?.let(::LanguageTag),
+            titleId = TitleId(title_id),
+            activeDuration = MillisecondDuration(
+                requireNotNull(active_duration_ms) { "Legacy aggregate duration is missing" },
+            ),
+            characters = NonNegativeCounter(
+                requireNotNull(characters) { "Legacy aggregate characters are missing" },
+            ),
+            cardsTotal = NonNegativeCounter(
+                requireNotNull(cards_total) { "Legacy aggregate cards are missing" },
+            ),
+            recordCount = NonNegativeCounter(record_count),
         )
     }
 
