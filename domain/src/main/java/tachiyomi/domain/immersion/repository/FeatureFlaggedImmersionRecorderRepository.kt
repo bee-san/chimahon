@@ -12,6 +12,7 @@ import tachiyomi.domain.immersion.model.PersistenceResult
 import tachiyomi.domain.immersion.model.RecordedImmersionEvent
 import tachiyomi.domain.immersion.model.SessionId
 import tachiyomi.domain.immersion.model.SessionStatus
+import tachiyomi.domain.immersion.model.SourceUnitId
 import tachiyomi.domain.immersion.service.ImmersionDiagnosticErrorCode
 import tachiyomi.domain.immersion.service.ImmersionDiagnosticStage
 import tachiyomi.domain.immersion.service.ImmersionStatsDiagnosticsStore
@@ -75,6 +76,15 @@ class FeatureFlaggedImmersionRecorderRepository(
             }
     }
 
+    override suspend fun sourceUnitExists(sourceUnitId: SourceUnitId): Boolean {
+        if (!isEnabled()) return disabledDelegate.sourceUnitExists(sourceUnitId)
+        return runCatching { delegate.sourceUnitExists(sourceUnitId) }
+            .getOrElse { error ->
+                diagnostics.recordError(ImmersionDiagnosticStage.WRITE, error.toDiagnosticCode())
+                false
+            }
+    }
+
     override suspend fun getSession(sessionId: SessionId): ImmersionSession? {
         if (!isEnabled()) return disabledDelegate.getSession(sessionId)
         return runCatching { delegate.getSession(sessionId) }
@@ -120,6 +130,8 @@ class NoOpImmersionRecorderRepository : ImmersionRecorderRepository {
     ) = PersistenceResult.Disabled
 
     override suspend fun recoverAbandonedSessions(heartbeatCutoffEpochMillis: Long) = 0L
+
+    override suspend fun sourceUnitExists(sourceUnitId: SourceUnitId) = false
 
     override suspend fun getSession(sessionId: SessionId): ImmersionSession? = null
 }

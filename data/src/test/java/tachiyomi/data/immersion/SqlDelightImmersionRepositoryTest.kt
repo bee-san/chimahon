@@ -242,7 +242,7 @@ class SqlDelightImmersionRepositoryTest {
     }
 
     @Test
-    fun `ordered lifecycle batch is atomic idempotent and advances only active time`() = runTest {
+    fun `ordered lifecycle batch is atomic idempotent and advances active time and signed net progress`() = runTest {
         prepareSession()
         val batch = listOf(
             SessionEvent(
@@ -270,18 +270,28 @@ class SqlDelightImmersionRepositoryTest {
                 timezoneOffsetSeconds = 0,
                 type = EventType.PAUSED,
             ),
+            SessionEvent(
+                id = eventId(4),
+                sessionId = SESSION_ID,
+                sequence = 4,
+                occurredAtEpochMillis = 1_600,
+                timezoneOffsetSeconds = 0,
+                type = EventType.PROGRESS,
+                netCharacters = NetCharacterProgress(-25),
+            ),
         )
 
-        repository.appendEventBatch(batch) shouldContainExactly List(3) { PersistenceResult.Applied }
-        repository.appendEventBatch(batch) shouldContainExactly List(3) { PersistenceResult.AlreadyApplied }
+        repository.appendEventBatch(batch) shouldContainExactly List(4) { PersistenceResult.Applied }
+        repository.appendEventBatch(batch) shouldContainExactly List(4) { PersistenceResult.AlreadyApplied }
 
         repository.getSession(SESSION_ID)?.let { session ->
-            session.lastSequence shouldBe 3
+            session.lastSequence shouldBe 4
             session.activeDuration shouldBe MillisecondDuration(500)
             session.grossCharacters shouldBe NonNegativeCounter.ZERO
-            session.lastHeartbeatAtEpochMillis shouldBe 1_500
+            session.netCharacters shouldBe NetCharacterProgress(-25)
+            session.lastHeartbeatAtEpochMillis shouldBe 1_600
         } shouldNotBe null
-        queryLong("SELECT count(*) FROM immersion_event") shouldBe 3
+        queryLong("SELECT count(*) FROM immersion_event") shouldBe 4
         queryLong("SELECT count(*) FROM immersion_source_exposure") shouldBe 0
     }
 

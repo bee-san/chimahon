@@ -19,6 +19,11 @@ import com.canopus.chimareader.data.Statistics
 import com.canopus.chimareader.data.Theme
 import com.canopus.chimareader.data.epub.EpubBook
 import com.canopus.chimareader.data.epub.SpineItemType
+import com.canopus.chimareader.stats.capture.LegacyNovelSessionSnapshot
+import com.canopus.chimareader.stats.capture.NovelCaptureAdapter
+import com.canopus.chimareader.stats.capture.NovelCaptureBook
+import com.canopus.chimareader.stats.capture.NovelCaptureOverlay
+import com.canopus.chimareader.stats.capture.NovelNavigationCause
 import com.canopus.chimareader.ttusync.SyncDirection
 import com.canopus.chimareader.ttusync.SyncResult
 import com.canopus.chimareader.ttusync.TtuSyncManager
@@ -28,6 +33,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import tachiyomi.domain.immersion.service.ImmersionRecorder
+import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.io.File
@@ -54,6 +61,7 @@ sealed interface WebViewCommand {
     data class ChangeFocusMode(val focusMode: Boolean) : WebViewCommand
     data class Paginate(val forward: Boolean) : WebViewCommand
     data object ClearSelection : WebViewCommand
+    data object CaptureVisibleRanges : WebViewCommand
     data class HighlightSelection(val charCount: Int) : WebViewCommand
     data class GetSelectionRects(val charCount: Int, val startOffset: Int = 0) : WebViewCommand
 }
@@ -153,7 +161,9 @@ class ReaderLoaderViewModel(
 class ReaderViewModel(
     val document: EpubBook,
     val rootUrl: File,
+    private val book: BookMetadata,
     val settings: NovelReaderSettings,
+    private val settingsNamespace: String?,
     private val scope: CoroutineScope,
 ) {
     var index by mutableIntStateOf(0)
@@ -216,6 +226,8 @@ class ReaderViewModel(
     lateinit var statisticsTracker: ReaderStatisticsTracker
     private var trackingLocked = false
     private var appBackgrounded = false
+    private var readerClosed = false
+    private val immersionCapture: NovelCaptureAdapter?
 
     val bridge = WebViewBridge()
     val chapterCount = document.spine().items.size
@@ -295,6 +307,24 @@ class ReaderViewModel(
             title = document.title ?: "Unknown",
             initialStatistics = fullStatistics,
             enabled = true,
+        )
+        immersionCapture = runCatching {
+            val preferences = Injekt.get<ImmersionStatsPreferences>()
+            NovelCaptureAdapter(
+                book = NovelCaptureBook.from(
+                    metadata = book,
+                    fallbackTitle = document.title,
+                    fallbackDocumentId = rootUrl.name,
+                    profileId = settingsNamespace,
+                ),
+                recorder = Injekt.get<ImmersionRecorder>(),
+                rawTextRetention = { preferences.rawTextRetention().get() },
+                idleTimeoutMillis = preferences.readerIdleTimeoutSeconds().get() * 1_000L,
+            )
+        }.getOrNull()
+        immersionCapture?.start(
+            sectionId = sectionId(index),
+            netPosition = totalExploredCharCount.toLong(),
         )
 
         scope.launch {
@@ -588,12 +618,63 @@ class ReaderViewModel(
         scheduleSyncExport()
     }
 
+    fun onReaderProgress(progress: Double) {
+        saveBookmark(progress)
+        immersionCapture?.onProgress(totalExploredCharCount.toLong())
+    }
+
+    fun onVisibleRangesChanged(
+        chapterUrl: String,
+        rangesJson: String,
+    ) {
+        val chapterIndex = chapterIndexForUrl(chapterUrl) ?: return
+        if (chapterIndex != index) return
+        immersionCapture?.onVisibleRanges(
+            sectionId = sectionId(chapterIndex),
+            rangesJson = rangesJson,
+        )
+    }
+
+    fun onReaderPositionRestored(
+        chapterUrl: String,
+        progress: Double,
+        recordSeek: Boolean,
+    ) {
+        val chapterIndex = chapterIndexForUrl(chapterUrl) ?: return
+        if (chapterIndex != index) return
+        saveBookmark(progress, updateTracker = false)
+        statisticsTracker.resetBaseline(totalExploredCharCount)
+        immersionCapture?.resetProgressBaseline(
+            netPosition = totalExploredCharCount.toLong(),
+            recordSeek = recordSeek,
+        )
+    }
+
+    fun requestVisibleRangeCapture() {
+        bridge.send(WebViewCommand.CaptureVisibleRanges)
+    }
+
     fun flushReaderState() {
         persistBookmark(currentProgress, force = true)
         if (!trackingLocked && !appBackgrounded) {
             statisticsTracker.update(totalExploredCharCount)
         }
         persistToDisk()
+    }
+
+    fun closeReader() {
+        if (readerClosed) return
+        val legacyWasTracking = statisticsTracker.state.isTracking
+        flushReaderState()
+        val legacySession = statisticsTracker.state.session
+        immersionCapture?.finalize(
+            LegacyNovelSessionSnapshot(
+                activeDurationMillis = (legacySession.readingTime * 1_000.0).toLong().coerceAtLeast(0),
+                netCharacters = legacySession.charactersRead.toLong(),
+                equivalentPolicy = legacyWasTracking,
+            ),
+        )
+        readerClosed = true
     }
 
     fun syncOnOpen() {
@@ -615,6 +696,11 @@ class ReaderViewModel(
                         val chapterTitle = getCurrentChapterTitle()
                         bridge.updateState(fileUrl, currentProgress, chapterTitle)
                         bridge.send(WebViewCommand.LoadChapter(fileUrl, currentProgress))
+                        immersionCapture?.onChapterChanged(
+                            sectionId = sectionId(index),
+                            netPosition = calculateExploredCharCount(currentProgress).toLong(),
+                            cause = NovelNavigationCause.SYNC_RESTORE,
+                        )
                     }
                 }
             } finally {
@@ -651,24 +737,32 @@ class ReaderViewModel(
     }
 
     fun nextChapter(): Boolean {
-        if (index >= chapterCount - 1) return false
+        immersionCapture?.onChapterCompleted()
+        if (index >= chapterCount - 1) {
+            immersionCapture?.onTitleCompleted()
+            return false
+        }
         saveBookmark(1.0)
-        loadChapter(index + 1, 0.0)
+        loadChapter(index + 1, 0.0, NovelNavigationCause.NEXT_CHAPTER)
         return true
     }
 
     fun previousChapter(): Boolean {
         if (index <= 0) return false
         saveBookmark(1.0)
-        loadChapter(index - 1, 1.0)
+        loadChapter(index - 1, 1.0, NovelNavigationCause.PREVIOUS_CHAPTER)
         return true
     }
 
-    fun jumpToChapter(spineIndex: Int, fragment: String? = null) {
+    fun jumpToChapter(
+        spineIndex: Int,
+        fragment: String? = null,
+        cause: NovelNavigationCause = NovelNavigationCause.TABLE_OF_CONTENTS,
+    ) {
         if (spineIndex != index) {
             saveBookmark(1.0)
         }
-        loadChapter(spineIndex, 0.0)
+        loadChapter(spineIndex, 0.0, cause)
         if (!fragment.isNullOrEmpty()) {
             bridge.send(WebViewCommand.JumpToFragment(fragment))
         }
@@ -695,14 +789,22 @@ class ReaderViewModel(
             if (chapterPath == targetPath) {
                 // Save progress before jumping so stats are consistent
                 saveBookmark(currentProgress)
-                jumpToChapter(i, fragment.ifEmpty { null })
+                jumpToChapter(
+                    spineIndex = i,
+                    fragment = fragment.ifEmpty { null },
+                    cause = NovelNavigationCause.INTERNAL_LINK,
+                )
                 return
             }
         }
         android.util.Log.w("ReaderViewModel", "jumpToUrl: no spine match for $url")
     }
 
-    private fun loadChapter(newIndex: Int, progress: Double) {
+    private fun loadChapter(
+        newIndex: Int,
+        progress: Double,
+        cause: NovelNavigationCause,
+    ) {
         // Flush any accumulated session delta to persistent statistics BEFORE we
         // change the index. persistBookmark() calls calculateExploredCharCount()
         // which uses the current index — if we change it first the delta is lost.
@@ -716,6 +818,11 @@ class ReaderViewModel(
         // nor the saveBookmark call below register a false delta from the jump.
         statisticsTracker.resetBaseline(calculateExploredCharCount(progress))
         saveBookmark(progress, updateTracker = false, force = true)
+        immersionCapture?.onChapterChanged(
+            sectionId = sectionId(index),
+            netPosition = totalExploredCharCount.toLong(),
+            cause = cause,
+        )
         getCurrentChapter()?.let { file ->
             // Create proper file URL with encoded path
             val fileUrl = "file://${file.absolutePath.replace("\\", "/")}"
@@ -733,6 +840,23 @@ class ReaderViewModel(
         val currentChapterChars = document.getChapterCharacters(index)
         count += (currentChapterChars * progress).toInt()
         return count
+    }
+
+    private fun sectionId(chapterIndex: Int): String =
+        document.getChapterHref(chapterIndex)
+            ?.substringBefore('#')
+            ?.takeIf(String::isNotBlank)
+            ?: "spine:$chapterIndex"
+
+    private fun chapterIndexForUrl(url: String): Int? {
+        val rawPath = url.substringBefore('#').removePrefix("file://")
+        val targetPath = runCatching {
+            java.net.URLDecoder.decode(rawPath, "UTF-8")
+        }.getOrDefault(rawPath).replace("\\", "/")
+        return document.linearSpineItems.indices.firstOrNull { chapterIndex ->
+            document.chapterAbsolutePath(chapterIndex.toUInt())
+                ?.replace("\\", "/") == targetPath
+        }
     }
 
     private fun persistBookmark(progress: Double, force: Boolean = false) {
@@ -763,6 +887,7 @@ class ReaderViewModel(
     }
 
     fun setTrackingLocked(locked: Boolean) {
+        if (trackingLocked == locked) return
         if (locked) {
             if (statisticsTracker.state.isTracking) {
                 statisticsTracker.update(totalExploredCharCount)
@@ -772,20 +897,39 @@ class ReaderViewModel(
             statisticsTracker.resetBaseline(totalExploredCharCount)
             trackingLocked = false
         }
+        immersionCapture?.setOverlayVisible(NovelCaptureOverlay.READER_SHEET, locked)
+        if (!locked) requestVisibleRangeCapture()
     }
 
     fun togglePause() {
         statisticsTracker.togglePause(totalExploredCharCount)
+        immersionCapture?.setOverlayVisible(
+            NovelCaptureOverlay.MANUAL_PAUSE,
+            !statisticsTracker.state.isTracking,
+        )
+    }
+
+    fun setLookupOverlayVisible(visible: Boolean) {
+        immersionCapture?.setOverlayVisible(NovelCaptureOverlay.LOOKUP_POPUP, visible)
+        if (!visible) requestVisibleRangeCapture()
+    }
+
+    fun setImageViewerVisible(visible: Boolean) {
+        immersionCapture?.setOverlayVisible(NovelCaptureOverlay.IMAGE_VIEWER, visible)
+        if (!visible) requestVisibleRangeCapture()
     }
 
     fun onAppBackgrounded() {
         flushReaderState()
         appBackgrounded = true
+        immersionCapture?.setBackgrounded(true)
     }
 
     fun onAppForegrounded() {
         statisticsTracker.resetBaseline(totalExploredCharCount)
         appBackgrounded = false
+        immersionCapture?.setBackgrounded(false)
+        requestVisibleRangeCapture()
     }
 
     private fun persistToDisk() {

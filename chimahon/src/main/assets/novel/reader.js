@@ -50,6 +50,116 @@ window.hoshiReader = {
         });
     },
 
+    /**
+     * Returns layout-independent, fixed Unicode-code-point ranges whose rendered area is at least
+     * 50% inside the viewport. Fixed 64-code-point boundaries remain stable across reflow, font,
+     * theme, pagination, rotation, and reopening. Ruby annotation text is excluded by createWalker.
+     */
+    captureVisibleRanges: function(chunkSize, minimumVisibleRatio) {
+        var size = Math.max(1, chunkSize || 64);
+        var threshold = Math.min(1, Math.max(0, minimumVisibleRatio || 0.5));
+        var walker = this.createWalker();
+        var nodes = [];
+        var characters = [];
+        var candidateChunkStarts = new Set();
+        var logicalOffset = 0;
+        var node;
+
+        while (node = walker.nextNode()) {
+            var parent = node.parentElement;
+            var tag = parent && parent.tagName ? parent.tagName.toLowerCase() : '';
+            if (tag === 'script' || tag === 'style' || tag === 'template' || tag === 'noscript') continue;
+            var text = node.textContent || '';
+            if (!text) continue;
+            var codePoints = Array.from(text);
+            if (!codePoints.length) continue;
+            var utf16Offsets = [0];
+            var utf16Offset = 0;
+            for (var i = 0; i < codePoints.length; i++) {
+                characters.push(codePoints[i]);
+                utf16Offset += codePoints[i].length;
+                utf16Offsets.push(utf16Offset);
+            }
+            nodes.push({
+                node: node,
+                start: logicalOffset,
+                end: logicalOffset + codePoints.length,
+                utf16Offsets: utf16Offsets
+            });
+            var nodeRange = document.createRange();
+            nodeRange.selectNodeContents(node);
+            var nodeRects = nodeRange.getClientRects();
+            var nodeIntersectsViewport = false;
+            for (var rectIndex = 0; rectIndex < nodeRects.length; rectIndex++) {
+                var nodeRect = nodeRects[rectIndex];
+                if (nodeRect.width <= 0 || nodeRect.height <= 0) continue;
+                if (nodeRect.right > 0 && nodeRect.left < window.innerWidth &&
+                    nodeRect.bottom > 0 && nodeRect.top < window.innerHeight) {
+                    nodeIntersectsViewport = true;
+                    break;
+                }
+            }
+            if (nodeIntersectsViewport) {
+                var firstChunk = Math.floor(logicalOffset / size) * size;
+                var lastChunk = Math.floor((logicalOffset + codePoints.length - 1) / size) * size;
+                for (var chunk = firstChunk; chunk <= lastChunk; chunk += size) {
+                    candidateChunkStarts.add(chunk);
+                }
+            }
+            logicalOffset += codePoints.length;
+        }
+
+        function boundaryAt(offset) {
+            for (var i = 0; i < nodes.length; i++) {
+                var item = nodes[i];
+                if (offset >= item.start && offset <= item.end) {
+                    return {
+                        node: item.node,
+                        offset: item.utf16Offsets[offset - item.start]
+                    };
+                }
+            }
+            return null;
+        }
+
+        var visible = [];
+        var candidates = Array.from(candidateChunkStarts).sort((a, b) => a - b);
+        for (var candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
+            var start = candidates[candidateIndex];
+            var end = Math.min(characters.length, start + size);
+            var first = boundaryAt(start);
+            var last = boundaryAt(end);
+            if (!first || !last) continue;
+            var range = document.createRange();
+            try {
+                range.setStart(first.node, first.offset);
+                range.setEnd(last.node, last.offset);
+            } catch (_) {
+                continue;
+            }
+            var rects = range.getClientRects();
+            var renderedArea = 0;
+            var viewportArea = 0;
+            for (var r = 0; r < rects.length; r++) {
+                var rect = rects[r];
+                if (rect.width <= 0 || rect.height <= 0) continue;
+                var area = rect.width * rect.height;
+                renderedArea += area;
+                var visibleWidth = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
+                var visibleHeight = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
+                viewportArea += visibleWidth * visibleHeight;
+            }
+            if (renderedArea > 0 && viewportArea / renderedArea >= threshold) {
+                visible.push({
+                    start: start,
+                    endExclusive: end,
+                    text: characters.slice(start, end).join('')
+                });
+            }
+        }
+        return visible;
+    },
+
     getScrollContext: function() {
         var vertical = this.isVertical();
         var scrollEl = document.body;

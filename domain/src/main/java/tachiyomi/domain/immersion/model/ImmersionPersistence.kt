@@ -119,6 +119,7 @@ data class SessionEvent(
     override val timezoneOffsetSeconds: Int,
     override val type: EventType,
     override val activeDuration: MillisecondDuration = MillisecondDuration(0),
+    val netCharacters: NetCharacterProgress = NetCharacterProgress.ZERO,
 ) : RecordedImmersionEvent {
     init {
         require(sequence > 0) { "Event sequence must be positive" }
@@ -127,6 +128,9 @@ data class SessionEvent(
             "Event offset is outside the valid UTC offset range"
         }
         require(type != EventType.EXPOSURE) { "Exposure events must include a source unit" }
+        require(type == EventType.PROGRESS || netCharacters == NetCharacterProgress.ZERO) {
+            "Only progress events can include a net-character delta"
+        }
     }
 }
 

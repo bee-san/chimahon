@@ -968,6 +968,7 @@ advanceImmersionSessionForEvent:
 UPDATE immersion_session
 SET
     active_duration_ms = active_duration_ms + :activeDurationDeltaMs,
+    net_characters = net_characters + :netCharacterDelta,
     last_sequence = :sequence,
     last_heartbeat_at = max(coalesce(last_heartbeat_at, 0), :occurredAt)
 WHERE

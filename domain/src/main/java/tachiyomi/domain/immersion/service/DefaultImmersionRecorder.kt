@@ -19,6 +19,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import tachiyomi.domain.immersion.model.EventId
 import tachiyomi.domain.immersion.model.EventType
 import tachiyomi.domain.immersion.model.ExposureEvent
+import tachiyomi.domain.immersion.model.ImmersionSession
 import tachiyomi.domain.immersion.model.ImmersionSessionStart
 import tachiyomi.domain.immersion.model.MillisecondDuration
 import tachiyomi.domain.immersion.model.NetCharacterProgress
@@ -29,6 +30,7 @@ import tachiyomi.domain.immersion.model.RecordedImmersionEvent
 import tachiyomi.domain.immersion.model.SessionEvent
 import tachiyomi.domain.immersion.model.SessionId
 import tachiyomi.domain.immersion.model.SessionStatus
+import tachiyomi.domain.immersion.model.SourceUnitId
 import tachiyomi.domain.immersion.repository.ImmersionRecorderRepository
 import java.time.ZoneId
 import java.util.UUID
@@ -167,6 +169,15 @@ class DefaultImmersionRecorder(
         }
 
     override fun record(command: CaptureCommand): RecordResult =
+        recordLocked(expectedSessionId = null, command)
+
+    override fun record(handle: SessionHandle, command: CaptureCommand): RecordResult =
+        recordLocked(expectedSessionId = handle.sessionId, command)
+
+    private fun recordLocked(
+        expectedSessionId: SessionId?,
+        command: CaptureCommand,
+    ): RecordResult =
         synchronized(lock) {
             if (!captureEnabled()) {
                 return@synchronized RecordResult.Suppressed(
@@ -179,6 +190,9 @@ class DefaultImmersionRecorder(
                 )
             }
             val active = session ?: return@synchronized RecordResult.Rejected(mutableState.value.state)
+            if (expectedSessionId != null && active.id != expectedSessionId) {
+                return@synchronized RecordResult.Rejected(active.state)
+            }
             if (
                 active.state != ImmersionSessionState.ACTIVE &&
                 active.state != ImmersionSessionState.IDLE
@@ -199,6 +213,14 @@ class DefaultImmersionRecorder(
                         drafts += EventDraft.Session(command.eventType, now, 0)
                     }
                 }
+                is CaptureCommand.Progress -> {
+                    drafts += EventDraft.Session(
+                        eventType = EventType.PROGRESS,
+                        time = now,
+                        activeDurationMillis = 0,
+                        netCharacters = command.netCharacters,
+                    )
+                }
                 is CaptureCommand.Exposure -> {
                     if (command.source.titleId != active.context.title.id) {
                         return@synchronized RecordResult.Rejected(active.state)
@@ -213,9 +235,23 @@ class DefaultImmersionRecorder(
         }
 
     override suspend fun pause(reason: PauseReason) {
+        pauseLocked(expectedSessionId = null, reason)
+    }
+
+    override suspend fun pause(handle: SessionHandle, reason: PauseReason) {
+        pauseLocked(expectedSessionId = handle.sessionId, reason)
+    }
+
+    private suspend fun pauseLocked(
+        expectedSessionId: SessionId?,
+        reason: PauseReason,
+    ) {
         transitionMutex.withLock {
             val shouldFlush = synchronized(lock) {
                 val active = session ?: return@synchronized false
+                if (expectedSessionId != null && active.id != expectedSessionId) {
+                    return@synchronized false
+                }
                 if (
                     active.state == ImmersionSessionState.FINALIZING ||
                     active.state == ImmersionSessionState.FINALIZED ||
@@ -249,10 +285,24 @@ class DefaultImmersionRecorder(
     }
 
     override suspend fun resume(reason: ResumeReason) {
+        resumeLocked(expectedSessionId = null, reason)
+    }
+
+    override suspend fun resume(handle: SessionHandle, reason: ResumeReason) {
+        resumeLocked(expectedSessionId = handle.sessionId, reason)
+    }
+
+    private suspend fun resumeLocked(
+        expectedSessionId: SessionId?,
+        reason: ResumeReason,
+    ) {
         transitionMutex.withLock {
             if (incognitoBarrier || !captureEnabled()) return@withLock
             synchronized(lock) {
                 val active = session ?: return@synchronized
+                if (expectedSessionId != null && active.id != expectedSessionId) {
+                    return@synchronized
+                }
                 if (active.state == ImmersionSessionState.BACKGROUND) {
                     active.state = ImmersionSessionStateMachine.transition(
                         active.state,
@@ -281,15 +331,23 @@ class DefaultImmersionRecorder(
 
     override suspend fun finalize(reason: FinalizeReason) {
         transitionMutex.withLock {
-            finalizeLocked(reason)
+            finalizeLocked(reason, expectedSessionId = null)
         }
     }
+
+    override suspend fun finalize(
+        handle: SessionHandle,
+        reason: FinalizeReason,
+    ): ImmersionSession? =
+        transitionMutex.withLock {
+            finalizeLocked(reason, expectedSessionId = handle.sessionId)
+        }
 
     override suspend fun setIncognito(enabled: Boolean) {
         transitionMutex.withLock {
             if (enabled) {
                 synchronized(lock) { incognitoBarrier = true }
-                finalizeLocked(FinalizeReason.INCOGNITO_ENABLED)
+                finalizeLocked(FinalizeReason.INCOGNITO_ENABLED, expectedSessionId = null)
             } else {
                 synchronized(lock) { incognitoBarrier = false }
                 resetTerminalState()
@@ -307,6 +365,13 @@ class DefaultImmersionRecorder(
         if (recovered > 0) diagnostics.recordAbandonedRecovery(recovered)
         return recovered
     }
+
+    override suspend fun hasSeenSource(sourceUnitId: SourceUnitId): Boolean =
+        runCatching { repository.sourceUnitExists(sourceUnitId) }
+            .getOrElse { error ->
+                diagnostics.recordError(ImmersionDiagnosticStage.WRITE, error.toDiagnosticCode())
+                false
+            }
 
     private suspend fun startSessionRows(
         context: SessionContext,
@@ -327,14 +392,18 @@ class DefaultImmersionRecorder(
         return persisted
     }
 
-    private suspend fun finalizeLocked(reason: FinalizeReason) {
+    private suspend fun finalizeLocked(
+        reason: FinalizeReason,
+        expectedSessionId: SessionId? = null,
+    ): ImmersionSession? {
         val finalization = synchronized(lock) {
-            val active = session ?: return
+            val active = session ?: return null
+            if (expectedSessionId != null && active.id != expectedSessionId) return null
             if (
                 active.state == ImmersionSessionState.FINALIZING ||
                 active.state == ImmersionSessionState.FINALIZED
             ) {
-                return
+                return null
             }
             val now = clock.now()
             val drafts = accrueActiveTimeLocked(active, now).toMutableList()
@@ -398,7 +467,7 @@ class DefaultImmersionRecorder(
                 session = null
             }
         }
-        if (finalized) validateFinalCounters(finalization)
+        return if (finalized) validateFinalCounters(finalization) else null
     }
 
     private fun sessionStartEpochMillis(sessionId: SessionId): Long =
@@ -406,12 +475,12 @@ class DefaultImmersionRecorder(
             session?.takeIf { it.id == sessionId }?.startedAt?.epochMillis ?: 0
         }
 
-    private suspend fun validateFinalCounters(expected: PendingFinalization) {
+    private suspend fun validateFinalCounters(expected: PendingFinalization): ImmersionSession? {
         val persisted = runCatching { repository.getSession(expected.sessionId) }
             .getOrElse { error ->
                 diagnostics.recordError(ImmersionDiagnosticStage.WRITE, error.toDiagnosticCode())
-                return
-            } ?: return
+                return null
+            } ?: return null
         if (
             persisted.activeDuration.value != expected.expectedActiveMillis ||
             persisted.grossCharacters.value != expected.expectedGrossCharacters ||
@@ -421,6 +490,7 @@ class DefaultImmersionRecorder(
             diagnostics.recordRepair(clock.now().epochMillis)
             repairScheduler.schedule(expected.sessionId, ImmersionRepairReason.SESSION_COUNTER_DIVERGENCE)
         }
+        return persisted
     }
 
     private fun recordHeartbeat() {
@@ -512,6 +582,7 @@ class DefaultImmersionRecorder(
                     timezoneOffsetSeconds = draft.timezoneOffsetSeconds ?: draft.time.offsetSeconds,
                     type = draft.eventType,
                     activeDuration = MillisecondDuration(draft.activeDurationMillis),
+                    netCharacters = draft.netCharacters,
                 )
                 is EventDraft.Exposure -> ExposureEvent(
                     id = EventId(UUID.randomUUID().toString()),
@@ -529,10 +600,13 @@ class DefaultImmersionRecorder(
                 )
             }
             active.expectedActiveMillis += event.activeDuration.value
-            if (event is ExposureEvent) {
-                active.expectedGrossCharacters += event.grossCharacters.value
-                active.expectedUniqueCharacters += event.uniqueSourceCharacters.value
-                active.expectedNetCharacters += event.netCharacters.value
+            when (event) {
+                is ExposureEvent -> {
+                    active.expectedGrossCharacters += event.grossCharacters.value
+                    active.expectedUniqueCharacters += event.uniqueSourceCharacters.value
+                    active.expectedNetCharacters += event.netCharacters.value
+                }
+                is SessionEvent -> active.expectedNetCharacters += event.netCharacters.value
             }
             check(workerCommands.trySend(WorkerCommand.Event(event)).isSuccess)
         }
@@ -756,6 +830,7 @@ class DefaultImmersionRecorder(
             val time: RecorderTime,
             val activeDurationMillis: Long,
             val timezoneOffsetSeconds: Int? = null,
+            val netCharacters: NetCharacterProgress = NetCharacterProgress.ZERO,
         ) : EventDraft
 
         data class Exposure(

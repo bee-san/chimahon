@@ -44,6 +44,8 @@ interface ImmersionRecorderRepository {
 
     suspend fun recoverAbandonedSessions(heartbeatCutoffEpochMillis: Long): Long
 
+    suspend fun sourceUnitExists(sourceUnitId: SourceUnitId): Boolean
+
     suspend fun getSession(sessionId: SessionId): ImmersionSession?
 }
 

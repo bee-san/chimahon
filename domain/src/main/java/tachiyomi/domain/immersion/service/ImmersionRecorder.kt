@@ -2,11 +2,13 @@ package tachiyomi.domain.immersion.service
 
 import kotlinx.coroutines.flow.StateFlow
 import tachiyomi.domain.immersion.model.EventType
+import tachiyomi.domain.immersion.model.ImmersionSession
 import tachiyomi.domain.immersion.model.ImmersionSourceUnit
 import tachiyomi.domain.immersion.model.ImmersionTitle
 import tachiyomi.domain.immersion.model.NetCharacterProgress
 import tachiyomi.domain.immersion.model.NonNegativeCounter
 import tachiyomi.domain.immersion.model.SessionId
+import tachiyomi.domain.immersion.model.SourceUnitId
 
 interface ImmersionRecorder {
     val state: StateFlow<ImmersionRecorderSnapshot>
@@ -15,15 +17,25 @@ interface ImmersionRecorder {
 
     fun record(command: CaptureCommand): RecordResult
 
+    fun record(handle: SessionHandle, command: CaptureCommand): RecordResult
+
     suspend fun pause(reason: PauseReason)
+
+    suspend fun pause(handle: SessionHandle, reason: PauseReason)
 
     suspend fun resume(reason: ResumeReason)
 
+    suspend fun resume(handle: SessionHandle, reason: ResumeReason)
+
     suspend fun finalize(reason: FinalizeReason)
+
+    suspend fun finalize(handle: SessionHandle, reason: FinalizeReason): ImmersionSession?
 
     suspend fun setIncognito(enabled: Boolean)
 
     suspend fun recoverAbandonedSessions(): Long
+
+    suspend fun hasSeenSource(sourceUnitId: SourceUnitId): Boolean
 }
 
 data class SessionContext(
@@ -52,6 +64,16 @@ sealed interface CaptureCommand {
             require(eventType != EventType.EXPOSURE) { "Exposure activity must include a source unit" }
             require(eventType != EventType.SESSION_STARTED && eventType != EventType.SESSION_FINALIZED) {
                 "Session boundary events are owned by the recorder"
+            }
+        }
+    }
+
+    data class Progress(
+        val netCharacters: NetCharacterProgress,
+    ) : CaptureCommand {
+        init {
+            require(netCharacters != NetCharacterProgress.ZERO) {
+                "Zero net progress does not require an event"
             }
         }
     }
