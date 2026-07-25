@@ -193,20 +193,29 @@ class DefaultImmersionRecorder(
             if (expectedSessionId != null && active.id != expectedSessionId) {
                 return@synchronized RecordResult.Rejected(active.state)
             }
+            val pausedExposure = active.state == ImmersionSessionState.PAUSED &&
+                command is CaptureCommand.Exposure
             if (
                 active.state != ImmersionSessionState.ACTIVE &&
-                active.state != ImmersionSessionState.IDLE
+                active.state != ImmersionSessionState.IDLE &&
+                !pausedExposure
             ) {
                 return@synchronized RecordResult.Rejected(active.state)
             }
             val now = clock.now()
-            val drafts = accrueActiveTimeLocked(active, now).toMutableList()
+            val drafts = if (pausedExposure) {
+                mutableListOf()
+            } else {
+                accrueActiveTimeLocked(active, now).toMutableList()
+            }
             if (active.state == ImmersionSessionState.IDLE) {
                 active.state = ImmersionSessionState.ACTIVE
                 active.lastBoundary = now
                 drafts += EventDraft.Session(EventType.RESUMED, now, 0)
             }
-            active.lastActivityMonotonicNanos = now.monotonicNanos
+            if (!pausedExposure) {
+                active.lastActivityMonotonicNanos = now.monotonicNanos
+            }
             when (command) {
                 is CaptureCommand.Activity -> {
                     if (command.eventType != EventType.PROGRESS) {

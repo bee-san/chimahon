@@ -76,6 +76,7 @@ import tachiyomi.domain.entries.anime.model.Anime
 import tachiyomi.domain.episode.model.Episode
 import tachiyomi.domain.source.anime.model.StubAnimeSource
 import tachiyomi.i18n.MR
+import tachiyomi.i18n.kmk.KMR
 import tachiyomi.presentation.core.i18n.stringResource
 import tachiyomi.presentation.core.screens.LoadingScreen
 import tachiyomi.source.local.entries.anime.isLocal
@@ -446,6 +447,7 @@ class AnimeScreen(
                     val intent = ExternalIntents().getExternalIntent(context, episode.animeId, episode.id, null)
                     if (intent != null) {
                         context.startActivity(intent)
+                        context.toast(KMR.strings.stats_external_player_not_captured)
                         return@withIOContext
                     }
                 } catch (e: Throwable) {

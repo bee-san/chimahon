@@ -6,8 +6,12 @@ import eu.kanade.tachiyomi.ui.reader.viewer.OcrTextBlock
 import eu.kanade.tachiyomi.ui.reader.viewer.fullText
 import eu.kanade.tachiyomi.ui.reader.viewer.uniformCharOffset
 
-internal fun List<OcrResult>.toScreenLookupBlocks(language: String): List<OcrTextBlock> {
-    return mapNotNull { result ->
+internal fun List<OcrResult>.toScreenLookupBlocks(
+    language: String,
+    engineId: String = "legacy-cache",
+    engineVersion: Int = 1,
+): List<OcrTextBlock> {
+    return mapIndexedNotNull { index, result ->
         val bbox = result.tightBoundingBox
         val xmin = bbox.x.toFloat().coerceIn(0f, 1f)
         val ymin = bbox.y.toFloat().coerceIn(0f, 1f)
@@ -35,6 +39,9 @@ internal fun List<OcrResult>.toScreenLookupBlocks(language: String): List<OcrTex
                     )
                 },
                 language = language,
+                engineId = engineId,
+                engineVersion = engineVersion,
+                blockId = index.toString(),
             )
         }
     }
