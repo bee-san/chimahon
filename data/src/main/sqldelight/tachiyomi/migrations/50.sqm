@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: MIT
+
 ALTER TABLE immersion_lookup
 ADD COLUMN query_hash TEXT NOT NULL DEFAULT '';
 

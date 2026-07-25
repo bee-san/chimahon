@@ -938,8 +938,10 @@ class ReaderViewModel(
 
     private fun persistToDisk() {
         val stats = statisticsTracker.statisticsForPersistence()
-        BookStorage.saveStatistics(stats, rootUrl)
-        scheduleSyncExport()
+        if (Injekt.get<tachiyomi.domain.immersion.service.ImmersionStatsPreferences>().legacyWritesEnabled().get()) {
+            BookStorage.saveStatistics(stats, rootUrl)
+            scheduleSyncExport()
+        }
     }
 
     companion object {

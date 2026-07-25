@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package chimahon.anki
 
 import android.content.Context

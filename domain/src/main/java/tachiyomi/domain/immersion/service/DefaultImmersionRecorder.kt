@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package tachiyomi.domain.immersion.service
 
 import kotlinx.coroutines.CompletableDeferred
@@ -111,7 +113,8 @@ class DefaultImmersionRecorder(
                 CapturePolicyContext(
                     captureEnabled = captureEnabled(),
                     incognito = incognitoBarrier || context.incognito,
-                    titleExcluded = context.titleExcluded,
+                    titleExcluded = context.titleExcluded ||
+                        repository.isTitleCaptureExcluded(context.title.id),
                 ),
             )
             if (policy is CapturePolicyDecision.Suppressed) {

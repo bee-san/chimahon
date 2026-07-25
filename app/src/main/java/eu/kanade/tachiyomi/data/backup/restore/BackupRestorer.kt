@@ -29,8 +29,11 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import tachiyomi.core.common.i18n.stringResource
+import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
 import tachiyomi.i18n.MR
 import tachiyomi.i18n.kmk.KMR
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -40,6 +43,7 @@ class BackupRestorer(
     private val context: Context,
     private val notifier: BackupNotifier,
     private val isSync: Boolean,
+    private val immersionMaintenanceRepository: ImmersionMaintenanceRepository = Injekt.get(),
 
     private val categoriesRestorer: CategoriesRestorer = CategoriesRestorer(),
     private val animeCategoriesRestorer: AnimeCategoriesRestorer = AnimeCategoriesRestorer(),
@@ -133,6 +137,9 @@ class BackupRestorer(
             if (backup.backupMangaStats.isNotEmpty()) restoreAmount += 1
             if (backup.backupAnkiStats.isNotEmpty()) restoreAmount += 1
         }
+        if (options.immersionStats && backup.backupImmersionStats != null) {
+            restoreAmount += 1
+        }
         // Chimahon <--
 
         coroutineScope {
@@ -153,6 +160,9 @@ class BackupRestorer(
             if (options.appSettings) {
                 restoreAppPreferences(backup.backupPreferences, backup.backupCategories.takeIf { options.categories })
                 restoreGlobalStats(backup.backupMangaStats, backup.backupAnkiStats)
+            }
+            if (options.immersionStats) {
+                backup.backupImmersionStats?.let { restoreImmersionStats(it) }
             }
             if (options.sourceSettings) {
                 restoreSourcePreferences(backup.backupSourcePreferences)
@@ -453,7 +463,61 @@ class BackupRestorer(
             }
         }
     }
+
+    private fun CoroutineScope.restoreImmersionStats(
+        archive: tachiyomi.domain.immersion.model.ImmersionPortableArchive,
+    ) = launch {
+        ensureActive()
+        val estimatedBytes = archive.estimatedRestoreBytes()
+        val requiredBytes = estimatedBytes
+            .coerceAtMost((Long.MAX_VALUE - RESTORE_HEADROOM_BYTES) / 2)
+            .times(2)
+            .plus(RESTORE_HEADROOM_BYTES)
+        require(context.filesDir.usableSpace >= requiredBytes) {
+            context.stringResource(
+                KMR.strings.stats_restore_low_space,
+                android.text.format.Formatter.formatFileSize(context, requiredBytes),
+            )
+        }
+        val report = immersionMaintenanceRepository.mergePortableArchive(
+            archive = archive,
+            mergedAtEpochMillis = System.currentTimeMillis(),
+        )
+        if (report.quarantinedConflicts > 0) {
+            errors += Date() to context.stringResource(
+                KMR.strings.stats_backup_conflicts,
+                report.quarantinedConflicts,
+            )
+        }
+        restoreProgress += 1
+        with(notifier) {
+            showRestoreProgress(
+                context.stringResource(KMR.strings.stats_immersion_title),
+                restoreProgress,
+                restoreAmount,
+                isSync,
+            ).show(Notifications.ID_RESTORE_PROGRESS)
+        }
+    }
     // Chimahon <--
+
+    private fun tachiyomi.domain.immersion.model.ImmersionPortableArchive.estimatedRestoreBytes(): Long =
+        tables.sumOf { table ->
+            table.rows.sumOf { row ->
+                row.cells.sumOf { cell ->
+                    when (cell.kind) {
+                        tachiyomi.domain.immersion.model.ImmersionPortableCellKind.NULL -> 1L
+                        tachiyomi.domain.immersion.model.ImmersionPortableCellKind.TEXT ->
+                            cell.textValue.orEmpty().encodeToByteArray().size.toLong()
+                        tachiyomi.domain.immersion.model.ImmersionPortableCellKind.INTEGER,
+                        tachiyomi.domain.immersion.model.ImmersionPortableCellKind.REAL,
+                        -> Long.SIZE_BYTES.toLong()
+                        tachiyomi.domain.immersion.model.ImmersionPortableCellKind.BLOB ->
+                            cell.blobValue?.size?.toLong() ?: 0L
+                    }
+                }
+            }
+        }
 
     private fun writeErrorLog(): File {
         try {
@@ -472,5 +536,9 @@ class BackupRestorer(
             // Empty
         }
         return File("")
+    }
+
+    companion object {
+        private const val RESTORE_HEADROOM_BYTES = 16L * 1024L * 1024L
     }
 }

@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: MIT
+
 CREATE TABLE immersion_title(
     id TEXT NOT NULL PRIMARY KEY,
     media_kind TEXT NOT NULL,
@@ -167,25 +169,34 @@ ON immersion_source_unit(indexing_status, indexed_version, first_exposed_at, id)
 
 CREATE VIRTUAL TABLE immersion_source_fts USING fts4(
     source_unit_id,
-    normalized_text
+    normalized_text,
+    search_tokens
 );
 
 CREATE TRIGGER immersion_source_fts_insert
 AFTER INSERT ON immersion_source_unit
 WHEN new.raw_text IS NOT NULL
 BEGIN
-    INSERT INTO immersion_source_fts(source_unit_id, normalized_text)
-    VALUES (new.id, new.raw_text);
+    INSERT INTO immersion_source_fts(source_unit_id, normalized_text, search_tokens)
+    VALUES (new.id, CAST(new.raw_text AS TEXT), '');
 END;
 
 CREATE TRIGGER immersion_source_fts_update
 AFTER UPDATE OF raw_text ON immersion_source_unit
 BEGIN
     DELETE FROM immersion_source_fts WHERE source_unit_id = old.id;
-    INSERT INTO immersion_source_fts(source_unit_id, normalized_text)
-    SELECT new.id, new.raw_text
+    INSERT INTO immersion_source_fts(source_unit_id, normalized_text, search_tokens)
+    SELECT new.id, CAST(new.raw_text AS TEXT), ''
     WHERE new.raw_text IS NOT NULL;
 END;
+
+deleteImmersionSourceSearchDocument:
+DELETE FROM immersion_source_fts
+WHERE source_unit_id = :sourceUnitId;
+
+insertImmersionSourceSearchDocument:
+INSERT INTO immersion_source_fts(source_unit_id, normalized_text, search_tokens)
+VALUES (:sourceUnitId, :normalizedText, :searchTokens);
 
 CREATE TRIGGER immersion_source_fts_delete
 AFTER DELETE ON immersion_source_unit
@@ -676,6 +687,25 @@ CREATE TABLE immersion_tombstone(
 CREATE INDEX immersion_tombstone_time_index
 ON immersion_tombstone(deleted_at, entity_type, entity_id);
 
+CREATE TABLE immersion_merge_conflict(
+    id TEXT NOT NULL PRIMARY KEY,
+    table_name TEXT NOT NULL,
+    identity_key TEXT NOT NULL,
+    existing_payload_hash TEXT,
+    incoming_payload_hash TEXT NOT NULL,
+    detected_at INTEGER NOT NULL,
+    resolution_state TEXT NOT NULL DEFAULT 'QUARANTINED',
+    UNIQUE(table_name, identity_key, incoming_payload_hash)
+);
+
+CREATE INDEX immersion_merge_conflict_time_index
+ON immersion_merge_conflict(detected_at DESC, table_name, identity_key);
+
+resolveImmersionMergeConflictsKeepingLocal:
+UPDATE immersion_merge_conflict
+SET resolution_state = 'RESOLVED_KEEP_LOCAL'
+WHERE resolution_state = 'QUARANTINED';
+
 CREATE TABLE immersion_exclusion(
     id TEXT NOT NULL PRIMARY KEY,
     entity_type TEXT NOT NULL,
@@ -898,6 +928,21 @@ WHERE
 deleteImmersionSession:
 DELETE FROM immersion_session
 WHERE id = :id;
+
+selectImmersionSourceIdsForSession:
+SELECT DISTINCT source_unit_id
+FROM immersion_source_exposure
+WHERE session_id = :sessionId;
+
+deleteImmersionSourceUnitIfUnreferenced:
+DELETE FROM immersion_source_unit
+WHERE
+    id = :sourceUnitId
+    AND NOT EXISTS (
+        SELECT 1
+        FROM immersion_source_exposure
+        WHERE source_unit_id = :sourceUnitId
+    );
 
 insertImmersionSourceUnit:
 INSERT INTO immersion_source_unit(
@@ -1405,6 +1450,41 @@ WHERE
     entity_type = :entityType
     AND entity_id = :entityId
     AND scope_key IN :scopeKeys;
+
+upsertImmersionExclusion:
+INSERT INTO immersion_exclusion(
+    id,
+    entity_type,
+    entity_id,
+    scope_key,
+    reason,
+    created_at
+)
+VALUES (:id, :entityType, :entityId, :scopeKey, :reason, :createdAt)
+ON CONFLICT(entity_type, entity_id, scope_key) DO UPDATE SET
+    reason = excluded.reason,
+    created_at = excluded.created_at;
+
+deleteImmersionExclusion:
+DELETE FROM immersion_exclusion
+WHERE entity_type = :entityType
+    AND entity_id = :entityId
+    AND scope_key = :scopeKey;
+
+upsertImmersionTombstone:
+INSERT INTO immersion_tombstone(
+    entity_type,
+    entity_id,
+    deleted_at,
+    device_id
+)
+VALUES (:entityType, :entityId, :deletedAt, :deviceId)
+ON CONFLICT(entity_type, entity_id) DO UPDATE SET
+    deleted_at = max(immersion_tombstone.deleted_at, excluded.deleted_at),
+    device_id = CASE
+        WHEN excluded.deleted_at >= immersion_tombstone.deleted_at THEN excluded.device_id
+        ELSE immersion_tombstone.device_id
+    END;
 
 upsertImmersionWord:
 INSERT INTO immersion_word(
@@ -2452,7 +2532,7 @@ SELECT
     source.source_kind,
     source.canonical_locator,
     min(event.occurred_at) AS occurred_at,
-    snippet(immersion_source_fts, '[', ']', ' … ', 1, 24) AS excerpt,
+    substr(CAST(source.raw_text AS TEXT), 1, 240) AS excerpt,
     1 AS raw_text_available
 FROM immersion_source_fts
 JOIN immersion_source_unit AS source

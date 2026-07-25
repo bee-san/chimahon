@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package com.canopus.chimareader.stats.capture
 
 import io.kotest.matchers.collections.shouldHaveSize
@@ -377,6 +379,8 @@ class NovelCaptureAdapterTest {
                         is CaptureCommand.Progress -> command.netCharacters.value
                         is CaptureCommand.Exposure -> command.netCharacters.value
                         is CaptureCommand.Activity -> 0
+                        is CaptureCommand.Lookup -> 0
+                        is CaptureCommand.AnkiOperation -> 0
                     }
                 },
                 gross = commands.filterIsInstance<CaptureCommand.Exposure>()

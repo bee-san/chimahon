@@ -22,6 +22,11 @@ class AndroidDatabaseHandler(
 
     val suspendingTransactionId = ThreadLocal<Int>()
 
+    suspend fun <T> awaitRawDriver(
+        inTransaction: Boolean = false,
+        block: (SqlDriver) -> T,
+    ): T = dispatch(inTransaction) { block(driver) }
+
     override suspend fun <T> await(inTransaction: Boolean, block: suspend Database.() -> T): T {
         return dispatch(inTransaction, block)
     }

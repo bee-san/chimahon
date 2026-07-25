@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: MIT
+
 CREATE TABLE immersion_title(
     id TEXT NOT NULL PRIMARY KEY,
     media_kind TEXT NOT NULL,

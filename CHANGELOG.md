@@ -4,6 +4,27 @@ All notable changes to Chimahon are documented here.
 
 The format follows a Keep a Changelog style and uses Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- Event-backed immersion statistics for novels, manga, subtitles, and video OCR
+- Overview, activity, title, vocabulary, character, session, goal, and Anki dashboards
+- Searchable retained source context with validated historical reopen and lookup actions
+- Versioned statistics backup/merge, tombstones, privacy-scoped exports, retention, and repair tools
+- Home-screen statistics parity and local integrity/reconciliation diagnostics
+
+### Changed
+- New statistics are authoritative and legacy novel, manga, and Anki JSON stores are read-only
+- Existing aggregate history is imported deterministically and remains available with explicit provenance
+- Statistics strings now live in Komikku base resources for Weblate translation
+- Original immersion-statistics contributions are available under the MIT license; inherited code keeps its existing license
+
+### Privacy
+- Incognito remains a hard capture barrier
+- Source text retention is independent from aggregate counters and defaults to the configured local policy
+- Raw-text backup/export requires explicit selection and warnings
+- Session and full deletion use tombstones so older devices and backups cannot resurrect removed history
+
 ## [v2.2.0]
 
 Chimahon is open to contributors; issues and pull requests are welcome.

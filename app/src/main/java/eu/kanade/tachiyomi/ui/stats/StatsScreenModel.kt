@@ -29,6 +29,7 @@ import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.SessionPage
 import tachiyomi.domain.immersion.model.StatsFilter
 import tachiyomi.domain.immersion.model.TitleId
+import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
 import tachiyomi.domain.immersion.service.ImmersionAnalyticsService
 import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
 import uy.kohesive.injekt.Injekt
@@ -42,6 +43,7 @@ class StatsScreenModel(
     private val analyticsService: ImmersionAnalyticsService = Injekt.get(),
     private val preferences: ImmersionStatsPreferences = Injekt.get(),
     private val dictionaryPreferences: DictionaryPreferences = Injekt.get(),
+    private val maintenanceRepository: ImmersionMaintenanceRepository = Injekt.get(),
     private val today: () -> LocalDate = LocalDate::now,
 ) : StateScreenModel<StatsScreenState>(StatsScreenState.Loading) {
 
@@ -324,6 +326,15 @@ class StatsScreenModel(
                     )
                 }
             }
+        }
+    }
+
+    fun deleteSession(session: tachiyomi.domain.immersion.model.ImmersionSession) {
+        screenModelScope.launch {
+            if (!maintenanceRepository.deleteSession(session.id)) return@launch
+            analyticsService.repairDirtyRollups(366)
+            selectSession(null)
+            refresh()
         }
     }
 

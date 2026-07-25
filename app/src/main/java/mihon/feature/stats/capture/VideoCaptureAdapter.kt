@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package mihon.feature.stats.capture
 
 import kotlinx.coroutines.CompletableDeferred

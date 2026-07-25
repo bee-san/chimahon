@@ -1,10 +1,13 @@
+-- SPDX-License-Identifier: MIT
+
 CREATE VIRTUAL TABLE immersion_source_fts USING fts4(
     source_unit_id,
-    normalized_text
+    normalized_text,
+    search_tokens
 );
 
-INSERT INTO immersion_source_fts(source_unit_id, normalized_text)
-SELECT id, raw_text
+INSERT INTO immersion_source_fts(source_unit_id, normalized_text, search_tokens)
+SELECT id, CAST(raw_text AS TEXT), ''
 FROM immersion_source_unit
 WHERE raw_text IS NOT NULL;
 
@@ -12,16 +15,16 @@ CREATE TRIGGER immersion_source_fts_insert
 AFTER INSERT ON immersion_source_unit
 WHEN new.raw_text IS NOT NULL
 BEGIN
-    INSERT INTO immersion_source_fts(source_unit_id, normalized_text)
-    VALUES (new.id, new.raw_text);
+    INSERT INTO immersion_source_fts(source_unit_id, normalized_text, search_tokens)
+    VALUES (new.id, CAST(new.raw_text AS TEXT), '');
 END;
 
 CREATE TRIGGER immersion_source_fts_update
 AFTER UPDATE OF raw_text ON immersion_source_unit
 BEGIN
     DELETE FROM immersion_source_fts WHERE source_unit_id = old.id;
-    INSERT INTO immersion_source_fts(source_unit_id, normalized_text)
-    SELECT new.id, new.raw_text
+    INSERT INTO immersion_source_fts(source_unit_id, normalized_text, search_tokens)
+    SELECT new.id, CAST(new.raw_text AS TEXT), ''
     WHERE new.raw_text IS NOT NULL;
 END;
 

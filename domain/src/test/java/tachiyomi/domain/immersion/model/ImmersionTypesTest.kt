@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package tachiyomi.domain.immersion.model
 
 import io.kotest.assertions.throwables.shouldThrow

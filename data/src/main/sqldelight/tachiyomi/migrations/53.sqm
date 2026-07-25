@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: MIT
+
 ALTER TABLE immersion_daily_rollup
 ADD COLUMN provenance_state TEXT NOT NULL DEFAULT 'AVAILABLE';
 

@@ -2771,12 +2771,14 @@ class ReaderViewModel @JvmOverloads constructor(
                 val chars = unconsumedPages.sumOf { page ->
                     getCachedOcrBlocks(page).sumOf { block -> block.fullText.length }
                 }
-                com.canopus.chimareader.data.MangaStatsStorage.addStats(
-                    application,
-                    chars,
-                    timeSpent,
-                    manga?.id ?: 0,
-                )
+                if (immersionStatsPreferences.legacyWritesEnabled().get()) {
+                    com.canopus.chimareader.data.MangaStatsStorage.addStats(
+                        application,
+                        chars,
+                        timeSpent,
+                        manga?.id ?: 0,
+                    )
+                }
                 legacyMangaStatsCharacters += chars
                 legacyMangaStatsTimeMs += timeSpent
                 if (mangaStatsTracking) {

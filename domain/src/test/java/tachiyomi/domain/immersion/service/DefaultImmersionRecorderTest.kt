@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package tachiyomi.domain.immersion.service
 
 import io.kotest.matchers.collections.shouldContainExactly
@@ -207,6 +209,19 @@ class DefaultImmersionRecorderTest {
         fixture.repository.starts.size shouldBe 1
         fixture.repository.session().status shouldBe SessionStatus.COMPLETED
         fixture.repository.events.last().type shouldBe EventType.SESSION_FINALIZED
+    }
+
+    @Test
+    fun `persisted title exclusion blocks before queue or database insertion`() = runTest {
+        val fixture = recorderFixture()
+        fixture.repository.titleCaptureExcluded = true
+
+        fixture.recorder.startSession(fixture.context) shouldBe
+            SessionStartResult.Suppressed(CaptureSuppressionReason.TITLE_EXCLUDED)
+
+        fixture.repository.starts shouldBe emptyList()
+        fixture.repository.events shouldBe emptyList()
+        fixture.repository.attemptedBatches shouldBe emptyList()
     }
 
     @Test
@@ -500,6 +515,9 @@ class DefaultImmersionRecorderTest {
         var skewCountersOnRead = false
         var recoveredSessions = 0L
         var writeGate: CompletableDeferred<Unit>? = null
+        var titleCaptureExcluded = false
+
+        override suspend fun isTitleCaptureExcluded(titleId: TitleId) = titleCaptureExcluded
 
         override suspend fun upsertTitle(title: ImmersionTitle) = PersistenceResult.Applied
 

@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: MIT
+
 ALTER TABLE immersion_session
 ADD COLUMN legacy_local_date INTEGER
 CHECK(legacy_import = 0 OR legacy_local_date IS NOT NULL);

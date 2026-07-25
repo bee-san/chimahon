@@ -1,5 +1,6 @@
 package eu.kanade.presentation.more.stats
 
+import android.content.Intent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -25,6 +26,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.CalendarMonth
@@ -60,6 +62,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,11 +71,16 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import eu.kanade.tachiyomi.ui.dictionary.ProcessTextLookupActivity
+import eu.kanade.tachiyomi.ui.stats.StatsSourceNavigator
+import eu.kanade.tachiyomi.util.system.toast
+import kotlinx.coroutines.launch
 import tachiyomi.domain.immersion.model.AnalyticsBucketScale
 import tachiyomi.domain.immersion.model.AnalyticsCharacterRow
 import tachiyomi.domain.immersion.model.AnalyticsDataQuality
@@ -86,13 +94,16 @@ import tachiyomi.domain.immersion.model.AnalyticsTitleRow
 import tachiyomi.domain.immersion.model.AnalyticsTrendPoint
 import tachiyomi.domain.immersion.model.AnalyticsTrends
 import tachiyomi.domain.immersion.model.AnalyticsWordRow
+import tachiyomi.domain.immersion.model.AnkiMatchConfidence
 import tachiyomi.domain.immersion.model.CapabilityState
 import tachiyomi.domain.immersion.model.CharacterMetric
 import tachiyomi.domain.immersion.model.ImmersionGoal
 import tachiyomi.domain.immersion.model.ImmersionSession
+import tachiyomi.domain.immersion.model.MaturityTier
 import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.ProvenanceState
 import tachiyomi.domain.immersion.model.ReadingMetrics
+import tachiyomi.domain.immersion.model.SessionStatus
 import tachiyomi.i18n.kmk.KMR
 import tachiyomi.presentation.core.i18n.stringResource
 import java.text.NumberFormat
@@ -130,6 +141,7 @@ fun StatsScreenContent(
     onWordSelect: (AnalyticsWordRow?) -> Unit,
     onCharacterSelect: (AnalyticsCharacterRow?) -> Unit,
     onSessionSelect: (ImmersionSession?) -> Unit,
+    onSessionDelete: (ImmersionSession) -> Unit,
     onLoadMoreVocabulary: () -> Unit,
     onLoadMoreCharacters: () -> Unit,
     onLoadMoreSessions: () -> Unit,
@@ -195,6 +207,7 @@ fun StatsScreenContent(
             StatsTab.SESSIONS -> SessionsTab(
                 state,
                 onSessionSelect,
+                onSessionDelete,
                 onSourceSearch,
                 onLoadMoreSessions,
             )
@@ -853,6 +866,7 @@ private fun CharactersTab(
 private fun SessionsTab(
     state: StatsScreenState.Success,
     onSelect: (ImmersionSession?) -> Unit,
+    onDelete: (ImmersionSession) -> Unit,
     onSourceSearch: (String) -> Unit,
     onLoadMore: () -> Unit,
 ) {
@@ -892,6 +906,7 @@ private fun SessionsTab(
                     fallback = session,
                     detail = state.details.session,
                     onClose = { onSelect(null) },
+                    onDelete = { onDelete(session) },
                 )
             }
         }
@@ -1170,7 +1185,7 @@ private fun WordRow(word: AnalyticsWordRow, onClick: () -> Unit) {
             Column(horizontalAlignment = Alignment.End) {
                 Text(formatCount(word.occurrenceCount), fontWeight = FontWeight.SemiBold)
                 Text(
-                    word.maturity.name.lowercase().replaceFirstChar(Char::titlecase),
+                    maturityLabel(word.maturity),
                     style = MaterialTheme.typography.labelSmall,
                 )
             }
@@ -1195,9 +1210,9 @@ private fun WordDetail(
         MetricLine(stringResource(KMR.strings.stats_tab_titles), formatCount(word.titleCount))
         Text(stringResource(KMR.strings.stats_first_seen, formatInstant(word.firstSeenAtEpochMillis)))
         Text(stringResource(KMR.strings.stats_last_seen, formatInstant(word.lastSeenAtEpochMillis)))
-        Text(stringResource(KMR.strings.stats_maturity, word.maturity.name))
+        Text(stringResource(KMR.strings.stats_maturity, maturityLabel(word.maturity)))
         word.matchConfidence?.let {
-            Text(stringResource(KMR.strings.stats_match_confidence, it.name))
+            Text(stringResource(KMR.strings.stats_match_confidence, matchConfidenceLabel(it)))
         }
         SectionTitle(stringResource(KMR.strings.stats_source_occurrences))
         SectionFrame(occurrences) { result ->
@@ -1253,7 +1268,7 @@ private fun CharacterDetail(
         MetricLine(stringResource(KMR.strings.stats_tab_titles), formatCount(character.titleCount))
         Text(stringResource(KMR.strings.stats_first_seen, formatInstant(character.firstSeenAtEpochMillis)))
         Text(stringResource(KMR.strings.stats_last_seen, formatInstant(character.lastSeenAtEpochMillis)))
-        Text(stringResource(KMR.strings.stats_maturity, character.maturity.name))
+        Text(stringResource(KMR.strings.stats_maturity, maturityLabel(character.maturity)))
         SectionTitle(stringResource(KMR.strings.stats_source_occurrences))
         SectionFrame(occurrences) { result ->
             if (result.value.items.isEmpty()) {
@@ -1301,14 +1316,16 @@ private fun SessionDetail(
     fallback: ImmersionSession,
     detail: StatsLoadable<AnalyticsResult<AnalyticsSessionDetail?>>,
     onClose: () -> Unit,
+    onDelete: () -> Unit,
 ) {
+    var confirmDelete by remember { mutableStateOf(false) }
     val session = detail.value?.value?.session ?: fallback
     DetailCard(stringResource(KMR.strings.stats_session_detail), onClose) {
         detail.value?.value?.displayTitle?.let {
             Text(it, style = MaterialTheme.typography.titleLarge)
         }
         Text(stringResource(KMR.strings.stats_started_at, formatInstant(session.startedAtEpochMillis)))
-        Text(stringResource(KMR.strings.stats_session_status, session.status.name))
+        Text(stringResource(KMR.strings.stats_session_status, sessionStatusLabel(session.status)))
         Text(stringResource(KMR.strings.stats_profile, session.profileId))
         MetricLine(stringResource(KMR.strings.stats_active_time), formatDuration(session.activeDuration.value))
         MetricLine(stringResource(KMR.strings.stats_elapsed_time), formatDuration(session.elapsedDuration.value))
@@ -1316,6 +1333,9 @@ private fun SessionDetail(
         MetricLine(stringResource(KMR.strings.stats_basis_unique), formatCount(session.uniqueSourceCharacters.value))
         MetricLine(stringResource(KMR.strings.stats_basis_net), formatCount(session.netCharacters.value))
         MetricLine(stringResource(KMR.strings.stats_source_units), formatCount(session.sourceUnitCount.value))
+        TextButton(onClick = { confirmDelete = true }) {
+            Text(stringResource(KMR.strings.stats_delete_session))
+        }
         if (session.legacyImport) NoticeCard(stringResource(KMR.strings.stats_legacy))
         detail.value?.value?.let { value ->
             SectionTitle(stringResource(KMR.strings.stats_session_timeline))
@@ -1329,6 +1349,36 @@ private fun SessionDetail(
         }
         if (detail.refreshing) Text(stringResource(KMR.strings.stats_loading_section))
         if (detail.error) SectionError()
+    }
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text(stringResource(KMR.strings.stats_delete_session)) },
+            text = {
+                Text(
+                    stringResource(
+                        KMR.strings.stats_delete_session_warning,
+                        formatDuration(session.activeDuration.value),
+                        formatCount(session.grossCharacters.value),
+                    ),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmDelete = false
+                        onDelete()
+                    },
+                ) {
+                    Text(stringResource(KMR.strings.stats_confirm))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) {
+                    Text(stringResource(KMR.strings.stats_close))
+                }
+            },
+        )
     }
 }
 
@@ -1365,6 +1415,9 @@ private fun TimelineSummary(detail: AnalyticsSessionDetail) {
 
 @Composable
 private fun SourceOccurrenceRow(occurrence: AnalyticsSourceOccurrence) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val unavailableMessage = stringResource(KMR.strings.stats_source_open_unavailable)
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surface,
@@ -1389,6 +1442,37 @@ private fun SourceOccurrenceRow(occurrence: AnalyticsSourceOccurrence) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            if (!StatsSourceNavigator.open(context, occurrence)) {
+                                context.toast(unavailableMessage)
+                            }
+                        }
+                    },
+                ) {
+                    Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null)
+                    Spacer(Modifier.width(4.dp))
+                    Text(stringResource(KMR.strings.stats_open_source))
+                }
+                if (occurrence.rawTextAvailable && !occurrence.excerpt.isNullOrBlank()) {
+                    TextButton(
+                        onClick = {
+                            context.startActivity(
+                                Intent(context, ProcessTextLookupActivity::class.java).apply {
+                                    action = Intent.ACTION_PROCESS_TEXT
+                                    putExtra(Intent.EXTRA_PROCESS_TEXT, occurrence.excerpt)
+                                },
+                            )
+                        },
+                    ) {
+                        Icon(Icons.Outlined.Search, contentDescription = null)
+                        Spacer(Modifier.width(4.dp))
+                        Text(stringResource(KMR.strings.stats_mine_again))
+                    }
+                }
+            }
         }
     }
 }
@@ -1894,6 +1978,32 @@ private fun provenanceLabel(value: ProvenanceState): String = when (value) {
     ProvenanceState.REMOVED -> stringResource(KMR.strings.stats_removed)
     ProvenanceState.UNAVAILABLE -> stringResource(KMR.strings.stats_unavailable)
     ProvenanceState.LEGACY_AGGREGATE -> stringResource(KMR.strings.stats_legacy)
+}
+
+@Composable
+private fun maturityLabel(value: MaturityTier): String = when (value) {
+    MaturityTier.UNKNOWN -> stringResource(KMR.strings.stats_maturity_unknown)
+    MaturityTier.NEW -> stringResource(KMR.strings.stats_maturity_new)
+    MaturityTier.LEARNING -> stringResource(KMR.strings.stats_maturity_learning)
+    MaturityTier.YOUNG -> stringResource(KMR.strings.stats_maturity_young)
+    MaturityTier.MATURE -> stringResource(KMR.strings.stats_maturity_mature)
+    MaturityTier.UNAVAILABLE -> stringResource(KMR.strings.stats_unavailable)
+    MaturityTier.STALE -> stringResource(KMR.strings.stats_stale)
+}
+
+@Composable
+private fun matchConfidenceLabel(value: AnkiMatchConfidence): String = when (value) {
+    AnkiMatchConfidence.READING_AWARE -> stringResource(KMR.strings.stats_match_reading_aware)
+    AnkiMatchConfidence.HEADWORD_ONLY -> stringResource(KMR.strings.stats_match_headword_only)
+    AnkiMatchConfidence.AMBIGUOUS -> stringResource(KMR.strings.stats_match_ambiguous)
+}
+
+@Composable
+private fun sessionStatusLabel(value: SessionStatus): String = when (value) {
+    SessionStatus.ACTIVE -> stringResource(KMR.strings.stats_session_active)
+    SessionStatus.COMPLETED -> stringResource(KMR.strings.stats_session_completed)
+    SessionStatus.ABANDONED -> stringResource(KMR.strings.stats_session_abandoned)
+    SessionStatus.DELETED -> stringResource(KMR.strings.stats_session_deleted)
 }
 
 private fun ReadingMetrics.characterValue(metric: CharacterMetric): Long =

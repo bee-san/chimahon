@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package tachiyomi.domain.immersion.model
 
 sealed interface SourceLocator {
@@ -9,6 +11,42 @@ sealed interface SourceLocator {
      * deliberately contains no raw source text.
      */
     fun canonicalKey(): String
+}
+
+data class ParsedSourceLocator(
+    val sourceKind: SourceKind,
+    val parts: List<String>,
+) {
+    init {
+        require(parts.isNotEmpty()) { "A source locator must contain at least one part" }
+    }
+}
+
+/**
+ * Parses the length-prefixed format emitted by [SourceLocator.canonicalKey]. Invalid or
+ * forward-incompatible locators fail closed so historical navigation never opens the wrong item.
+ */
+fun parseCanonicalSourceLocator(value: String): ParsedSourceLocator? {
+    val separator = value.indexOf('|')
+    if (separator <= 0) return null
+    val sourceKind = runCatching { SourceKind.valueOf(value.substring(0, separator)) }.getOrNull() ?: return null
+    val parts = mutableListOf<String>()
+    var cursor = separator + 1
+    while (cursor < value.length) {
+        val colon = value.indexOf(':', startIndex = cursor)
+        if (colon <= cursor) return null
+        val length = value.substring(cursor, colon).toIntOrNull() ?: return null
+        if (length < 0) return null
+        val partStart = colon + 1
+        val partEnd = partStart + length
+        if (partEnd > value.length) return null
+        parts += value.substring(partStart, partEnd)
+        cursor = partEnd
+        if (cursor == value.length) break
+        if (value[cursor] != '|') return null
+        cursor++
+    }
+    return parts.takeIf { it.isNotEmpty() }?.let { ParsedSourceLocator(sourceKind, it) }
 }
 
 @JvmInline

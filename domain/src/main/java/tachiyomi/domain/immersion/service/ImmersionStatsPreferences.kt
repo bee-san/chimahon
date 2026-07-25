@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package tachiyomi.domain.immersion.service
 
 import tachiyomi.core.common.preference.PreferenceStore
@@ -11,15 +13,36 @@ import tachiyomi.domain.immersion.model.RawTextRetention
 class ImmersionStatsPreferences(
     private val preferenceStore: PreferenceStore,
 ) {
-    fun captureEnabled() = preferenceStore.getBoolean(CAPTURE_ENABLED, false)
+    private val captureEnabledPreference = preferenceStore.getBoolean(CAPTURE_ENABLED, true)
+    private val indexingEnabledPreference = preferenceStore.getBoolean(INDEXING_ENABLED, true)
+    private val uiEnabledPreference = preferenceStore.getBoolean(UI_ENABLED, true)
+    private val ankiSyncEnabledPreference = preferenceStore.getBoolean(ANKI_SYNC_ENABLED, true)
+    private val goalsEnabledPreference = preferenceStore.getBoolean(GOALS_ENABLED, true)
+    private val legacyWritesEnabledPreference = preferenceStore.getBoolean(LEGACY_WRITES_ENABLED, false)
+    private val rolloutVersionPreference = preferenceStore.getInt(ROLLOUT_VERSION, 0)
 
-    fun indexingEnabled() = preferenceStore.getBoolean(INDEXING_ENABLED, false)
+    fun applyReleaseRolloutDefaults() {
+        if (rolloutVersionPreference.get() >= CURRENT_ROLLOUT_VERSION) return
+        captureEnabled().set(true)
+        indexingEnabled().set(true)
+        uiEnabled().set(true)
+        ankiSyncEnabled().set(true)
+        goalsEnabled().set(true)
+        legacyWritesEnabled().set(false)
+        rolloutVersionPreference.set(CURRENT_ROLLOUT_VERSION)
+    }
 
-    fun uiEnabled() = preferenceStore.getBoolean(UI_ENABLED, false)
+    fun captureEnabled() = captureEnabledPreference
 
-    fun ankiSyncEnabled() = preferenceStore.getBoolean(ANKI_SYNC_ENABLED, false)
+    fun indexingEnabled() = indexingEnabledPreference
 
-    fun goalsEnabled() = preferenceStore.getBoolean(GOALS_ENABLED, false)
+    fun uiEnabled() = uiEnabledPreference
+
+    fun ankiSyncEnabled() = ankiSyncEnabledPreference
+
+    fun goalsEnabled() = goalsEnabledPreference
+
+    fun legacyWritesEnabled() = legacyWritesEnabledPreference
 
     fun includeLegacyAggregates() = preferenceStore.getBoolean(INCLUDE_LEGACY_AGGREGATES, true)
 
@@ -79,6 +102,7 @@ class ImmersionStatsPreferences(
     )
 
     companion object {
+        const val CURRENT_ROLLOUT_VERSION = 1
         const val DEFAULT_READER_IDLE_TIMEOUT_SECONDS = 120
         const val DEFAULT_VIDEO_BUFFERING_GRACE_SECONDS = 5
 
@@ -87,6 +111,8 @@ class ImmersionStatsPreferences(
         const val UI_ENABLED = "immersion_stats_ui_enabled"
         const val ANKI_SYNC_ENABLED = "immersion_stats_anki_sync_enabled"
         const val GOALS_ENABLED = "immersion_stats_goals_enabled"
+        const val LEGACY_WRITES_ENABLED = "immersion_stats_legacy_writes_enabled"
+        const val ROLLOUT_VERSION = "immersion_stats_rollout_version"
         const val INCLUDE_LEGACY_AGGREGATES = "immersion_stats_include_legacy_aggregates"
         const val READER_IDLE_TIMEOUT_SECONDS = "immersion_stats_reader_idle_timeout_seconds"
         const val VIDEO_BUFFERING_GRACE_SECONDS = "immersion_stats_video_buffering_grace_seconds"

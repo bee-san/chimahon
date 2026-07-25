@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.ui.stats
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -47,6 +48,11 @@ class StatsScreen(
                                     icon = Icons.Outlined.Refresh,
                                     onClick = screenModel::refresh,
                                 ),
+                                AppBar.Action(
+                                    title = stringResource(KMR.strings.stats_maintenance_title),
+                                    icon = Icons.Outlined.Settings,
+                                    onClick = { navigator.push(StatsMaintenanceScreen()) },
+                                ),
                             ),
                         )
                     },
@@ -82,6 +88,7 @@ class StatsScreen(
                 onWordSelect = screenModel::selectWord,
                 onCharacterSelect = screenModel::selectCharacter,
                 onSessionSelect = screenModel::selectSession,
+                onSessionDelete = screenModel::deleteSession,
                 onLoadMoreVocabulary = screenModel::loadMoreVocabulary,
                 onLoadMoreCharacters = screenModel::loadMoreCharacters,
                 onLoadMoreSessions = screenModel::loadMoreSessions,

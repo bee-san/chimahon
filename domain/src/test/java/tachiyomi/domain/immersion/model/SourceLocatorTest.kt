@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package tachiyomi.domain.immersion.model
 
 import io.kotest.assertions.throwables.shouldThrow
@@ -7,6 +9,39 @@ import org.junit.jupiter.api.Test
 
 class SourceLocatorTest {
     private val hash = ContentHash("a".repeat(64))
+
+    @Test
+    fun `canonical locator parser preserves delimiters inside parts`() {
+        val locator = NovelSourceLocator(
+            sourceKey = "novel:source|with:delimiters",
+            documentId = "document",
+            sectionId = "chapter|1",
+            rangeStart = 10,
+            rangeEndExclusive = 20,
+            normalizedTextHash = hash,
+            parserRevision = 1,
+        )
+
+        parseCanonicalSourceLocator(locator.canonicalKey()) shouldBe ParsedSourceLocator(
+            sourceKind = SourceKind.NOVEL_RANGE,
+            parts = listOf(
+                "novel:source|with:delimiters",
+                "document",
+                "chapter|1",
+                "10",
+                "20",
+                "a".repeat(64),
+                "1",
+            ),
+        )
+    }
+
+    @Test
+    fun `canonical locator parser rejects malformed input`() {
+        parseCanonicalSourceLocator("NOVEL_RANGE|4:abc") shouldBe null
+        parseCanonicalSourceLocator("NOVEL_RANGE|3:abc;1:x") shouldBe null
+        parseCanonicalSourceLocator("UNKNOWN|1:x") shouldBe null
+    }
 
     @Test
     fun `novel locator is stable and changes with its range`() {

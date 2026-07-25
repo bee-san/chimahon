@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package mihon.feature.stats.anki
 
 import android.content.Context

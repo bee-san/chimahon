@@ -171,6 +171,7 @@ class PlayerActivity : BaseActivity() {
         private const val EXTRA_STANDALONE_VIDEO = "standaloneVideo"
         private const val EXTRA_STANDALONE_VIDEO_URL = "standaloneVideoUrl"
         private const val EXTRA_STANDALONE_VIDEO_TITLE = "standaloneVideoTitle"
+        private const val EXTRA_START_POSITION_MILLIS = "startPositionMillis"
 
         fun newIntent(
             context: Context,
@@ -179,6 +180,7 @@ class PlayerActivity : BaseActivity() {
             hostList: List<Hoster>? = null,
             hostIndex: Int? = null,
             vidIndex: Int? = null,
+            startPositionMillis: Long? = null,
         ): Intent {
             return Intent(context, PlayerActivity::class.java).apply {
                 putExtra("animeId", animeId)
@@ -186,6 +188,7 @@ class PlayerActivity : BaseActivity() {
                 hostIndex?.let { putExtra("hostIndex", it) }
                 vidIndex?.let { putExtra("vidIndex", it) }
                 hostList?.let { putExtra("hostList", it.serialize()) }
+                startPositionMillis?.let { putExtra(EXTRA_START_POSITION_MILLIS, it) }
                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
             }
         }
@@ -213,6 +216,8 @@ class PlayerActivity : BaseActivity() {
         }
     }
 
+    private var requestedStartPositionMillis: Long? = null
+
     @SuppressLint("MissingSuperCall")
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
@@ -234,6 +239,9 @@ class PlayerActivity : BaseActivity() {
         val hostList = intent.getStringExtra("hostList") ?: ""
         val hostIndex = intent.getIntExtra("hostIndex", -1)
         val vidIndex = intent.getIntExtra("vidIndex", -1)
+        requestedStartPositionMillis = intent
+            .takeIf { it.hasExtra(EXTRA_START_POSITION_MILLIS) }
+            ?.getLongExtra(EXTRA_START_POSITION_MILLIS, 0L)
         if (animeId == -1L || episodeId == -1L) {
             val standaloneVideo = intent.toStandaloneVideo()
             if (standaloneVideo != null) {
@@ -1285,6 +1293,7 @@ class PlayerActivity : BaseActivity() {
             viewModel.currentEpisode.value?.let { episode ->
                 val preservePos = playerPreferences.preserveWatchingPosition().get()
                 val resumePosition = position
+                    ?: requestedStartPositionMillis?.also { requestedStartPositionMillis = null }
                     ?: if (episode.seen && !preservePos) {
                         0L
                     } else {

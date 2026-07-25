@@ -1,7 +1,12 @@
+// SPDX-License-Identifier: MIT
+
 package tachiyomi.data.immersion
 
+import app.cash.sqldelight.db.QueryResult
+import app.cash.sqldelight.db.SqlDriver
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import tachiyomi.data.AndroidDatabaseHandler
 import tachiyomi.data.Database
 import tachiyomi.data.DatabaseHandler
 import tachiyomi.data.Immersion_anki_item
@@ -38,12 +43,22 @@ import tachiyomi.domain.immersion.model.ImmersionAnkiItem
 import tachiyomi.domain.immersion.model.ImmersionAnkiSnapshot
 import tachiyomi.domain.immersion.model.ImmersionDailyRollup
 import tachiyomi.domain.immersion.model.ImmersionDataException
+import tachiyomi.domain.immersion.model.ImmersionDeletionPreview
 import tachiyomi.domain.immersion.model.ImmersionGoal
 import tachiyomi.domain.immersion.model.ImmersionGoalAchievement
 import tachiyomi.domain.immersion.model.ImmersionGoalCheckIn
 import tachiyomi.domain.immersion.model.ImmersionIntegrityReport
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
+import tachiyomi.domain.immersion.model.ImmersionMaintenanceSummary
+import tachiyomi.domain.immersion.model.ImmersionMergeReport
 import tachiyomi.domain.immersion.model.ImmersionOverview
+import tachiyomi.domain.immersion.model.ImmersionPortableAffinity
+import tachiyomi.domain.immersion.model.ImmersionPortableArchive
+import tachiyomi.domain.immersion.model.ImmersionPortableCell
+import tachiyomi.domain.immersion.model.ImmersionPortableCellKind
+import tachiyomi.domain.immersion.model.ImmersionPortableColumn
+import tachiyomi.domain.immersion.model.ImmersionPortableRow
+import tachiyomi.domain.immersion.model.ImmersionPortableTable
 import tachiyomi.domain.immersion.model.ImmersionReindexRequest
 import tachiyomi.domain.immersion.model.ImmersionRollupDirtyRange
 import tachiyomi.domain.immersion.model.ImmersionRollupRebuildResult
@@ -93,12 +108,14 @@ import tachiyomi.domain.immersion.repository.ImmersionRecorderRepository
 import tachiyomi.domain.immersion.repository.ImmersionStatsRepository
 import tachiyomi.domain.immersion.service.AnkiCoverage
 import tachiyomi.domain.immersion.service.ImmersionAnalyticsCalendar
+import tachiyomi.domain.immersion.service.ImmersionStatsVersions
 import tachiyomi.domain.immersion.service.PendingAnkiOperation
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.util.Locale
 
 class SqlDelightImmersionRepository(
     private val handler: DatabaseHandler,
@@ -110,6 +127,15 @@ class SqlDelightImmersionRepository(
     ImmersionGoalRepository,
     ImmersionAnkiRepository,
     ImmersionLegacyImportRepository {
+
+    override suspend fun isTitleCaptureExcluded(titleId: TitleId): Boolean =
+        handler.await {
+            immersionQueries.isImmersionIndexEntityExcluded(
+                entityType = IMMERSION_TITLE_EXCLUSION_TYPE,
+                entityId = titleId.value,
+                scopeKeys = listOf(IMMERSION_CAPTURE_EXCLUSION_SCOPE),
+            ).executeAsOne() > 0
+        }
 
     override suspend fun upsertTitle(title: ImmersionTitle): PersistenceResult =
         handler.await(inTransaction = true) {
@@ -313,6 +339,14 @@ class SqlDelightImmersionRepository(
             val source = immersionQueries.selectImmersionSourceUnitById(sourceUnitId.value).executeAsOneOrNull()
             if (source == null) {
                 throw identityConflict("Source unit ${sourceUnitId.value} does not exist")
+            }
+            source.raw_text?.decodeUtf8Strict()?.let { rawText ->
+                immersionQueries.deleteImmersionSourceSearchDocument(sourceUnitId.value)
+                immersionQueries.insertImmersionSourceSearchDocument(
+                    sourceUnitId = sourceUnitId.value,
+                    normalizedText = rawText,
+                    searchTokens = rawText.searchTokenDocument(),
+                )
             }
             immersionQueries.deleteImmersionWordOccurrencesForSource(sourceUnitId.value)
             immersionQueries.deleteImmersionCharacterOccurrencesForSource(sourceUnitId.value)
@@ -1240,13 +1274,121 @@ class SqlDelightImmersionRepository(
         }
     }
 
+    override suspend fun maintenanceSummary(): ImmersionMaintenanceSummary {
+        val rawHandler = handler.requireRawHandler()
+        return rawHandler.awaitRawDriver { driver ->
+            val pageCount = driver.singleLong("PRAGMA page_count")
+            val pageSize = driver.singleLong("PRAGMA page_size")
+            ImmersionMaintenanceSummary(
+                databaseBytes = Math.multiplyExact(pageCount, pageSize),
+                sessions = driver.singleLong("SELECT count(*) FROM immersion_session"),
+                events = driver.singleLong("SELECT count(*) FROM immersion_event"),
+                sourceUnits = driver.singleLong("SELECT count(*) FROM immersion_source_unit"),
+                rawTextSourceUnits = driver.singleLong(
+                    "SELECT count(*) FROM immersion_source_unit WHERE raw_text IS NOT NULL",
+                ),
+                rawTextBytes = driver.singleLong(
+                    "SELECT coalesce(sum(length(raw_text)), 0) FROM immersion_source_unit",
+                ),
+                words = driver.singleLong("SELECT count(*) FROM immersion_word"),
+                characters = driver.singleLong("SELECT count(*) FROM immersion_character"),
+                quarantinedConflicts = driver.singleLong(
+                    "SELECT count(*) FROM immersion_merge_conflict WHERE resolution_state = 'QUARANTINED'",
+                ),
+                lastRawTextCleanupAtEpochMillis = driver.singleNullableLong(
+                    "SELECT last_success_at FROM immersion_retention_state WHERE scope_key = 'raw_text'",
+                ),
+            )
+        }
+    }
+
+    override suspend fun previewAllStatsDeletion(): ImmersionDeletionPreview {
+        val rawHandler = handler.requireRawHandler()
+        return rawHandler.awaitRawDriver { it.previewAllImmersionDeletion() }
+    }
+
+    override suspend fun resetAllStats(
+        deviceId: String,
+        deletedAtEpochMillis: Long,
+    ): ImmersionDeletionPreview {
+        require(deviceId.isNotBlank())
+        require(deletedAtEpochMillis >= 0)
+        val rawHandler = handler.requireRawHandler()
+        return rawHandler.awaitRawDriver(inTransaction = true) { driver ->
+            val preview = driver.previewAllImmersionDeletion()
+            IMMERSION_TOMBSTONE_IDENTITIES.forEach { (tableName, identity) ->
+                driver.execute(
+                    identifier = null,
+                    sql = """
+                        INSERT INTO immersion_tombstone(entity_type, entity_id, deleted_at, device_id)
+                        SELECT ?, CAST(${identity.second.quotedIdentifier()} AS TEXT), ?, ?
+                        FROM ${tableName.quotedIdentifier()}
+                        WHERE true
+                        ON CONFLICT(entity_type, entity_id) DO UPDATE SET
+                            deleted_at = max(immersion_tombstone.deleted_at, excluded.deleted_at),
+                            device_id = CASE
+                                WHEN excluded.deleted_at >= immersion_tombstone.deleted_at
+                                THEN excluded.device_id
+                                ELSE immersion_tombstone.device_id
+                            END
+                    """.trimIndent(),
+                    parameters = 3,
+                ) {
+                    bindString(0, identity.first)
+                    bindLong(1, deletedAtEpochMillis)
+                    bindString(2, deviceId)
+                }.value
+            }
+            driver.applyImmersionTombstones(driver.loadImmersionTombstones())
+            IMMERSION_RESET_DERIVED_TABLES.forEach { tableName ->
+                driver.execute(
+                    identifier = null,
+                    sql = "DELETE FROM ${tableName.quotedIdentifier()}",
+                    parameters = 0,
+                ).value
+            }
+            driver.execute(
+                identifier = null,
+                sql = "UPDATE immersion_rollup_state SET revision = revision + 1, updated_at = ?",
+                parameters = 1,
+            ) {
+                bindLong(0, deletedAtEpochMillis)
+            }.value
+            driver.notifyListeners(*IMMERSION_PORTABLE_TABLES.toTypedArray())
+            preview
+        }
+    }
+
     override suspend fun deleteSession(sessionId: SessionId): Boolean =
         handler.await(inTransaction = true) {
             val session = immersionQueries.selectImmersionSessionById(sessionId.value).executeAsOneOrNull()
+            val sourceUnitIds = immersionQueries
+                .selectImmersionSourceIdsForSession(sessionId.value)
+                .executeAsList()
+            session?.let {
+                immersionQueries.upsertImmersionTombstone(
+                    entityType = "SESSION",
+                    entityId = sessionId.value,
+                    deletedAt = System.currentTimeMillis(),
+                    deviceId = it.device_id,
+                )
+            }
             immersionQueries.deleteImmersionSession(sessionId.value)
             val deleted = immersionQueries.selectImmersionChanges().executeAsOne() == 1L
             if (deleted) {
                 requireNotNull(session)
+                val deletedAt = System.currentTimeMillis()
+                sourceUnitIds.forEach { sourceUnitId ->
+                    immersionQueries.deleteImmersionSourceUnitIfUnreferenced(sourceUnitId)
+                    if (immersionQueries.selectImmersionChanges().executeAsOne() == 1L) {
+                        immersionQueries.upsertImmersionTombstone(
+                            entityType = "SOURCE_UNIT",
+                            entityId = sourceUnitId,
+                            deletedAt = deletedAt,
+                            deviceId = session.device_id,
+                        )
+                    }
+                }
                 markRollupDirty(
                     session.started_at,
                     session.start_offset_seconds.toIntExact("session offset"),
@@ -1303,6 +1445,231 @@ class SqlDelightImmersionRepository(
             )
         }
     }
+
+    override suspend fun exportPortableArchive(
+        includeRawText: Boolean,
+        createdAtEpochMillis: Long,
+    ): ImmersionPortableArchive {
+        require(createdAtEpochMillis >= 0)
+        val rawHandler = handler.requireRawHandler()
+        val tables = rawHandler.awaitRawDriver { driver ->
+            IMMERSION_PORTABLE_TABLES.map { tableName ->
+                driver.exportPortableTable(tableName, includeRawText)
+            }
+        }
+        return ImmersionPortableArchive(
+            formatVersion = IMMERSION_PORTABLE_FORMAT_VERSION,
+            sourceSchemaVersion = ImmersionStatsVersions.SCHEMA,
+            createdAtEpochMillis = createdAtEpochMillis,
+            includesRawText = includeRawText,
+            tables = tables,
+        )
+    }
+
+    override suspend fun mergePortableArchive(
+        archive: ImmersionPortableArchive,
+        mergedAtEpochMillis: Long,
+    ): ImmersionMergeReport {
+        require(mergedAtEpochMillis >= 0)
+        require(archive.formatVersion <= IMMERSION_PORTABLE_FORMAT_VERSION) {
+            "Immersion backup format ${archive.formatVersion} is newer than supported " +
+                "$IMMERSION_PORTABLE_FORMAT_VERSION"
+        }
+        require(archive.sourceSchemaVersion <= ImmersionStatsVersions.SCHEMA) {
+            "Immersion schema ${archive.sourceSchemaVersion} is newer than supported " +
+                "${ImmersionStatsVersions.SCHEMA}"
+        }
+        require(archive.tables.all { it.name in IMMERSION_PORTABLE_TABLES }) {
+            "Immersion backup contains an unknown table"
+        }
+        val incoming = archive.tables.associateBy { it.name }
+        val rawHandler = handler.requireRawHandler()
+        var insertedRows = 0L
+        var unchangedRows = 0L
+        var skippedByTombstoneRows = 0L
+        var quarantinedConflicts = 0L
+
+        incoming["immersion_tombstone"]?.let { table ->
+            table.rows.chunked(IMMERSION_PORTABLE_MERGE_CHUNK_SIZE).forEach { rows ->
+                val result = rawHandler.awaitRawDriver(inTransaction = true) { driver ->
+                    driver.mergePortableTable(
+                        table = table.copy(rows = rows),
+                        archiveIncludesRawText = archive.includesRawText,
+                        tombstones = emptySet(),
+                        mergedAtEpochMillis = mergedAtEpochMillis,
+                        tombstoneMetadataOnly = true,
+                    )
+                }
+                insertedRows += result.inserted
+                unchangedRows += result.unchanged
+                quarantinedConflicts += result.conflicts
+            }
+        }
+
+        val tombstones = rawHandler.awaitRawDriver { it.loadImmersionTombstones() }
+        rawHandler.awaitRawDriver(inTransaction = true) { it.applyImmersionTombstones(tombstones) }
+
+        IMMERSION_PORTABLE_TABLES
+            .asSequence()
+            .filterNot { it == "immersion_tombstone" }
+            .mapNotNull(incoming::get)
+            .forEach { table ->
+                table.rows.chunked(IMMERSION_PORTABLE_MERGE_CHUNK_SIZE).forEach { rows ->
+                    val result = rawHandler.awaitRawDriver(inTransaction = true) { driver ->
+                        driver.mergePortableTable(
+                            table = table.copy(rows = rows),
+                            archiveIncludesRawText = archive.includesRawText,
+                            tombstones = tombstones,
+                            mergedAtEpochMillis = mergedAtEpochMillis,
+                            tombstoneMetadataOnly = false,
+                        )
+                    }
+                    insertedRows += result.inserted
+                    unchangedRows += result.unchanged
+                    skippedByTombstoneRows += result.skippedByTombstone
+                    quarantinedConflicts += result.conflicts
+                }
+            }
+        rawHandler.awaitRawDriver(inTransaction = true) { it.rebuildImmersionSourceSearchIndex() }
+
+        val range = availableDateRange(StatsFilter())
+        val rebuiltRows = if (range == null) {
+            0L
+        } else {
+            beginRollupRebuild(
+                rollupVersion = ImmersionStatsVersions.ROLLUP,
+                repairCursor = "portable-merge:${archive.createdAtEpochMillis}",
+                updatedAtEpochMillis = mergedAtEpochMillis,
+            )
+            rebuildRollups(
+                range = range,
+                rollupVersion = ImmersionStatsVersions.ROLLUP,
+                nowEpochMillis = mergedAtEpochMillis,
+            ).rowCount
+        }
+        rawHandler.awaitRawDriver {
+            it.notifyListeners(*IMMERSION_PORTABLE_TABLES.toTypedArray())
+        }
+        return ImmersionMergeReport(
+            insertedRows = insertedRows,
+            unchangedRows = unchangedRows,
+            skippedByTombstoneRows = skippedByTombstoneRows,
+            quarantinedConflicts = quarantinedConflicts,
+            rebuiltRollupRows = rebuiltRows,
+        )
+    }
+
+    override suspend fun deleteRawText(
+        titleId: TitleId?,
+        beforeEpochMillis: Long?,
+        updatedAtEpochMillis: Long,
+    ): Long {
+        require(beforeEpochMillis == null || beforeEpochMillis >= 0)
+        require(updatedAtEpochMillis >= 0)
+        val rawHandler = handler.requireRawHandler()
+        return rawHandler.awaitRawDriver(inTransaction = true) { driver ->
+            val clauses = buildList {
+                if (titleId != null) add("title_id = ?")
+                if (beforeEpochMillis != null) add("last_exposed_at < ?")
+                add("raw_text IS NOT NULL")
+            }
+            val sql = "UPDATE immersion_source_unit SET raw_text = NULL, raw_text_encoding = NULL " +
+                "WHERE ${clauses.joinToString(" AND ")}"
+            var parameter = 0
+            val changed = driver.execute(
+                identifier = null,
+                sql = sql,
+                parameters = clauses.size - 1,
+            ) {
+                titleId?.let { value -> bindString(parameter++, value.value) }
+                beforeEpochMillis?.let { value -> bindLong(parameter++, value) }
+            }.value
+            driver.execute(
+                identifier = null,
+                sql = """
+                    INSERT INTO immersion_retention_state(
+                        scope_key,
+                        cleanup_cursor,
+                        last_success_at,
+                        last_error_code,
+                        updated_at
+                    ) VALUES ('raw_text', NULL, ?, NULL, ?)
+                    ON CONFLICT(scope_key) DO UPDATE SET
+                        cleanup_cursor = NULL,
+                        last_success_at = excluded.last_success_at,
+                        last_error_code = NULL,
+                        updated_at = excluded.updated_at
+                """.trimIndent(),
+                parameters = 2,
+            ) {
+                bindLong(0, updatedAtEpochMillis)
+                bindLong(1, updatedAtEpochMillis)
+            }.value
+            driver.notifyListeners("immersion_source_unit", "immersion_source_fts")
+            changed
+        }
+    }
+
+    override suspend fun previewRawTextDeletion(
+        titleId: TitleId?,
+        beforeEpochMillis: Long?,
+    ): Long {
+        require(beforeEpochMillis == null || beforeEpochMillis >= 0)
+        val rawHandler = handler.requireRawHandler()
+        return rawHandler.awaitRawDriver { driver ->
+            val clauses = buildList {
+                if (titleId != null) add("title_id = ?")
+                if (beforeEpochMillis != null) add("last_exposed_at < ?")
+                add("raw_text IS NOT NULL")
+            }
+            var parameter = 0
+            driver.executeQuery(
+                identifier = null,
+                sql = "SELECT count(*) FROM immersion_source_unit WHERE ${clauses.joinToString(" AND ")}",
+                mapper = { cursor ->
+                    check(cursor.next().value)
+                    QueryResult.Value(checkNotNull(cursor.getLong(0)))
+                },
+                parameters = clauses.size - 1,
+            ) {
+                titleId?.let { value -> bindString(parameter++, value.value) }
+                beforeEpochMillis?.let { value -> bindLong(parameter++, value) }
+            }.value
+        }
+    }
+
+    override suspend fun setTitleCaptureExcluded(
+        titleId: TitleId,
+        excluded: Boolean,
+        updatedAtEpochMillis: Long,
+    ) {
+        require(updatedAtEpochMillis >= 0)
+        handler.await(inTransaction = true) {
+            if (excluded) {
+                immersionQueries.upsertImmersionExclusion(
+                    id = "capture-title:${titleId.value}",
+                    entityType = IMMERSION_TITLE_EXCLUSION_TYPE,
+                    entityId = titleId.value,
+                    scopeKey = IMMERSION_CAPTURE_EXCLUSION_SCOPE,
+                    reason = "USER_CAPTURE_EXCLUSION",
+                    createdAt = updatedAtEpochMillis,
+                )
+            } else {
+                immersionQueries.deleteImmersionExclusion(
+                    entityType = IMMERSION_TITLE_EXCLUSION_TYPE,
+                    entityId = titleId.value,
+                    scopeKey = IMMERSION_CAPTURE_EXCLUSION_SCOPE,
+                )
+            }
+            immersionQueries.incrementImmersionRevision(updatedAtEpochMillis)
+        }
+    }
+
+    override suspend fun resolveMergeConflictsKeepingLocal(): Long =
+        handler.await(inTransaction = true) {
+            immersionQueries.resolveImmersionMergeConflictsKeepingLocal()
+            immersionQueries.selectImmersionChanges().executeAsOne()
+        }
 
     override suspend fun upsertGoal(goal: ImmersionGoal) {
         handler.await(inTransaction = true) {
@@ -2083,6 +2450,14 @@ class SqlDelightImmersionRepository(
             latinCharacters = 0,
             otherCharacters = 0,
         )
+        source.rawText?.let { rawText ->
+            immersionQueries.deleteImmersionSourceSearchDocument(source.id.value)
+            immersionQueries.insertImmersionSourceSearchDocument(
+                sourceUnitId = source.id.value,
+                normalizedText = rawText,
+                searchTokens = rawText.searchTokenDocument(),
+            )
+        }
         return PersistenceResult.Applied
     }
 
@@ -2503,6 +2878,21 @@ private fun String.toFtsQuery(): String? {
     }
 }
 
+private fun String.searchTokenDocument(): String =
+    buildString {
+        var offset = 0
+        var first = true
+        while (offset < this@searchTokenDocument.length) {
+            val codePoint = this@searchTokenDocument.codePointAt(offset)
+            if (!Character.isWhitespace(codePoint)) {
+                if (!first) append(' ')
+                appendCodePoint(codePoint)
+                first = false
+            }
+            offset += Character.charCount(codePoint)
+        }
+    }
+
 private fun StatsFilter.sqlArgs(): AnalyticsSqlArgs =
     AnalyticsSqlArgs(
         filterMediaKinds = mediaKinds.isNotEmpty().toLong(),
@@ -2885,6 +3275,523 @@ private fun ByteArray.decodeUtf8Strict(): String =
         .decode(ByteBuffer.wrap(this))
         .toString()
 
+private fun DatabaseHandler.requireRawHandler(): AndroidDatabaseHandler =
+    this as? AndroidDatabaseHandler
+        ?: error("Portable immersion backup requires the SQLDelight database handler")
+
+private fun SqlDriver.exportPortableTable(
+    tableName: String,
+    includeRawText: Boolean,
+): ImmersionPortableTable {
+    require(tableName in IMMERSION_PORTABLE_TABLES)
+    val columns = portableColumns(tableName)
+    val projection = columns.joinToString(", ") { it.name.quotedIdentifier() }
+    val rows = executeQuery(
+        identifier = null,
+        sql = "SELECT $projection FROM ${tableName.quotedIdentifier()}",
+        mapper = { cursor ->
+            val result = mutableListOf<ImmersionPortableRow>()
+            while (cursor.next().value) {
+                result += cursor.readPortableRow(
+                    tableName = tableName,
+                    columns = columns,
+                    includePrivateText = includeRawText,
+                )
+            }
+            QueryResult.Value(result)
+        },
+        parameters = 0,
+    ).value
+    return ImmersionPortableTable(tableName, columns, rows)
+}
+
+private fun SqlDriver.portableColumns(tableName: String): List<ImmersionPortableColumn> =
+    executeQuery(
+        identifier = null,
+        sql = "PRAGMA table_info(${tableName.quotedIdentifier()})",
+        mapper = { cursor ->
+            val result = mutableListOf<ImmersionPortableColumn>()
+            while (cursor.next().value) {
+                result += ImmersionPortableColumn(
+                    name = checkNotNull(cursor.getString(1)),
+                    affinity = checkNotNull(cursor.getString(2)).portableAffinity(),
+                    primaryKeyPosition = checkNotNull(cursor.getLong(5)).toIntExact("primary key position"),
+                )
+            }
+            QueryResult.Value(result)
+        },
+        parameters = 0,
+    ).value.also {
+        require(it.isNotEmpty()) { "Missing portable table $tableName" }
+        require(it.any { column -> column.primaryKeyPosition > 0 }) {
+            "Portable table $tableName has no primary key"
+        }
+    }
+
+private fun app.cash.sqldelight.db.SqlCursor.readPortableRow(
+    tableName: String,
+    columns: List<ImmersionPortableColumn>,
+    includePrivateText: Boolean,
+): ImmersionPortableRow =
+    ImmersionPortableRow(
+        columns.mapIndexed { index, column ->
+            if (!includePrivateText && tableName to column.name in IMMERSION_PRIVATE_TEXT_COLUMNS) {
+                return@mapIndexed ImmersionPortableCell(ImmersionPortableCellKind.NULL)
+            }
+            when (column.affinity) {
+                ImmersionPortableAffinity.TEXT -> getString(index)?.let {
+                    ImmersionPortableCell(ImmersionPortableCellKind.TEXT, textValue = it)
+                }
+                ImmersionPortableAffinity.INTEGER -> getLong(index)?.let {
+                    ImmersionPortableCell(ImmersionPortableCellKind.INTEGER, integerValue = it)
+                }
+                ImmersionPortableAffinity.REAL -> getDouble(index)?.let {
+                    ImmersionPortableCell(ImmersionPortableCellKind.REAL, realValue = it)
+                }
+                ImmersionPortableAffinity.BLOB -> getBytes(index)?.let {
+                    ImmersionPortableCell(ImmersionPortableCellKind.BLOB, blobValue = it)
+                }
+            } ?: ImmersionPortableCell(ImmersionPortableCellKind.NULL)
+        },
+    )
+
+private data class PortableMergeCounts(
+    val inserted: Long = 0,
+    val unchanged: Long = 0,
+    val skippedByTombstone: Long = 0,
+    val conflicts: Long = 0,
+) {
+    operator fun plus(other: PortableMergeCounts) = PortableMergeCounts(
+        inserted = inserted + other.inserted,
+        unchanged = unchanged + other.unchanged,
+        skippedByTombstone = skippedByTombstone + other.skippedByTombstone,
+        conflicts = conflicts + other.conflicts,
+    )
+}
+
+private fun SqlDriver.mergePortableTable(
+    table: ImmersionPortableTable,
+    archiveIncludesRawText: Boolean,
+    tombstones: Set<Pair<String, String>>,
+    mergedAtEpochMillis: Long,
+    tombstoneMetadataOnly: Boolean,
+): PortableMergeCounts {
+    require(table.name in IMMERSION_PORTABLE_TABLES)
+    val expectedColumns = portableColumns(table.name)
+    require(table.columns == expectedColumns) {
+        "Immersion backup table ${table.name} does not match the current schema"
+    }
+    val columnNames = table.columns.joinToString(", ") { it.name.quotedIdentifier() }
+    val placeholders = table.columns.joinToString(", ") { "?" }
+    val insertSql =
+        "INSERT OR IGNORE INTO ${table.name.quotedIdentifier()} ($columnNames) VALUES ($placeholders)"
+    return table.rows.fold(PortableMergeCounts()) { totals, row ->
+        val entityIdentity = table.entityIdentity(row)
+        if (
+            (entityIdentity != null && entityIdentity in tombstones) ||
+            table.referencesTombstone(row, tombstones)
+        ) {
+            return@fold totals + PortableMergeCounts(skippedByTombstone = 1)
+        }
+        val changed = execute(
+            identifier = null,
+            sql = insertSql,
+            parameters = row.cells.size,
+        ) {
+            row.cells.forEachIndexed { index, cell -> bindPortableCell(index, cell) }
+        }.value
+        if (changed == 1L) {
+            return@fold totals + PortableMergeCounts(inserted = 1)
+        }
+
+        val existing = selectPortableRowByPrimaryKey(table, row)
+        if (existing != null && (
+                tombstoneMetadataOnly ||
+                    portableRowsEqual(
+                        table = table,
+                        first = existing,
+                        second = row,
+                        ignorePrivateText = !archiveIncludesRawText,
+                    )
+                )
+        ) {
+            return@fold totals + PortableMergeCounts(unchanged = 1)
+        }
+        if (
+            existing != null &&
+            table.name == "immersion_source_unit" &&
+            portableRowsEqual(
+                table = table,
+                first = existing,
+                second = row,
+                ignorePrivateText = true,
+            )
+        ) {
+            enrichPortableSourceRawText(table, row)
+            return@fold totals + PortableMergeCounts(unchanged = 1)
+        }
+
+        quarantinePortableConflict(
+            table = table,
+            incoming = row,
+            existing = existing,
+            detectedAtEpochMillis = mergedAtEpochMillis,
+        )
+        totals + PortableMergeCounts(conflicts = 1)
+    }
+}
+
+private fun SqlDriver.selectPortableRowByPrimaryKey(
+    table: ImmersionPortableTable,
+    row: ImmersionPortableRow,
+): ImmersionPortableRow? {
+    val primaryKeyColumns = table.columns
+        .withIndex()
+        .filter { it.value.primaryKeyPosition > 0 }
+        .sortedBy { it.value.primaryKeyPosition }
+    val predicates = primaryKeyColumns.joinToString(" AND ") {
+        "${it.value.name.quotedIdentifier()} = ?"
+    }
+    val projection = table.columns.joinToString(", ") { it.name.quotedIdentifier() }
+    return executeQuery(
+        identifier = null,
+        sql = "SELECT $projection FROM ${table.name.quotedIdentifier()} WHERE $predicates",
+        mapper = { cursor ->
+            QueryResult.Value(
+                if (cursor.next().value) {
+                    cursor.readPortableRow(
+                        tableName = table.name,
+                        columns = table.columns,
+                        includePrivateText = true,
+                    )
+                } else {
+                    null
+                },
+            )
+        },
+        parameters = primaryKeyColumns.size,
+    ) {
+        primaryKeyColumns.forEachIndexed { parameter, indexedColumn ->
+            bindPortableCell(parameter, row.cells[indexedColumn.index])
+        }
+    }.value
+}
+
+private fun app.cash.sqldelight.db.SqlPreparedStatement.bindPortableCell(
+    index: Int,
+    cell: ImmersionPortableCell,
+) {
+    when (cell.kind) {
+        ImmersionPortableCellKind.NULL -> bindString(index, null)
+        ImmersionPortableCellKind.TEXT -> bindString(index, checkNotNull(cell.textValue))
+        ImmersionPortableCellKind.INTEGER -> bindLong(index, checkNotNull(cell.integerValue))
+        ImmersionPortableCellKind.REAL -> bindDouble(index, checkNotNull(cell.realValue))
+        ImmersionPortableCellKind.BLOB -> bindBytes(index, checkNotNull(cell.blobValue))
+    }
+}
+
+private fun ImmersionPortableTable.entityIdentity(
+    row: ImmersionPortableRow,
+): Pair<String, String>? {
+    val mapping = IMMERSION_TOMBSTONE_IDENTITIES[name] ?: return null
+    val index = columns.indexOfFirst { it.name == mapping.second }
+    if (index < 0) return null
+    return mapping.first to row.cells[index].portableIdentityValue()
+}
+
+private fun ImmersionPortableTable.referencesTombstone(
+    row: ImmersionPortableRow,
+    tombstones: Set<Pair<String, String>>,
+): Boolean =
+    IMMERSION_TOMBSTONE_REFERENCES[name]
+        .orEmpty()
+        .any { (entityType, columnName) ->
+            val index = columns.indexOfFirst { it.name == columnName }
+            index >= 0 &&
+                row.cells[index].portableIdentityValueOrNull()?.let {
+                    (entityType to it) in tombstones
+                } == true
+        }
+
+private fun ImmersionPortableCell.portableIdentityValue(): String =
+    checkNotNull(portableIdentityValueOrNull()) {
+        "A portable primary identity cannot be null"
+    }
+
+private fun ImmersionPortableCell.portableIdentityValueOrNull(): String? =
+    when (kind) {
+        ImmersionPortableCellKind.TEXT -> checkNotNull(textValue)
+        ImmersionPortableCellKind.INTEGER -> checkNotNull(integerValue).toString()
+        ImmersionPortableCellKind.REAL -> checkNotNull(realValue).toString()
+        ImmersionPortableCellKind.BLOB -> checkNotNull(blobValue).joinToString("") { "%02x".format(it) }
+        ImmersionPortableCellKind.NULL -> null
+    }
+
+private fun portableRowsEqual(
+    table: ImmersionPortableTable,
+    first: ImmersionPortableRow,
+    second: ImmersionPortableRow,
+    ignorePrivateText: Boolean,
+): Boolean =
+    first.cells.indices.all { index ->
+        val column = table.columns[index]
+        (
+            ignorePrivateText &&
+                table.name to column.name in IMMERSION_PRIVATE_TEXT_COLUMNS
+            ) ||
+            first.cells[index].portableEquals(second.cells[index])
+    }
+
+private fun ImmersionPortableCell.portableEquals(other: ImmersionPortableCell): Boolean =
+    kind == other.kind &&
+        textValue == other.textValue &&
+        integerValue == other.integerValue &&
+        realValue == other.realValue &&
+        when {
+            blobValue == null && other.blobValue == null -> true
+            blobValue == null || other.blobValue == null -> false
+            else -> blobValue.contentEquals(other.blobValue)
+        }
+
+private fun SqlDriver.enrichPortableSourceRawText(
+    table: ImmersionPortableTable,
+    row: ImmersionPortableRow,
+) {
+    val idIndex = table.columns.indexOfFirst { it.name == "id" }
+    val rawTextIndex = table.columns.indexOfFirst { it.name == "raw_text" }
+    val encodingIndex = table.columns.indexOfFirst { it.name == "raw_text_encoding" }
+    val rawText = row.cells[rawTextIndex]
+    if (rawText.kind == ImmersionPortableCellKind.NULL) return
+    execute(
+        identifier = null,
+        sql = """
+            UPDATE immersion_source_unit
+            SET raw_text = ?, raw_text_encoding = ?
+            WHERE id = ? AND raw_text IS NULL
+        """.trimIndent(),
+        parameters = 3,
+    ) {
+        bindPortableCell(0, rawText)
+        bindPortableCell(1, row.cells[encodingIndex])
+        bindPortableCell(2, row.cells[idIndex])
+    }.value
+}
+
+private fun SqlDriver.quarantinePortableConflict(
+    table: ImmersionPortableTable,
+    incoming: ImmersionPortableRow,
+    existing: ImmersionPortableRow?,
+    detectedAtEpochMillis: Long,
+) {
+    val identity = table.columns
+        .withIndex()
+        .filter { it.value.primaryKeyPosition > 0 }
+        .sortedBy { it.value.primaryKeyPosition }
+        .joinToString("|") { "${it.value.name}=${incoming.cells[it.index].portableIdentityValue()}" }
+    val incomingHash = incoming.portableHash()
+    val existingHash = existing?.portableHash()
+    val conflictId = "${
+        table.name
+    }\u0000$identity\u0000$incomingHash".encodeToByteArray().sha256Hex()
+    execute(
+        identifier = null,
+        sql = """
+            INSERT OR IGNORE INTO immersion_merge_conflict(
+                id,
+                table_name,
+                identity_key,
+                existing_payload_hash,
+                incoming_payload_hash,
+                detected_at,
+                resolution_state
+            ) VALUES (?, ?, ?, ?, ?, ?, 'QUARANTINED')
+        """.trimIndent(),
+        parameters = 6,
+    ) {
+        bindString(0, conflictId)
+        bindString(1, table.name)
+        bindString(2, identity)
+        bindString(3, existingHash)
+        bindString(4, incomingHash)
+        bindLong(5, detectedAtEpochMillis)
+    }.value
+}
+
+private fun ImmersionPortableRow.portableHash(): String {
+    val output = ByteArrayOutputStream()
+    cells.forEach { cell ->
+        output.writeField(cell.kind.name)
+        when (cell.kind) {
+            ImmersionPortableCellKind.NULL -> Unit
+            ImmersionPortableCellKind.TEXT -> output.writeField(checkNotNull(cell.textValue))
+            ImmersionPortableCellKind.INTEGER -> output.writeLong(checkNotNull(cell.integerValue))
+            ImmersionPortableCellKind.REAL -> output.writeLong(
+                checkNotNull(cell.realValue).toBits(),
+            )
+            ImmersionPortableCellKind.BLOB -> {
+                val bytes = checkNotNull(cell.blobValue)
+                output.writeLong(bytes.size.toLong())
+                output.write(bytes)
+            }
+        }
+    }
+    return output.sha256()
+}
+
+private fun ByteArray.sha256Hex(): String =
+    MessageDigest.getInstance("SHA-256")
+        .digest(this)
+        .joinToString("") { "%02x".format(it) }
+
+private fun SqlDriver.loadImmersionTombstones(): Set<Pair<String, String>> =
+    executeQuery(
+        identifier = null,
+        sql = "SELECT entity_type, entity_id FROM immersion_tombstone",
+        mapper = { cursor ->
+            val result = mutableSetOf<Pair<String, String>>()
+            while (cursor.next().value) {
+                result += checkNotNull(cursor.getString(0)).uppercase(Locale.ROOT) to
+                    checkNotNull(cursor.getString(1))
+            }
+            QueryResult.Value(result)
+        },
+        parameters = 0,
+    ).value
+
+private fun SqlDriver.rebuildImmersionSourceSearchIndex() {
+    val sources = executeQuery(
+        identifier = null,
+        sql = "SELECT id, raw_text FROM immersion_source_unit WHERE raw_text IS NOT NULL",
+        mapper = { cursor ->
+            val result = mutableListOf<Pair<String, String>>()
+            while (cursor.next().value) {
+                result += checkNotNull(cursor.getString(0)) to
+                    checkNotNull(cursor.getBytes(1)).decodeUtf8Strict()
+            }
+            QueryResult.Value(result)
+        },
+        parameters = 0,
+    ).value
+    execute(
+        identifier = null,
+        sql = "DELETE FROM immersion_source_fts",
+        parameters = 0,
+    ).value
+    sources.forEach { (sourceUnitId, rawText) ->
+        execute(
+            identifier = null,
+            sql = """
+                INSERT INTO immersion_source_fts(source_unit_id, normalized_text, search_tokens)
+                VALUES (?, ?, ?)
+            """.trimIndent(),
+            parameters = 3,
+        ) {
+            bindString(0, sourceUnitId)
+            bindString(1, rawText)
+            bindString(2, rawText.searchTokenDocument())
+        }.value
+    }
+}
+
+private fun SqlDriver.previewAllImmersionDeletion(): ImmersionDeletionPreview =
+    executeQuery(
+        identifier = null,
+        sql = """
+            SELECT
+                (SELECT count(*) FROM immersion_session),
+                (SELECT coalesce(sum(active_duration_ms), 0) FROM immersion_session),
+                (SELECT coalesce(sum(gross_characters), 0) FROM immersion_session),
+                (SELECT count(*) FROM immersion_source_unit),
+                (SELECT count(*) FROM immersion_word),
+                (SELECT count(*) FROM immersion_character)
+        """.trimIndent(),
+        mapper = { cursor ->
+            check(cursor.next().value)
+            QueryResult.Value(
+                ImmersionDeletionPreview(
+                    sessions = checkNotNull(cursor.getLong(0)),
+                    activeDurationMillis = checkNotNull(cursor.getLong(1)),
+                    grossCharacters = checkNotNull(cursor.getLong(2)),
+                    sourceUnits = checkNotNull(cursor.getLong(3)),
+                    words = checkNotNull(cursor.getLong(4)),
+                    characters = checkNotNull(cursor.getLong(5)),
+                ),
+            )
+        },
+        parameters = 0,
+    ).value
+
+private fun SqlDriver.singleLong(sql: String): Long =
+    checkNotNull(singleNullableLong(sql)) { "Query returned no value: $sql" }
+
+private fun SqlDriver.singleNullableLong(sql: String): Long? =
+    executeQuery(
+        identifier = null,
+        sql = sql,
+        mapper = { cursor ->
+            QueryResult.Value(
+                if (cursor.next().value) cursor.getLong(0) else null,
+            )
+        },
+        parameters = 0,
+    ).value
+
+private fun SqlDriver.applyImmersionTombstones(tombstones: Set<Pair<String, String>>) {
+    tombstones.forEach { (entityType, entityId) ->
+        when (entityType) {
+            "SESSION" -> executeDeleteByIdentity("immersion_session", "id", entityId)
+            "TITLE" -> {
+                executeDeleteByIdentity("immersion_session", "title_id", entityId)
+                executeDeleteByIdentity("immersion_source_unit", "title_id", entityId)
+                executeDeleteByIdentity("immersion_title", "id", entityId)
+            }
+            "SOURCE_UNIT" -> {
+                executeDeleteByIdentity("immersion_source_exposure", "source_unit_id", entityId)
+                executeDeleteByIdentity("immersion_source_unit", "id", entityId)
+            }
+            "EVENT" -> executeDeleteByIdentity("immersion_event", "id", entityId)
+            "WORD" -> executeDeleteByIdentity("immersion_word", "id", entityId)
+            "CHARACTER" -> executeDeleteByIdentity(
+                "immersion_character",
+                "code_point",
+                entityId.toLongOrNull() ?: return@forEach,
+            )
+            "GOAL" -> executeDeleteByIdentity("immersion_goal", "id", entityId)
+        }
+    }
+}
+
+private fun SqlDriver.executeDeleteByIdentity(
+    tableName: String,
+    columnName: String,
+    value: Any,
+) {
+    execute(
+        identifier = null,
+        sql = "DELETE FROM ${tableName.quotedIdentifier()} WHERE ${columnName.quotedIdentifier()} = ?",
+        parameters = 1,
+    ) {
+        when (value) {
+            is String -> bindString(0, value)
+            is Long -> bindLong(0, value)
+            else -> error("Unsupported tombstone identity")
+        }
+    }.value
+}
+
+private fun String.portableAffinity(): ImmersionPortableAffinity {
+    val type = uppercase(Locale.ROOT)
+    return when {
+        "INT" in type -> ImmersionPortableAffinity.INTEGER
+        "CHAR" in type || "CLOB" in type || "TEXT" in type -> ImmersionPortableAffinity.TEXT
+        "BLOB" in type || type.isBlank() -> ImmersionPortableAffinity.BLOB
+        "REAL" in type || "FLOA" in type || "DOUB" in type -> ImmersionPortableAffinity.REAL
+        else -> ImmersionPortableAffinity.INTEGER
+    }
+}
+
+private fun String.quotedIdentifier(): String = "\"${replace("\"", "\"\"")}\""
+
 private inline fun <T> mapCorruption(subject: String, block: () -> T): T =
     try {
         block()
@@ -2919,7 +3826,107 @@ private fun identityConflict(message: String) =
 
 private const val MAX_PAGE_SIZE = 500
 private const val SOURCE_EXCERPT_LENGTH = 240
+private const val IMMERSION_PORTABLE_FORMAT_VERSION = 1
+private const val IMMERSION_PORTABLE_MERGE_CHUNK_SIZE = 500
+private const val IMMERSION_TITLE_EXCLUSION_TYPE = "TITLE"
+private const val IMMERSION_CAPTURE_EXCLUSION_SCOPE = "capture"
 private const val MILLIS_PER_DAY = 86_400_000L
 private const val MAX_ZONE_OFFSET_MILLIS = 18L * 60L * 60L * 1_000L
 private const val MAX_ROLLUP_EVENT_DURATION_MILLIS = 7L * MILLIS_PER_DAY
 private const val UTF8 = "UTF-8"
+
+private val IMMERSION_PORTABLE_TABLES = listOf(
+    "immersion_title",
+    "immersion_session",
+    "immersion_source_unit",
+    "immersion_event",
+    "immersion_source_exposure",
+    "immersion_word",
+    "immersion_character",
+    "immersion_word_occurrence",
+    "immersion_character_occurrence",
+    "immersion_lookup",
+    "immersion_anki_operation",
+    "immersion_anki_snapshot",
+    "immersion_anki_item",
+    "immersion_anki_character",
+    "immersion_goal",
+    "immersion_goal_check_in",
+    "immersion_goal_achievement",
+    "immersion_import_ledger",
+    "immersion_sync_peer",
+    "immersion_tombstone",
+    "immersion_exclusion",
+    "immersion_retention_state",
+)
+
+private val IMMERSION_PRIVATE_TEXT_COLUMNS = setOf(
+    "immersion_source_unit" to "raw_text",
+    "immersion_source_unit" to "raw_text_encoding",
+    "immersion_lookup" to "raw_query",
+    "immersion_goal_check_in" to "note",
+)
+
+private val IMMERSION_TOMBSTONE_IDENTITIES = mapOf(
+    "immersion_title" to ("TITLE" to "id"),
+    "immersion_session" to ("SESSION" to "id"),
+    "immersion_source_unit" to ("SOURCE_UNIT" to "id"),
+    "immersion_event" to ("EVENT" to "id"),
+    "immersion_word" to ("WORD" to "id"),
+    "immersion_character" to ("CHARACTER" to "code_point"),
+    "immersion_goal" to ("GOAL" to "id"),
+)
+
+private val IMMERSION_TOMBSTONE_REFERENCES = mapOf(
+    "immersion_session" to listOf("TITLE" to "title_id"),
+    "immersion_source_unit" to listOf("TITLE" to "title_id"),
+    "immersion_event" to listOf(
+        "SESSION" to "session_id",
+        "SOURCE_UNIT" to "source_unit_id",
+        "WORD" to "word_id",
+    ),
+    "immersion_source_exposure" to listOf(
+        "EVENT" to "event_id",
+        "SESSION" to "session_id",
+        "SOURCE_UNIT" to "source_unit_id",
+    ),
+    "immersion_word_occurrence" to listOf(
+        "WORD" to "word_id",
+        "SOURCE_UNIT" to "source_unit_id",
+    ),
+    "immersion_character_occurrence" to listOf(
+        "CHARACTER" to "character_code_point",
+        "SOURCE_UNIT" to "source_unit_id",
+    ),
+    "immersion_lookup" to listOf(
+        "EVENT" to "event_id",
+        "SESSION" to "session_id",
+        "SOURCE_UNIT" to "source_unit_id",
+        "WORD" to "word_id",
+    ),
+    "immersion_anki_operation" to listOf(
+        "EVENT" to "event_id",
+        "SESSION" to "session_id",
+        "SOURCE_UNIT" to "source_unit_id",
+        "WORD" to "word_id",
+    ),
+    "immersion_goal" to listOf("TITLE" to "title_id"),
+    "immersion_goal_check_in" to listOf("GOAL" to "goal_id"),
+    "immersion_goal_achievement" to listOf("GOAL" to "goal_id"),
+)
+
+private val IMMERSION_RESET_DERIVED_TABLES = listOf(
+    "immersion_anki_operation",
+    "immersion_anki_snapshot",
+    "immersion_daily_rollup",
+    "immersion_lifetime_rollup",
+    "immersion_applied_event",
+    "immersion_rollup_dirty",
+    "immersion_goal_check_in",
+    "immersion_goal_achievement",
+    "immersion_import_ledger",
+    "immersion_sync_peer",
+    "immersion_exclusion",
+    "immersion_retention_state",
+    "immersion_merge_conflict",
+)

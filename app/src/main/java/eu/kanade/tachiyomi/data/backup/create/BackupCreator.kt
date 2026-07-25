@@ -40,6 +40,7 @@ import tachiyomi.domain.entries.anime.interactor.GetAnimeSeasonsByParentId
 import tachiyomi.domain.entries.anime.interactor.GetFavoriteAnime
 import tachiyomi.domain.entries.anime.model.Anime
 import tachiyomi.domain.entries.anime.repository.AnimeRepository
+import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
 import tachiyomi.domain.manga.interactor.GetFavorites
 import tachiyomi.domain.manga.interactor.GetMergedManga
 import tachiyomi.domain.manga.model.Manga
@@ -63,6 +64,7 @@ class BackupCreator(
     private val backupPreferences: BackupPreferences = Injekt.get(),
     private val mangaRepository: MangaRepository = Injekt.get(),
     private val animeRepository: AnimeRepository = Injekt.get(),
+    private val immersionMaintenanceRepository: ImmersionMaintenanceRepository = Injekt.get(),
     private val getAnimeSeasonsByParentId: GetAnimeSeasonsByParentId = Injekt.get(),
 
     private val categoriesBackupCreator: CategoriesBackupCreator = CategoriesBackupCreator(),
@@ -143,6 +145,7 @@ class BackupCreator(
                 backupNovelCategories = backupNovelCategories(options),
                 backupMangaStats = backupMangaStats(options),
                 backupAnkiStats = backupAnkiStats(options),
+                backupImmersionStats = backupImmersionStats(options),
                 // Chimahon <--
             )
 
@@ -276,6 +279,16 @@ class BackupCreator(
     fun backupAnkiStats(options: BackupOptions): List<com.canopus.chimareader.data.AnkiStats> {
         if (!options.appSettings) return emptyList()
         return com.canopus.chimareader.data.AnkiStatsStorage.loadAll(context)
+    }
+
+    suspend fun backupImmersionStats(
+        options: BackupOptions,
+    ): tachiyomi.domain.immersion.model.ImmersionPortableArchive? {
+        if (!options.immersionStats) return null
+        return immersionMaintenanceRepository.exportPortableArchive(
+            includeRawText = options.immersionRawText,
+            createdAtEpochMillis = System.currentTimeMillis(),
+        )
     }
     // Chimahon <--
 
