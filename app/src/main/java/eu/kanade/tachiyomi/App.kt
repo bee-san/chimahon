@@ -90,6 +90,7 @@ import mihon.core.migration.Migrator
 import mihon.core.migration.migrations.migrations
 import mihon.feature.stats.anki.AnkiInventorySyncJob
 import mihon.feature.stats.recorder.ImmersionRecorderLifecycleCoordinator
+import mihon.feature.stats.rollup.ImmersionRollupJob
 import mihon.telemetry.TelemetryConfig
 import org.conscrypt.Conscrypt
 import tachiyomi.core.common.i18n.stringResource
@@ -256,6 +257,7 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
             mihon.feature.stats.indexing.ImmersionIndexJob.start(this)
         }
         AnkiInventorySyncJob.setupTask(this)
+        ImmersionRollupJob.setupTask(this)
         // Chimahon <--
     }
 
