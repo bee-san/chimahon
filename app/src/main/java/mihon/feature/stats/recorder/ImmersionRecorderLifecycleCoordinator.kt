@@ -5,6 +5,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import tachiyomi.domain.immersion.service.AnkiOperationRecorder
 import tachiyomi.domain.immersion.service.FinalizeReason
 import tachiyomi.domain.immersion.service.ImmersionRecorder
 import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
@@ -15,6 +16,7 @@ class ImmersionRecorderLifecycleCoordinator(
     private val recorder: ImmersionRecorder,
     private val basePreferences: BasePreferences,
     private val statsPreferences: ImmersionStatsPreferences,
+    private val ankiOperationRecorder: AnkiOperationRecorder,
 ) {
     private var scope: CoroutineScope? = null
 
@@ -24,6 +26,7 @@ class ImmersionRecorderLifecycleCoordinator(
         scope.launch {
             recorder.setIncognito(basePreferences.incognitoMode().get())
             recorder.recoverAbandonedSessions()
+            ankiOperationRecorder.retryPending()
         }
         basePreferences.incognitoMode().changes()
             .onEach(recorder::setIncognito)

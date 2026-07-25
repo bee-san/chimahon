@@ -26,6 +26,10 @@ import tachiyomi.data.Mangas
 import tachiyomi.data.MemoColumnAdapter
 import tachiyomi.data.Reading_sessions
 import tachiyomi.data.StringListColumnAdapter
+import tachiyomi.domain.immersion.model.AnkiOperationEvent
+import tachiyomi.domain.immersion.model.AnkiOperationId
+import tachiyomi.domain.immersion.model.AnkiOperationStatus
+import tachiyomi.domain.immersion.model.AnkiOperationType
 import tachiyomi.domain.immersion.model.CapabilityState
 import tachiyomi.domain.immersion.model.CharacterVolume
 import tachiyomi.domain.immersion.model.EventId
@@ -41,6 +45,8 @@ import tachiyomi.domain.immersion.model.LegacyImportBatch
 import tachiyomi.domain.immersion.model.LegacyImportIdentity
 import tachiyomi.domain.immersion.model.LegacyImportResultState
 import tachiyomi.domain.immersion.model.LegacyImportSourceKind
+import tachiyomi.domain.immersion.model.LookupEvent
+import tachiyomi.domain.immersion.model.LookupStatus
 import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.MillisecondDuration
 import tachiyomi.domain.immersion.model.NetCharacterProgress
@@ -53,6 +59,9 @@ import tachiyomi.domain.immersion.model.SessionStatus
 import tachiyomi.domain.immersion.model.SourceKind
 import tachiyomi.domain.immersion.model.SourceUnitId
 import tachiyomi.domain.immersion.model.TitleId
+import tachiyomi.domain.immersion.service.AnkiOperationToken
+import tachiyomi.domain.immersion.service.PendingAnkiOperation
+import java.util.UUID
 
 @Execution(ExecutionMode.SAME_THREAD)
 class SqlDelightImmersionRepositoryTest {
@@ -506,6 +515,85 @@ class SqlDelightImmersionRepositoryTest {
 
         error shouldNotBe null
         (error as ImmersionDataException).code shouldBe PersistenceErrorCode.CORRUPT_VALUE
+    }
+
+    @Test
+    fun `lookup and Anki interactions advance one sequence and only successful writes affect counters`() = runTest {
+        prepareSession()
+        val lookup = LookupEvent(
+            id = eventId(71),
+            sessionId = SESSION_ID,
+            sequence = 1,
+            occurredAtEpochMillis = 1_100,
+            timezoneOffsetSeconds = 0,
+            lookupId = UUID.randomUUID().toString(),
+            sourceUnitId = null,
+            queryHash = "query-hash",
+            rawQuery = null,
+            normalizedHeadword = "読む",
+            normalizedReading = "よむ",
+            partOfSpeech = "verb",
+            dictionaryId = "test-dictionary",
+            resultId = "result-1",
+            status = LookupStatus.SUCCESS,
+        )
+        val operation = AnkiOperationEvent(
+            id = eventId(72),
+            sessionId = SESSION_ID,
+            sequence = 2,
+            occurredAtEpochMillis = 1_200,
+            timezoneOffsetSeconds = 0,
+            operationId = AnkiOperationId(UUID.randomUUID().toString()),
+            sourceUnitId = null,
+            expressionHash = "expression-hash",
+            normalizedExpression = "読む",
+            normalizedReading = "よむ",
+            operationType = AnkiOperationType.UPDATE,
+            status = AnkiOperationStatus.SUCCESS,
+            noteId = 42,
+        )
+
+        repository.appendEventBatch(listOf(lookup, operation)) shouldContainExactly listOf(
+            PersistenceResult.Applied,
+            PersistenceResult.Applied,
+        )
+        repository.appendEventBatch(listOf(lookup, operation)) shouldContainExactly listOf(
+            PersistenceResult.AlreadyApplied,
+            PersistenceResult.AlreadyApplied,
+        )
+
+        queryLong("SELECT lookup_count FROM immersion_session") shouldBe 1
+        queryLong("SELECT cards_created FROM immersion_session") shouldBe 0
+        queryLong("SELECT cards_updated FROM immersion_session") shouldBe 1
+        queryLong("SELECT count(*) FROM immersion_lookup WHERE raw_query IS NULL AND query_hash = 'query-hash'") shouldBe 1
+        queryLong("SELECT count(*) FROM immersion_anki_operation WHERE note_id = 42 AND status = 'SUCCESS'") shouldBe 1
+        repository.getSession(SESSION_ID)?.lastSequence shouldBe 2
+    }
+
+    @Test
+    fun `externally successful Anki operation can be repaired without fabricating a session event`() = runTest {
+        val operationId = AnkiOperationId(UUID.randomUUID().toString())
+        val pending = PendingAnkiOperation(
+            token = AnkiOperationToken(
+                operationId = operationId,
+                sessionId = SESSION_ID,
+                sourceUnitId = SOURCE_ID,
+                expressionHash = "expression-hash",
+                normalizedExpression = "読む",
+                normalizedReading = "よむ",
+            ),
+            operationType = AnkiOperationType.CREATE,
+            status = AnkiOperationStatus.SUCCESS,
+            noteId = 99,
+            errorCode = null,
+        )
+
+        repository.storeUnlinkedAnkiOperation(pending, occurredAtEpochMillis = 2_000) shouldBe true
+        repository.storeUnlinkedAnkiOperation(pending, occurredAtEpochMillis = 3_000) shouldBe true
+
+        queryLong("SELECT count(*) FROM immersion_anki_operation") shouldBe 1
+        queryLong("SELECT count(*) FROM immersion_anki_operation WHERE event_id IS NULL AND session_id IS NULL") shouldBe 1
+        queryLong("SELECT count(*) FROM immersion_event") shouldBe 0
     }
 
     @Test

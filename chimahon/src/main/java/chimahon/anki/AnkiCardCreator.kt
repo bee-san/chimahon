@@ -19,6 +19,9 @@ import kotlinx.coroutines.withContext
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import tachiyomi.domain.immersion.model.AnkiOperationStatus
+import tachiyomi.domain.immersion.model.AnkiOperationType
+import tachiyomi.domain.immersion.service.AnkiOperationRecorder
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.util.concurrent.ConcurrentHashMap
@@ -199,7 +202,10 @@ object Marker {
 // =============================================================================
 
 sealed class AnkiResult {
-    data class Success(val noteId: Long) : AnkiResult()
+    data class Success(
+        val noteId: Long,
+        val updated: Boolean = false,
+    ) : AnkiResult()
     data class CardExists(val noteId: Long) : AnkiResult()
     data class OpenCard(val noteId: Long) : AnkiResult()
     data class Error(val message: String) : AnkiResult()
@@ -276,9 +282,52 @@ object AnkiCardCreator {
     ): AnkiResult {
         android.util.Log.d(TAG, "addToAnki: deck=$deck, model=$model, forceOpen=$forceOpen, glossaryIndex=$glossaryIndex")
 
+        val operationRecorder = Injekt.get<AnkiOperationRecorder>()
+        val operation = operationRecorder.begin(result.term.expression, result.term.reading)
+        fun finish(outcome: AnkiResult): AnkiResult {
+            val (operationType, status, noteId, errorCode) = when (outcome) {
+                is AnkiResult.Success -> OperationResult(
+                    type = if (outcome.updated) AnkiOperationType.UPDATE else AnkiOperationType.CREATE,
+                    status = AnkiOperationStatus.SUCCESS,
+                    noteId = outcome.noteId,
+                )
+                is AnkiResult.CardExists -> OperationResult(
+                    AnkiOperationType.DUPLICATE,
+                    AnkiOperationStatus.DUPLICATE,
+                    outcome.noteId,
+                )
+                is AnkiResult.OpenCard -> OperationResult(
+                    AnkiOperationType.OPEN,
+                    AnkiOperationStatus.OPENED,
+                    outcome.noteId,
+                )
+                is AnkiResult.Error -> OperationResult(
+                    AnkiOperationType.CREATE,
+                    AnkiOperationStatus.FAILED,
+                    errorCode = outcome.message,
+                )
+                AnkiResult.PermissionDenied -> OperationResult(
+                    AnkiOperationType.CREATE,
+                    AnkiOperationStatus.PERMISSION_DENIED,
+                )
+                AnkiResult.NotConfigured -> OperationResult(
+                    AnkiOperationType.CREATE,
+                    AnkiOperationStatus.NOT_CONFIGURED,
+                )
+            }
+            operationRecorder.complete(
+                token = operation,
+                operationType = operationType,
+                status = status,
+                noteId = noteId,
+                errorCode = errorCode,
+            )
+            return outcome
+        }
+
         val bridge = AnkiDroidBridge(context)
         if (!bridge.hasPermission()) {
-            return AnkiResult.PermissionDenied
+            return finish(AnkiResult.PermissionDenied)
         }
         return try {
             val effectiveDeck = deck.ifBlank { bridge.ensureDefaultDeckName() }
@@ -298,7 +347,7 @@ object AnkiCardCreator {
 
             if (effectiveDeck.isBlank() || effectiveModel.isBlank()) {
                 android.util.Log.w(TAG, "addToAnki: NotConfigured - deck or model is blank")
-                return AnkiResult.NotConfigured
+                return finish(AnkiResult.NotConfigured)
             }
 
             val fieldMap = parseFieldMap(effectiveFieldMapJson)
@@ -411,48 +460,57 @@ object AnkiCardCreator {
             val lockKey = "${dupScope.lowercase()}|${if (dupScope == "deck") effectiveDeck else ""}|${result.term.expression}"
             val addLock = addLocks.computeIfAbsent(lockKey) { Mutex() }
             try {
-                addLock.withLock {
-                    if (dupCheck || forceOpen) {
-                        val targetDeckId = if (dupScope == "deck" && effectiveDeck.isNotBlank()) {
-                            try {
-                                bridge.getDeckId(effectiveDeck)
-                            } catch (e: Exception) {
+                finish(
+                    addLock.withLock {
+                        if (dupCheck || forceOpen) {
+                            val targetDeckId = if (dupScope == "deck" && effectiveDeck.isNotBlank()) {
+                                try {
+                                    bridge.getDeckId(effectiveDeck)
+                                } catch (e: Exception) {
+                                    null
+                                }
+                            } else {
                                 null
                             }
-                        } else {
-                            null
-                        }
 
-                        val existing = bridge.findNotes(result.term.expression, null, targetDeckId)
-                        if (existing.isNotEmpty()) {
-                            if (forceOpen) return@withLock AnkiResult.OpenCard(existing.first())
-                            when (dupAction) {
-                                "prevent" -> return@withLock AnkiResult.CardExists(existing.first())
-                                "open" -> return@withLock AnkiResult.OpenCard(existing.first())
-                                "overwrite" -> {
-                                    bridge.updateNoteFields(existing.first(), fields)
-                                    com.canopus.chimareader.data.AnkiStatsStorage.addCard(context, type, profileId = profileId, titleId = titleId)
-                                    if (syncOnCreate) bridge.triggerSync()
-                                    return@withLock AnkiResult.Success(existing.first())
+                            val existing = bridge.findNotes(result.term.expression, null, targetDeckId)
+                            if (existing.isNotEmpty()) {
+                                if (forceOpen) return@withLock AnkiResult.OpenCard(existing.first())
+                                when (dupAction) {
+                                    "prevent" -> return@withLock AnkiResult.CardExists(existing.first())
+                                    "open" -> return@withLock AnkiResult.OpenCard(existing.first())
+                                    "overwrite" -> {
+                                        bridge.updateNoteFields(existing.first(), fields)
+                                        com.canopus.chimareader.data.AnkiStatsStorage.addCard(context, type, profileId = profileId, titleId = titleId)
+                                        if (syncOnCreate) bridge.triggerSync()
+                                        return@withLock AnkiResult.Success(existing.first(), updated = true)
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    val noteId = bridge.addNote(deckName = effectiveDeck, modelName = effectiveModel, fields = fields, tags = tagList)
-                    com.canopus.chimareader.data.AnkiStatsStorage.addCard(context, type, profileId = profileId, titleId = titleId)
-                    if (syncOnCreate) bridge.triggerSync()
-                    AnkiResult.Success(noteId)
-                }
+                        val noteId = bridge.addNote(deckName = effectiveDeck, modelName = effectiveModel, fields = fields, tags = tagList)
+                        com.canopus.chimareader.data.AnkiStatsStorage.addCard(context, type, profileId = profileId, titleId = titleId)
+                        if (syncOnCreate) bridge.triggerSync()
+                        AnkiResult.Success(noteId)
+                    },
+                )
             } finally {
                 addLocks.remove(lockKey, addLock)
             }
         } catch (e: SecurityException) {
-            AnkiResult.PermissionDenied
+            finish(AnkiResult.PermissionDenied)
         } catch (e: Exception) {
-            AnkiResult.Error(e.message ?: "Unknown error")
+            finish(AnkiResult.Error(e.message ?: "Unknown error"))
         }
     }
+
+    private data class OperationResult(
+        val type: AnkiOperationType,
+        val status: AnkiOperationStatus,
+        val noteId: Long? = null,
+        val errorCode: String? = null,
+    )
 
     private fun filterToSingleGlossary(result: LookupResult, glossaryIndex: Int): LookupResult {
         val glossary = result.term.glossaries.getOrNull(glossaryIndex) ?: return result

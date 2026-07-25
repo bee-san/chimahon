@@ -16,11 +16,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import tachiyomi.domain.immersion.model.AnkiOperationEvent
 import tachiyomi.domain.immersion.model.EventId
 import tachiyomi.domain.immersion.model.EventType
 import tachiyomi.domain.immersion.model.ExposureEvent
 import tachiyomi.domain.immersion.model.ImmersionSession
 import tachiyomi.domain.immersion.model.ImmersionSessionStart
+import tachiyomi.domain.immersion.model.LookupEvent
 import tachiyomi.domain.immersion.model.MillisecondDuration
 import tachiyomi.domain.immersion.model.NetCharacterProgress
 import tachiyomi.domain.immersion.model.NonNegativeCounter
@@ -68,6 +70,8 @@ class DefaultImmersionRecorder(
     private val clock: ImmersionRecorderClock = SystemImmersionRecorderClock,
     private val repairScheduler: ImmersionRepairScheduler = ImmersionRepairScheduler { _, _ -> },
     private val rollupScheduler: ImmersionRollupScheduler = ImmersionRollupScheduler { _, _ -> },
+    private val eventPersistenceObserver: ImmersionEventPersistenceObserver =
+        ImmersionEventPersistenceObserver { },
     private val configuration: ImmersionRecorderConfiguration = ImmersionRecorderConfiguration(),
     dispatcher: CoroutineDispatcher = Dispatchers.IO,
     externalScope: CoroutineScope? = null,
@@ -193,17 +197,21 @@ class DefaultImmersionRecorder(
             if (expectedSessionId != null && active.id != expectedSessionId) {
                 return@synchronized RecordResult.Rejected(active.state)
             }
-            val pausedExposure = active.state == ImmersionSessionState.PAUSED &&
-                command is CaptureCommand.Exposure
+            val pausedInteraction = active.state == ImmersionSessionState.PAUSED &&
+                (
+                    command is CaptureCommand.Exposure ||
+                        command is CaptureCommand.Lookup ||
+                        command is CaptureCommand.AnkiOperation
+                    )
             if (
                 active.state != ImmersionSessionState.ACTIVE &&
                 active.state != ImmersionSessionState.IDLE &&
-                !pausedExposure
+                !pausedInteraction
             ) {
                 return@synchronized RecordResult.Rejected(active.state)
             }
             val now = clock.now()
-            val drafts = if (pausedExposure) {
+            val drafts = if (pausedInteraction) {
                 mutableListOf()
             } else {
                 accrueActiveTimeLocked(active, now).toMutableList()
@@ -213,7 +221,7 @@ class DefaultImmersionRecorder(
                 active.lastBoundary = now
                 drafts += EventDraft.Session(EventType.RESUMED, now, 0)
             }
-            if (!pausedExposure) {
+            if (!pausedInteraction) {
                 active.lastActivityMonotonicNanos = now.monotonicNanos
             }
             when (command) {
@@ -238,6 +246,12 @@ class DefaultImmersionRecorder(
                         time = now,
                         command = command,
                     )
+                }
+                is CaptureCommand.Lookup -> {
+                    drafts += EventDraft.Lookup(time = now, command = command)
+                }
+                is CaptureCommand.AnkiOperation -> {
+                    drafts += EventDraft.AnkiOperation(time = now, command = command)
                 }
             }
             enqueueDraftsLocked(active, drafts, bounded = true)
@@ -471,6 +485,7 @@ class DefaultImmersionRecorder(
                 }
                 mutableState.value = mutableState.value.copy(
                     state = active.state,
+                    sourceUnitId = null,
                     lastFailure = if (finalized) null else finalizationOutcome.diagnosticCode,
                 )
                 session = null
@@ -607,6 +622,41 @@ class DefaultImmersionRecorder(
                     replayOrdinal = draft.command.replayOrdinal,
                     exposurePolicy = draft.command.exposurePolicy,
                 )
+                is EventDraft.Lookup -> LookupEvent(
+                    id = EventId(UUID.randomUUID().toString()),
+                    sessionId = active.id,
+                    sequence = sequence,
+                    occurredAtEpochMillis = draft.time.epochMillis,
+                    timezoneOffsetSeconds = draft.time.offsetSeconds,
+                    lookupId = draft.command.lookupId,
+                    sourceUnitId = draft.command.sourceUnitId,
+                    queryHash = draft.command.queryHash,
+                    rawQuery = draft.command.rawQuery,
+                    normalizedHeadword = draft.command.normalizedHeadword,
+                    normalizedReading = draft.command.normalizedReading,
+                    partOfSpeech = draft.command.partOfSpeech,
+                    dictionaryId = draft.command.dictionaryId,
+                    resultId = draft.command.resultId,
+                    status = draft.command.status,
+                )
+                is EventDraft.AnkiOperation -> AnkiOperationEvent(
+                    id = EventId(UUID.randomUUID().toString()),
+                    sessionId = active.id,
+                    sequence = sequence,
+                    occurredAtEpochMillis = draft.time.epochMillis,
+                    timezoneOffsetSeconds = draft.time.offsetSeconds,
+                    operationId = draft.command.operationId,
+                    sourceUnitId = draft.command.sourceUnitId,
+                    expressionHash = draft.command.expressionHash,
+                    normalizedExpression = draft.command.normalizedExpression,
+                    normalizedReading = draft.command.normalizedReading,
+                    operationType = draft.command.operationType,
+                    status = draft.command.status,
+                    noteId = draft.command.noteId,
+                    cardId = draft.command.cardId,
+                    deckId = draft.command.deckId,
+                    errorCode = draft.command.errorCode,
+                )
             }
             active.expectedActiveMillis += event.activeDuration.value
             when (event) {
@@ -616,6 +666,12 @@ class DefaultImmersionRecorder(
                     active.expectedNetCharacters += event.netCharacters.value
                 }
                 is SessionEvent -> active.expectedNetCharacters += event.netCharacters.value
+                is LookupEvent,
+                is AnkiOperationEvent,
+                -> Unit
+            }
+            if (event is ExposureEvent) {
+                mutableState.value = mutableState.value.copy(sourceUnitId = event.source.id)
             }
             check(workerCommands.trySend(WorkerCommand.Event(event)).isSuccess)
         }
@@ -706,6 +762,7 @@ class DefaultImmersionRecorder(
                         )
                         mutableState.value = mutableState.value.copy(
                             state = active.state,
+                            sourceUnitId = null,
                             lastFailure = outcome.diagnosticCode,
                         )
                     }
@@ -733,6 +790,7 @@ class DefaultImmersionRecorder(
                 }
             }
         } else {
+            eventPersistenceObserver.onPersisted(events)
             diagnostics.addRollupLag(events.size.toLong())
             rollupScheduler.schedule(events.last().id, events.size)
         }
@@ -815,7 +873,11 @@ class DefaultImmersionRecorder(
             current.state == ImmersionSessionState.SUPPRESSED
         ) {
             updateState(null, SessionTransition.RESET)
-            mutableState.value = mutableState.value.copy(sessionId = null, lastFailure = null)
+            mutableState.value = mutableState.value.copy(
+                sessionId = null,
+                sourceUnitId = null,
+                lastFailure = null,
+            )
         }
     }
 
@@ -845,6 +907,16 @@ class DefaultImmersionRecorder(
         data class Exposure(
             val time: RecorderTime,
             val command: CaptureCommand.Exposure,
+        ) : EventDraft
+
+        data class Lookup(
+            val time: RecorderTime,
+            val command: CaptureCommand.Lookup,
+        ) : EventDraft
+
+        data class AnkiOperation(
+            val time: RecorderTime,
+            val command: CaptureCommand.AnkiOperation,
         ) : EventDraft
     }
 

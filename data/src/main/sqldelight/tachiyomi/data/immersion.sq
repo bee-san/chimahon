@@ -314,6 +314,10 @@ CREATE TABLE immersion_lookup(
     result_id TEXT,
     status TEXT NOT NULL,
     occurred_at INTEGER NOT NULL,
+    query_hash TEXT NOT NULL DEFAULT '',
+    normalized_headword TEXT,
+    normalized_reading TEXT,
+    part_of_speech TEXT,
     FOREIGN KEY(event_id) REFERENCES immersion_event(id) ON DELETE CASCADE,
     FOREIGN KEY(session_id) REFERENCES immersion_session(id) ON DELETE CASCADE,
     FOREIGN KEY(source_unit_id) REFERENCES immersion_source_unit(id) ON DELETE SET NULL,
@@ -339,6 +343,10 @@ CREATE TABLE immersion_anki_operation(
     success INTEGER NOT NULL,
     occurred_at INTEGER NOT NULL,
     error_code TEXT,
+    status TEXT NOT NULL DEFAULT 'FAILED',
+    expression_hash TEXT NOT NULL DEFAULT '',
+    normalized_expression TEXT,
+    normalized_reading TEXT,
     FOREIGN KEY(event_id) REFERENCES immersion_event(id) ON DELETE CASCADE,
     FOREIGN KEY(session_id) REFERENCES immersion_session(id) ON DELETE SET NULL,
     FOREIGN KEY(source_unit_id) REFERENCES immersion_source_unit(id) ON DELETE SET NULL,
@@ -916,6 +924,145 @@ VALUES (
     :payloadHash
 );
 
+insertImmersionInteractionEvent:
+INSERT INTO immersion_event(
+    id,
+    session_id,
+    sequence,
+    occurred_at,
+    timezone_offset_seconds,
+    type,
+    source_unit_id,
+    anki_operation_id,
+    lookup_delta,
+    cards_created_delta,
+    cards_updated_delta,
+    payload_hash
+)
+VALUES (
+    :id,
+    :sessionId,
+    :sequence,
+    :occurredAt,
+    :timezoneOffsetSeconds,
+    :type,
+    :sourceUnitId,
+    :ankiOperationId,
+    :lookupDelta,
+    :cardsCreatedDelta,
+    :cardsUpdatedDelta,
+    :payloadHash
+);
+
+insertImmersionLookup:
+INSERT INTO immersion_lookup(
+    id,
+    event_id,
+    session_id,
+    source_unit_id,
+    raw_query,
+    query_hash,
+    normalized_headword,
+    normalized_reading,
+    part_of_speech,
+    dictionary_id,
+    result_id,
+    status,
+    occurred_at
+)
+VALUES (
+    :id,
+    :eventId,
+    :sessionId,
+    :sourceUnitId,
+    :rawQuery,
+    :queryHash,
+    :normalizedHeadword,
+    :normalizedReading,
+    :partOfSpeech,
+    :dictionaryId,
+    :resultId,
+    :status,
+    :occurredAt
+);
+
+insertImmersionAnkiOperation:
+INSERT INTO immersion_anki_operation(
+    id,
+    event_id,
+    session_id,
+    source_unit_id,
+    note_id,
+    card_id,
+    deck_id,
+    type,
+    status,
+    success,
+    expression_hash,
+    normalized_expression,
+    normalized_reading,
+    occurred_at,
+    error_code
+)
+VALUES (
+    :id,
+    :eventId,
+    :sessionId,
+    :sourceUnitId,
+    :noteId,
+    :cardId,
+    :deckId,
+    :type,
+    :status,
+    :success,
+    :expressionHash,
+    :normalizedExpression,
+    :normalizedReading,
+    :occurredAt,
+    :errorCode
+);
+
+selectImmersionAnkiOperationById:
+SELECT *
+FROM immersion_anki_operation
+WHERE id = :id;
+
+insertUnlinkedImmersionAnkiOperation:
+INSERT OR IGNORE INTO immersion_anki_operation(
+    id,
+    event_id,
+    session_id,
+    source_unit_id,
+    note_id,
+    card_id,
+    deck_id,
+    type,
+    status,
+    success,
+    expression_hash,
+    normalized_expression,
+    normalized_reading,
+    occurred_at,
+    error_code
+)
+VALUES (
+    :id,
+    NULL,
+    NULL,
+    NULL,
+    :noteId,
+    NULL,
+    NULL,
+    :type,
+    :status,
+    1,
+    :expressionHash,
+    :normalizedExpression,
+    :normalizedReading,
+    :occurredAt,
+    'UNLINKED_AFTER_LOCAL_WRITE_FAILURE'
+);
+
 selectImmersionEventById:
 SELECT *
 FROM immersion_event
@@ -973,6 +1120,19 @@ UPDATE immersion_session
 SET
     active_duration_ms = active_duration_ms + :activeDurationDeltaMs,
     net_characters = net_characters + :netCharacterDelta,
+    last_sequence = :sequence,
+    last_heartbeat_at = max(coalesce(last_heartbeat_at, 0), :occurredAt)
+WHERE
+    id = :sessionId
+    AND status = 'ACTIVE'
+    AND last_sequence + 1 = :sequence;
+
+advanceImmersionSessionForInteraction:
+UPDATE immersion_session
+SET
+    lookup_count = lookup_count + :lookupDelta,
+    cards_created = cards_created + :cardsCreatedDelta,
+    cards_updated = cards_updated + :cardsUpdatedDelta,
     last_sequence = :sequence,
     last_heartbeat_at = max(coalesce(last_heartbeat_at, 0), :occurredAt)
 WHERE

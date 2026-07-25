@@ -16,6 +16,7 @@ enum class CaptureSuppressionReason {
     INCOGNITO,
     FEATURE_DISABLED,
     TITLE_EXCLUDED,
+    NO_ACTIVE_SESSION,
 }
 
 object ImmersionCapturePolicy {

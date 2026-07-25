@@ -85,6 +85,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import tachiyomi.core.common.i18n.stringResource
+import tachiyomi.domain.immersion.model.LookupStatus
+import tachiyomi.domain.immersion.service.LookupTelemetry
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.util.collectAsState
 import uy.kohesive.injekt.Injekt
@@ -154,6 +156,7 @@ fun OcrLookupPopup(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val lookupTelemetry = remember { Injekt.get<LookupTelemetry>() }
     var isLoading by remember {
         mutableStateOf(initialLookupDeferred?.isCompleted != true)
     }
@@ -270,12 +273,14 @@ fun OcrLookupPopup(
     /** Perform a dictionary lookup and push a new frame onto the stack. */
     fun pushLookup(
         query: String,
+        intentId: String = UUID.randomUUID().toString(),
         isRecursive: Boolean = false,
         sentenceContext: String = fullText,
         sentenceOffsetContext: Int = charOffset,
         deferredResult: kotlinx.coroutines.Deferred<chimahon.DictionaryRepository.LookupResult2>? = null,
         entryJsons: List<String>? = null,
     ) {
+        val lookupToken = lookupTelemetry.begin(intentId, query)
         if (entryJsons != null) {
             val frame = LookupFrame(
                 id = UUID.randomUUID().toString(),
@@ -292,6 +297,7 @@ fun OcrLookupPopup(
             lookupStackState = LookupStackState(stack = truncated, activeIndex = truncated.size - 1)
             errorMessage = null
             isLoading = false
+            lookupTelemetry.complete(lookupToken, LookupStatus.SUCCESS)
             return
         }
 
@@ -302,9 +308,15 @@ fun OcrLookupPopup(
         }
 
         if (isRecursive) {
-            if (cleanQuery.isBlank()) return
+            if (cleanQuery.isBlank()) {
+                lookupTelemetry.complete(lookupToken, LookupStatus.CANCELLED)
+                return
+            }
             // Ignore if entirely ascii/english letters and numbers
-            if (cleanQuery.all { it.code <= 127 }) return
+            if (cleanQuery.all { it.code <= 127 }) {
+                lookupTelemetry.complete(lookupToken, LookupStatus.CANCELLED)
+                return
+            }
         }
 
         val finalQuery = if (isRecursive) cleanQuery else query
@@ -313,7 +325,20 @@ fun OcrLookupPopup(
         val shouldShowLoading = !isRecursive && lastRenderedLookupGeneration < 0
 
         fun handleResult(result: chimahon.DictionaryRepository.LookupResult2, orderedResults: List<LookupResult>, phaseStart: Long) {
-            if (generation != lookupGeneration) return
+            if (generation != lookupGeneration) {
+                lookupTelemetry.complete(lookupToken, LookupStatus.CANCELLED)
+                return
+            }
+            val selectedResult = orderedResults.firstOrNull()
+            lookupTelemetry.complete(
+                token = lookupToken,
+                status = if (selectedResult == null) LookupStatus.EMPTY else LookupStatus.SUCCESS,
+                normalizedHeadword = selectedResult?.term?.expression,
+                normalizedReading = selectedResult?.term?.reading,
+                partOfSpeech = selectedResult?.term?.rules,
+                dictionaryId = selectedResult?.term?.glossaries?.firstOrNull()?.dictName,
+                resultId = selectedResult?.let { "${it.term.expression}\u0000${it.term.reading}" },
+            )
             if (isRecursive && result.results.isEmpty()) {
                 if (shouldShowLoading) isLoading = false
                 return
@@ -430,8 +455,15 @@ fun OcrLookupPopup(
                     }
                     handleResult(result, orderedResults, phaseStart)
                 } catch (e: Exception) {
-                    if (e is CancellationException) throw e
-                    if (generation != lookupGeneration) return@launch
+                    if (e is CancellationException) {
+                        lookupTelemetry.complete(lookupToken, LookupStatus.CANCELLED)
+                        throw e
+                    }
+                    if (generation != lookupGeneration) {
+                        lookupTelemetry.complete(lookupToken, LookupStatus.CANCELLED)
+                        return@launch
+                    }
+                    lookupTelemetry.complete(lookupToken, LookupStatus.FAILED)
                     errorMessage = e.message ?: "Lookup failed"
                     isLoading = false
                 }
@@ -447,7 +479,11 @@ fun OcrLookupPopup(
                 val orderedResults = orderLookupResultsForDisplay(result.results, activeProfile, context)
                 handleResult(result, orderedResults, phaseStart)
             } catch (e: Exception) {
-                if (generation != lookupGeneration) return
+                if (generation != lookupGeneration) {
+                    lookupTelemetry.complete(lookupToken, LookupStatus.CANCELLED)
+                    return
+                }
+                lookupTelemetry.complete(lookupToken, LookupStatus.FAILED)
                 errorMessage = e.message ?: "Lookup failed"
                 isLoading = false
             }
@@ -802,7 +838,7 @@ fun OcrLookupPopup(
         }
     }
 
-    LaunchedEffect(lookupString, ankiEnabled, ankiModel, visible) {
+    LaunchedEffect(lookupString, fullText, charOffset, visible, initialLookupDeferred, initialEntryJsons) {
         if (!visible) return@LaunchedEffect
         if (lookupString.isBlank()) {
             lookupGeneration++
@@ -819,7 +855,12 @@ fun OcrLookupPopup(
         // when a genuinely new lookup generation begins (see onContentReadyChange).
         lookupStackState = LookupStackState()
         isLoading = false
-        pushLookup(lookupString, deferredResult = initialLookupDeferred, entryJsons = initialEntryJsons)
+        pushLookup(
+            query = lookupString,
+            intentId = UUID.randomUUID().toString(),
+            deferredResult = initialLookupDeferred,
+            entryJsons = initialEntryJsons,
+        )
     }
 
     fun recursiveSentence(sentence: String?): String {

@@ -10,6 +10,9 @@ import tachiyomi.data.Immersion_session
 import tachiyomi.data.Immersion_source_unit
 import tachiyomi.data.SelectImmersionIndexWork
 import tachiyomi.data.SelectLegacyImmersionAggregates
+import tachiyomi.domain.immersion.model.AnkiOperationEvent
+import tachiyomi.domain.immersion.model.AnkiOperationStatus
+import tachiyomi.domain.immersion.model.AnkiOperationType
 import tachiyomi.domain.immersion.model.ExposureEvent
 import tachiyomi.domain.immersion.model.ImmersionAnkiSnapshot
 import tachiyomi.domain.immersion.model.ImmersionDataException
@@ -30,6 +33,8 @@ import tachiyomi.domain.immersion.model.LegacyImportBatch
 import tachiyomi.domain.immersion.model.LegacyImportIdentity
 import tachiyomi.domain.immersion.model.LegacyImportResult
 import tachiyomi.domain.immersion.model.LegacyImportResultState
+import tachiyomi.domain.immersion.model.LookupEvent
+import tachiyomi.domain.immersion.model.LookupStatus
 import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.MillisecondDuration
 import tachiyomi.domain.immersion.model.NetCharacterProgress
@@ -52,6 +57,7 @@ import tachiyomi.domain.immersion.repository.ImmersionLegacyImportRepository
 import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
 import tachiyomi.domain.immersion.repository.ImmersionRecorderRepository
 import tachiyomi.domain.immersion.repository.ImmersionStatsRepository
+import tachiyomi.domain.immersion.service.PendingAnkiOperation
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
@@ -123,6 +129,8 @@ class SqlDelightImmersionRepository(
                 when (event) {
                     is ExposureEvent -> appendExposureInDatabase(event)
                     is SessionEvent -> appendSessionEventInDatabase(event)
+                    is LookupEvent -> appendLookupInDatabase(event)
+                    is AnkiOperationEvent -> appendAnkiOperationInDatabase(event)
                 }
             }
         }
@@ -320,6 +328,47 @@ class SqlDelightImmersionRepository(
 
     override fun observeRevision(): Flow<Long> =
         handler.subscribeToOne { immersionQueries.selectImmersionRevision() }
+
+    suspend fun storeUnlinkedAnkiOperation(
+        operation: PendingAnkiOperation,
+        occurredAtEpochMillis: Long = System.currentTimeMillis(),
+    ): Boolean {
+        require(operation.status == AnkiOperationStatus.SUCCESS) {
+            "Only externally successful Anki operations require unlinked repair"
+        }
+        require(occurredAtEpochMillis >= 0) { "Repair timestamp cannot be negative" }
+        return handler.await(inTransaction = true) {
+            val existing = immersionQueries
+                .selectImmersionAnkiOperationById(operation.token.operationId.value)
+                .executeAsOneOrNull()
+            if (existing != null) {
+                if (
+                    existing.type != operation.operationType.name ||
+                    existing.status != operation.status.name ||
+                    existing.note_id != operation.noteId ||
+                    existing.expression_hash != operation.token.expressionHash
+                ) {
+                    throw identityConflict(
+                        "Anki operation ${operation.token.operationId.value} conflicts with an existing identity",
+                    )
+                }
+                return@await true
+            }
+            immersionQueries.insertUnlinkedImmersionAnkiOperation(
+                id = operation.token.operationId.value,
+                noteId = operation.noteId,
+                type = operation.operationType.name,
+                status = operation.status.name,
+                expressionHash = operation.token.expressionHash,
+                normalizedExpression = operation.token.normalizedExpression,
+                normalizedReading = operation.token.normalizedReading,
+                occurredAt = occurredAtEpochMillis,
+            )
+            val inserted = immersionQueries.selectImmersionChanges().executeAsOne() == 1L
+            if (inserted) immersionQueries.incrementImmersionRevision(occurredAtEpochMillis)
+            inserted
+        }
+    }
 
     override suspend fun validateInvariants(expectedRollupVersion: Int): ImmersionIntegrityReport {
         require(expectedRollupVersion > 0) { "Rollup version must be positive" }
@@ -737,6 +786,146 @@ class SqlDelightImmersionRepository(
         return PersistenceResult.Applied
     }
 
+    private fun Database.appendLookupInDatabase(event: LookupEvent): PersistenceResult {
+        val payloadHash = event.payloadHash()
+        existingInteractionResult(event.id.value, event.sessionId.value, event.sequence, payloadHash)?.let {
+            return it
+        }
+        val session = immersionQueries.selectImmersionSessionById(event.sessionId.value).executeAsOneOrNull()
+            ?: throw identityConflict("Session ${event.sessionId.value} does not exist")
+        val lookupDelta = if (event.status == LookupStatus.CANCELLED) 0L else 1L
+        immersionQueries.insertImmersionInteractionEvent(
+            id = event.id.value,
+            sessionId = event.sessionId.value,
+            sequence = event.sequence,
+            occurredAt = event.occurredAtEpochMillis,
+            timezoneOffsetSeconds = event.timezoneOffsetSeconds.toLong(),
+            type = event.type.name,
+            sourceUnitId = event.sourceUnitId?.value,
+            ankiOperationId = null,
+            lookupDelta = lookupDelta,
+            cardsCreatedDelta = 0,
+            cardsUpdatedDelta = 0,
+            payloadHash = payloadHash,
+        )
+        immersionQueries.insertImmersionLookup(
+            id = event.lookupId,
+            eventId = event.id.value,
+            sessionId = event.sessionId.value,
+            sourceUnitId = event.sourceUnitId?.value,
+            rawQuery = event.rawQuery,
+            queryHash = event.queryHash,
+            normalizedHeadword = event.normalizedHeadword,
+            normalizedReading = event.normalizedReading,
+            partOfSpeech = event.partOfSpeech,
+            dictionaryId = event.dictionaryId,
+            resultId = event.resultId,
+            status = event.status.name,
+            occurredAt = event.occurredAtEpochMillis,
+        )
+        advanceInteraction(event, session.last_sequence, lookupDelta, 0, 0)
+        return PersistenceResult.Applied
+    }
+
+    private fun Database.appendAnkiOperationInDatabase(event: AnkiOperationEvent): PersistenceResult {
+        val payloadHash = event.payloadHash()
+        existingInteractionResult(event.id.value, event.sessionId.value, event.sequence, payloadHash)?.let {
+            return it
+        }
+        val session = immersionQueries.selectImmersionSessionById(event.sessionId.value).executeAsOneOrNull()
+            ?: throw identityConflict("Session ${event.sessionId.value} does not exist")
+        val cardsCreated = (
+            event.status == AnkiOperationStatus.SUCCESS &&
+                event.operationType == AnkiOperationType.CREATE
+            ).toLong()
+        val cardsUpdated = (
+            event.status == AnkiOperationStatus.SUCCESS &&
+                event.operationType == AnkiOperationType.UPDATE
+            ).toLong()
+        immersionQueries.insertImmersionInteractionEvent(
+            id = event.id.value,
+            sessionId = event.sessionId.value,
+            sequence = event.sequence,
+            occurredAt = event.occurredAtEpochMillis,
+            timezoneOffsetSeconds = event.timezoneOffsetSeconds.toLong(),
+            type = event.type.name,
+            sourceUnitId = event.sourceUnitId?.value,
+            ankiOperationId = event.operationId.value,
+            lookupDelta = 0,
+            cardsCreatedDelta = cardsCreated,
+            cardsUpdatedDelta = cardsUpdated,
+            payloadHash = payloadHash,
+        )
+        immersionQueries.insertImmersionAnkiOperation(
+            id = event.operationId.value,
+            eventId = event.id.value,
+            sessionId = event.sessionId.value,
+            sourceUnitId = event.sourceUnitId?.value,
+            noteId = event.noteId,
+            cardId = event.cardId,
+            deckId = event.deckId,
+            type = event.operationType.name,
+            status = event.status.name,
+            success = (event.status == AnkiOperationStatus.SUCCESS).toLong(),
+            expressionHash = event.expressionHash,
+            normalizedExpression = event.normalizedExpression,
+            normalizedReading = event.normalizedReading,
+            occurredAt = event.occurredAtEpochMillis,
+            errorCode = event.errorCode,
+        )
+        advanceInteraction(event, session.last_sequence, 0, cardsCreated, cardsUpdated)
+        return PersistenceResult.Applied
+    }
+
+    private fun Database.existingInteractionResult(
+        eventId: String,
+        sessionId: String,
+        sequence: Long,
+        payloadHash: String,
+    ): PersistenceResult? {
+        val existing = immersionQueries.selectImmersionEventById(eventId).executeAsOneOrNull()
+        if (existing != null) {
+            if (existing.payload_hash != payloadHash) {
+                throw identityConflict("Event $eventId was retried with a different payload")
+            }
+            return PersistenceResult.AlreadyApplied
+        }
+        val sequenceOwner = immersionQueries
+            .selectImmersionEventBySequence(sessionId, sequence)
+            .executeAsOneOrNull()
+        if (sequenceOwner != null) {
+            throw ImmersionDataException(
+                PersistenceErrorCode.SEQUENCE_CONFLICT,
+                "Session sequence $sequence already belongs to ${sequenceOwner.id}",
+            )
+        }
+        return null
+    }
+
+    private fun Database.advanceInteraction(
+        event: RecordedImmersionEvent,
+        previousSequence: Long,
+        lookupDelta: Long,
+        cardsCreatedDelta: Long,
+        cardsUpdatedDelta: Long,
+    ) {
+        immersionQueries.advanceImmersionSessionForInteraction(
+            lookupDelta = lookupDelta,
+            cardsCreatedDelta = cardsCreatedDelta,
+            cardsUpdatedDelta = cardsUpdatedDelta,
+            sequence = event.sequence,
+            occurredAt = event.occurredAtEpochMillis,
+            sessionId = event.sessionId.value,
+        )
+        if (immersionQueries.selectImmersionChanges().executeAsOne() != 1L) {
+            throw ImmersionDataException(
+                PersistenceErrorCode.SESSION_NOT_ACTIVE,
+                "Session ${event.sessionId.value} is inactive or expected sequence ${previousSequence + 1}",
+            )
+        }
+        immersionQueries.incrementImmersionRevision(event.occurredAtEpochMillis)
+    }
+
     private fun Database.checkExactlyOneChange(operation: String) {
         if (immersionQueries.selectImmersionChanges().executeAsOne() != 1L) {
             throw identityConflict("No row was found while $operation")
@@ -934,11 +1123,76 @@ private fun SessionEvent.payloadHash(): String {
         .joinToString("") { "%02x".format(it) }
 }
 
+private fun LookupEvent.payloadHash(): String {
+    val output = ByteArrayOutputStream()
+    output.writeField(id.value)
+    output.writeField(sessionId.value)
+    output.writeLong(sequence)
+    output.writeLong(occurredAtEpochMillis)
+    output.writeLong(timezoneOffsetSeconds.toLong())
+    output.writeField(type.name)
+    output.writeField(lookupId)
+    output.writeNullableField(sourceUnitId?.value)
+    output.writeField(queryHash)
+    output.writeNullableField(rawQuery)
+    output.writeNullableField(normalizedHeadword)
+    output.writeNullableField(normalizedReading)
+    output.writeNullableField(partOfSpeech)
+    output.writeNullableField(dictionaryId)
+    output.writeNullableField(resultId)
+    output.writeField(status.name)
+    return output.sha256()
+}
+
+private fun AnkiOperationEvent.payloadHash(): String {
+    val output = ByteArrayOutputStream()
+    output.writeField(id.value)
+    output.writeField(sessionId.value)
+    output.writeLong(sequence)
+    output.writeLong(occurredAtEpochMillis)
+    output.writeLong(timezoneOffsetSeconds.toLong())
+    output.writeField(type.name)
+    output.writeField(operationId.value)
+    output.writeNullableField(sourceUnitId?.value)
+    output.writeField(expressionHash)
+    output.writeNullableField(normalizedExpression)
+    output.writeNullableField(normalizedReading)
+    output.writeField(operationType.name)
+    output.writeField(status.name)
+    output.writeNullableLong(noteId)
+    output.writeNullableLong(cardId)
+    output.writeNullableLong(deckId)
+    output.writeNullableField(errorCode)
+    return output.sha256()
+}
+
 private fun ByteArrayOutputStream.writeField(value: String) {
     val encoded = value.encodeToByteArray()
     writeLong(encoded.size.toLong())
     write(encoded)
 }
+
+private fun ByteArrayOutputStream.writeNullableField(value: String?) {
+    if (value == null) {
+        writeLong(-1)
+    } else {
+        writeField(value)
+    }
+}
+
+private fun ByteArrayOutputStream.writeNullableLong(value: Long?) {
+    if (value == null) {
+        writeLong(0)
+    } else {
+        writeLong(1)
+        writeLong(value)
+    }
+}
+
+private fun ByteArrayOutputStream.sha256(): String =
+    MessageDigest.getInstance("SHA-256")
+        .digest(toByteArray())
+        .joinToString("") { "%02x".format(it) }
 
 private fun ByteArrayOutputStream.writeLong(value: Long) {
     write(ByteBuffer.allocate(Long.SIZE_BYTES).putLong(value).array())

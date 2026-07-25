@@ -1,0 +1,23 @@
+ALTER TABLE immersion_lookup
+ADD COLUMN query_hash TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE immersion_lookup
+ADD COLUMN normalized_headword TEXT;
+
+ALTER TABLE immersion_lookup
+ADD COLUMN normalized_reading TEXT;
+
+ALTER TABLE immersion_lookup
+ADD COLUMN part_of_speech TEXT;
+
+ALTER TABLE immersion_anki_operation
+ADD COLUMN status TEXT NOT NULL DEFAULT 'FAILED';
+
+ALTER TABLE immersion_anki_operation
+ADD COLUMN expression_hash TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE immersion_anki_operation
+ADD COLUMN normalized_expression TEXT;
+
+ALTER TABLE immersion_anki_operation
+ADD COLUMN normalized_reading TEXT;

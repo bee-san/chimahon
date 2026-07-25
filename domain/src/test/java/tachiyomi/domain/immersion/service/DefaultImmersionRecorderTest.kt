@@ -11,6 +11,10 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
+import tachiyomi.domain.immersion.model.AnkiOperationEvent
+import tachiyomi.domain.immersion.model.AnkiOperationId
+import tachiyomi.domain.immersion.model.AnkiOperationStatus
+import tachiyomi.domain.immersion.model.AnkiOperationType
 import tachiyomi.domain.immersion.model.CharacterVolume
 import tachiyomi.domain.immersion.model.EventId
 import tachiyomi.domain.immersion.model.EventType
@@ -20,6 +24,8 @@ import tachiyomi.domain.immersion.model.ImmersionSessionStart
 import tachiyomi.domain.immersion.model.ImmersionSourceUnit
 import tachiyomi.domain.immersion.model.ImmersionTitle
 import tachiyomi.domain.immersion.model.LanguageTag
+import tachiyomi.domain.immersion.model.LookupEvent
+import tachiyomi.domain.immersion.model.LookupStatus
 import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.MillisecondDuration
 import tachiyomi.domain.immersion.model.NetCharacterProgress
@@ -90,6 +96,49 @@ class DefaultImmersionRecorderTest {
             EventType.HEARTBEAT,
             EventType.SESSION_FINALIZED,
         )
+    }
+
+    @Test
+    fun `paused lookup and Anki operations retain source provenance without adding active time`() = runTest {
+        val fixture = recorderFixture()
+        fixture.recorder.startSession(fixture.context)
+        fixture.recorder.record(fixture.exposure())
+        val sourceId = fixture.recorder.state.value.sourceUnitId
+        fixture.recorder.pause(PauseReason.USER)
+        fixture.clock.advance(5_000)
+
+        fixture.recorder.record(
+            CaptureCommand.Lookup(
+                lookupId = UUID.randomUUID().toString(),
+                sourceUnitId = sourceId,
+                queryHash = "query-hash",
+                rawQuery = null,
+                normalizedHeadword = "読む",
+                normalizedReading = "よむ",
+                partOfSpeech = "verb",
+                dictionaryId = null,
+                resultId = null,
+                status = LookupStatus.SUCCESS,
+            ),
+        ) shouldBe RecordResult.Enqueued(1)
+        fixture.recorder.record(
+            CaptureCommand.AnkiOperation(
+                operationId = AnkiOperationId(UUID.randomUUID().toString()),
+                sourceUnitId = sourceId,
+                expressionHash = "expression-hash",
+                normalizedExpression = "読む",
+                normalizedReading = "よむ",
+                operationType = AnkiOperationType.CREATE,
+                status = AnkiOperationStatus.SUCCESS,
+                noteId = 42,
+            ),
+        ) shouldBe RecordResult.Enqueued(1)
+        fixture.recorder.finalize(FinalizeReason.NORMAL)
+
+        fixture.repository.events.filterIsInstance<LookupEvent>().single().sourceUnitId shouldBe sourceId
+        fixture.repository.events.filterIsInstance<AnkiOperationEvent>().single().sourceUnitId shouldBe sourceId
+        fixture.repository.events.filterIsInstance<LookupEvent>().single().activeDuration shouldBe MillisecondDuration(0)
+        fixture.repository.events.filterIsInstance<AnkiOperationEvent>().single().activeDuration shouldBe MillisecondDuration(0)
     }
 
     @Test
