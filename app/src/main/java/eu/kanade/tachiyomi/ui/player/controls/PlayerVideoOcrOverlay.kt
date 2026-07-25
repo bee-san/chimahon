@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.ui.player.controls
 
-import android.graphics.Bitmap
 import android.webkit.WebView
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -35,6 +34,7 @@ import eu.kanade.tachiyomi.ui.dictionary.getDictionaryPaths
 import eu.kanade.tachiyomi.ui.dictionary.screenLookupCharOffset
 import eu.kanade.tachiyomi.ui.dictionary.toScreenLookupBlocks
 import eu.kanade.tachiyomi.ui.player.PlayerViewModel
+import eu.kanade.tachiyomi.ui.player.scene.CapturedOcrFrame
 import eu.kanade.tachiyomi.ui.reader.viewer.OcrLineGeometry
 import eu.kanade.tachiyomi.ui.reader.viewer.OcrLookupPopup
 import eu.kanade.tachiyomi.ui.reader.viewer.OcrTextBlock
@@ -42,10 +42,13 @@ import eu.kanade.tachiyomi.ui.reader.viewer.extractOcrLookupString
 import eu.kanade.tachiyomi.ui.reader.viewer.isLookupStartChar
 import eu.kanade.tachiyomi.ui.reader.viewer.orderedFullText
 import eu.kanade.tachiyomi.ui.reader.viewer.toOrderedOffset
+import eu.kanade.tachiyomi.util.system.toast
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import tachiyomi.i18n.MR
+import tachiyomi.i18n.kmk.KMR
 import tachiyomi.presentation.core.i18n.stringResource
 import tachiyomi.presentation.core.util.collectAsState
 import uy.kohesive.injekt.Injekt
@@ -58,10 +61,11 @@ private const val TAP_HINT_DURATION_MS = 1_200L
 @Composable
 internal fun PlayerVideoOcrOverlay(
     viewModel: PlayerViewModel,
-    screenshot: Bitmap?,
+    frame: CapturedOcrFrame?,
     onDismiss: () -> Unit,
 ) {
-    if (screenshot == null) return
+    val capturedFrame = frame ?: return
+    val screenshot = capturedFrame.bitmap ?: return
 
     val context = LocalContext.current
     val localDensity = LocalDensity.current
@@ -70,6 +74,7 @@ internal fun PlayerVideoOcrOverlay(
     val source by viewModel.currentSource.collectAsState()
     val anime by viewModel.currentAnime.collectAsState()
     val episode by viewModel.currentEpisode.collectAsState()
+    val miningProgress by viewModel.sceneMiningProgress.collectAsState()
     val activeProfile = remember(source?.id, source?.lang) {
         dictionaryPreferences.profileResolver.resolve(
             sourceId = source?.id ?: 0L,
@@ -81,6 +86,12 @@ internal fun PlayerVideoOcrOverlay(
     }
     val boxScaleX = dictionaryPreferences.ocrBoxScaleX().get()
     val boxScaleY = dictionaryPreferences.ocrBoxScaleY().get()
+    val mediaRequest = remember(capturedFrame.request, activeProfile.ankiCropMode) {
+        viewModel.createSceneMediaRequest(
+            request = capturedFrame.request,
+            screenshotMode = activeProfile.ankiCropMode,
+        )
+    }
 
     LaunchedEffect(activeProfile) {
         withContext(Dispatchers.IO) {
@@ -116,16 +127,21 @@ internal fun PlayerVideoOcrOverlay(
             error = null
             blocks = emptyList()
             showTapHint = false
+            val recognitionLease = capturedFrame.request.acquireMiningLease()
+            if (recognitionLease == null) {
+                isLoading = false
+                error = context.contextStringResource(MR.strings.screen_lookup_capture_failed)
+                return@LaunchedEffect
+            }
             val language = OcrLanguage.entries.find {
                 it.bcp47.equals(activeProfile.languageCode, ignoreCase = true)
             } ?: OcrLanguage.JAPANESE
 
-            runCatching {
-                withContext(Dispatchers.Default) {
+            try {
+                val ocrBlocks = withContext(Dispatchers.Default) {
                     recognizePage(screenshot, language)
                         .toScreenLookupBlocks(language.bcp47)
                 }
-            }.onSuccess { ocrBlocks ->
                 blocks = remapToScreenArea(
                     ocrBlocks,
                     imgWidth = screenshot.width,
@@ -138,8 +154,12 @@ internal fun PlayerVideoOcrOverlay(
                 } else {
                     showTapHint = true
                 }
-            }.onFailure {
-                error = it.message ?: context.contextStringResource(MR.strings.screen_lookup_capture_failed)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                error = e.message ?: context.contextStringResource(MR.strings.screen_lookup_capture_failed)
+            } finally {
+                recognitionLease.close()
             }
             isLoading = false
 
@@ -232,7 +252,15 @@ internal fun PlayerVideoOcrOverlay(
                         mangaTitle = anime?.title.orEmpty(),
                         chapterName = episode?.name.orEmpty(),
                     ),
-                    onRequestSentenceAudio = { viewModel.captureVideoOcrAudioForAnki() },
+                    mediaRequest = mediaRequest,
+                    miningBusy = miningProgress.isBusy,
+                    launchMiningJob = { block ->
+                        viewModel.launchSceneMining(capturedFrame.request, block)
+                    },
+                    onMiningBusy = {
+                        context.toast(KMR.strings.anki_scene_busy)
+                    },
+                    onAnkiMediaWarnings = context::showPlayerAnkiMediaWarnings,
                     usePopup = false,
                     titleId = anime?.id?.toString(),
                     onTermMatched = { count, off ->
