@@ -449,6 +449,38 @@ data class ImmersionGoal(
 }
 
 @Serializable
+data class ImmersionGoalCheckIn(
+    val goalId: String,
+    val localDate: ImmersionLocalDate,
+    val status: String,
+    val note: String?,
+    val occurredAtEpochMillis: Long,
+) {
+    init {
+        require(goalId.isNotBlank())
+        require(status.isNotBlank())
+        require(occurredAtEpochMillis >= 0)
+    }
+}
+
+@Serializable
+data class ImmersionGoalAchievement(
+    val id: String,
+    val goalId: String,
+    val milestoneKey: String,
+    val earnedAtEpochMillis: Long,
+    val targetSnapshot: Double,
+) {
+    init {
+        require(id.isNotBlank())
+        require(goalId.isNotBlank())
+        require(milestoneKey.isNotBlank())
+        require(earnedAtEpochMillis >= 0)
+        require(targetSnapshot.isFinite() && targetSnapshot >= 0)
+    }
+}
+
+@Serializable
 data class ImmersionAnkiSnapshot(
     val id: String,
     val profileId: String,

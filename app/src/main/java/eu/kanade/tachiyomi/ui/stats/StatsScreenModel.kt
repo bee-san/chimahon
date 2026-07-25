@@ -1,699 +1,2688 @@
 package eu.kanade.tachiyomi.ui.stats
 
-import android.app.Application
-import androidx.compose.ui.util.fastDistinctBy
-import androidx.compose.ui.util.fastFilter
 import cafe.adriel.voyager.core.model.StateScreenModel
 import cafe.adriel.voyager.core.model.screenModelScope
-import com.canopus.chimareader.data.BookStorage
-import com.canopus.chimareader.data.Statistics
-import chimahon.anki.AnkiProfile
-import eu.kanade.core.util.fastCountNot
-import eu.kanade.presentation.more.stats.StatsDateScale
+import eu.kanade.presentation.more.stats.StatsCharacterGridMode
+import eu.kanade.presentation.more.stats.StatsCharacterLayout
+import eu.kanade.presentation.more.stats.StatsDetails
+import eu.kanade.presentation.more.stats.StatsFilterState
+import eu.kanade.presentation.more.stats.StatsLoadable
+import eu.kanade.presentation.more.stats.StatsRangePreset
 import eu.kanade.presentation.more.stats.StatsScreenState
-import eu.kanade.presentation.more.stats.data.StatsData
-import eu.kanade.presentation.more.stats.data.StatsType
-import eu.kanade.tachiyomi.data.download.DownloadManager
-import eu.kanade.tachiyomi.data.track.TrackerManager
-import eu.kanade.tachiyomi.source.model.SManga
+import eu.kanade.presentation.more.stats.StatsSection
+import eu.kanade.presentation.more.stats.StatsSections
+import eu.kanade.presentation.more.stats.StatsSelection
+import eu.kanade.presentation.more.stats.StatsTab
+import eu.kanade.presentation.more.stats.StatsTrendMetric
+import eu.kanade.presentation.more.stats.decodePersistedStatsFilterSelection
 import eu.kanade.tachiyomi.ui.dictionary.DictionaryPreferences
-import tachiyomi.domain.source.service.SourceManager
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.update
-import tachiyomi.domain.history.interactor.GetAllHistory
-import tachiyomi.domain.history.interactor.GetTotalReadDuration
-import tachiyomi.domain.history.model.History
-import tachiyomi.domain.history.model.ReadingSession
-import tachiyomi.domain.history.repository.HistoryRepository
-import tachiyomi.domain.library.model.LibraryManga
-import tachiyomi.domain.library.service.LibraryPreferences
-import tachiyomi.domain.manga.interactor.GetLibraryManga
-import tachiyomi.domain.manga.interactor.GetReadMangaNotInLibraryView
-import tachiyomi.domain.track.interactor.GetTracks
-import tachiyomi.domain.track.model.Track
-import tachiyomi.source.local.isLocal
+import kotlinx.coroutines.launch
+import tachiyomi.domain.immersion.model.AnalyticsBucketScale
+import tachiyomi.domain.immersion.model.AnalyticsCharacterFilter
+import tachiyomi.domain.immersion.model.AnalyticsCharacterPriorityMode
+import tachiyomi.domain.immersion.model.AnalyticsCharacterRange
+import tachiyomi.domain.immersion.model.AnalyticsCharacterScript
+import tachiyomi.domain.immersion.model.AnalyticsPage
+import tachiyomi.domain.immersion.model.AnalyticsResult
+import tachiyomi.domain.immersion.model.AnalyticsSort
+import tachiyomi.domain.immersion.model.AnalyticsSourceOccurrence
+import tachiyomi.domain.immersion.model.AnalyticsTitleAcquisitionBucketSize
+import tachiyomi.domain.immersion.model.AnalyticsTitleCompletedUnit
+import tachiyomi.domain.immersion.model.AnalyticsTitleFilter
+import tachiyomi.domain.immersion.model.AnalyticsTitleSeriesSelection
+import tachiyomi.domain.immersion.model.AnalyticsTitleSort
+import tachiyomi.domain.immersion.model.AnalyticsTitleWordAcquisition
+import tachiyomi.domain.immersion.model.AnalyticsTrends
+import tachiyomi.domain.immersion.model.AnkiMaturityAggregation
+import tachiyomi.domain.immersion.model.CharacterMetric
+import tachiyomi.domain.immersion.model.ImmersionGoal
+import tachiyomi.domain.immersion.model.ImmersionLocalDate
+import tachiyomi.domain.immersion.model.ImmersionSession
+import tachiyomi.domain.immersion.model.ImmersionTitleMutationRequest
+import tachiyomi.domain.immersion.model.LanguageTag
+import tachiyomi.domain.immersion.model.MaturityTier
+import tachiyomi.domain.immersion.model.MediaKind
+import tachiyomi.domain.immersion.model.ProvenanceState
+import tachiyomi.domain.immersion.model.RawTextRetention
+import tachiyomi.domain.immersion.model.SessionPage
+import tachiyomi.domain.immersion.model.StatsFilter
+import tachiyomi.domain.immersion.model.TitleId
+import tachiyomi.domain.immersion.model.UnicodeCodePoint
+import tachiyomi.domain.immersion.model.VocabularyCategory
+import tachiyomi.domain.immersion.model.VocabularyExclusion
+import tachiyomi.domain.immersion.model.VocabularyFilter
+import tachiyomi.domain.immersion.model.VocabularyKnownness
+import tachiyomi.domain.immersion.model.VocabularyScript
+import tachiyomi.domain.immersion.repository.ImmersionAnkiRepository
+import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
+import tachiyomi.domain.immersion.service.ImmersionAnalyticsService
+import tachiyomi.domain.immersion.service.ImmersionExportDocument
+import tachiyomi.domain.immersion.service.ImmersionExportService
+import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
-import java.time.DayOfWeek
 import java.time.LocalDate
-import java.time.YearMonth
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.time.format.TextStyle
-import java.time.temporal.ChronoUnit
-import java.util.Locale
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 
 class StatsScreenModel(
-    val titleId: String? = null,
-    val isNovel: Boolean = false,
-    val titleName: String? = null,
-    private val downloadManager: DownloadManager = Injekt.get(),
-    private val getLibraryManga: GetLibraryManga = Injekt.get(),
-    private val getTotalReadDuration: GetTotalReadDuration = Injekt.get(),
-    private val getAllHistory: GetAllHistory = Injekt.get(),
-    private val historyRepository: HistoryRepository = Injekt.get(),
-    private val getTracks: GetTracks = Injekt.get(),
-    private val preferences: LibraryPreferences = Injekt.get(),
-    private val trackerManager: TrackerManager = Injekt.get(),
-    private val getReadMangaNotInLibraryView: GetReadMangaNotInLibraryView = Injekt.get(),
-    private val context: Application = Injekt.get(),
+    titleId: TitleId? = null,
+    private val analyticsService: ImmersionAnalyticsService = Injekt.get(),
+    private val preferences: ImmersionStatsPreferences = Injekt.get(),
     private val dictionaryPreferences: DictionaryPreferences = Injekt.get(),
-    private val sourceManager: SourceManager = Injekt.get(),
+    private val maintenanceRepository: ImmersionMaintenanceRepository = Injekt.get(),
+    private val ankiRepository: ImmersionAnkiRepository = Injekt.get(),
+    private val exportService: ImmersionExportService = Injekt.get(),
+    private val titleMetadataResolver: StatsTitleMetadataResolver = StatsTitleMetadataResolver.create(),
+    private val today: () -> LocalDate = LocalDate::now,
 ) : StateScreenModel<StatsScreenState>(StatsScreenState.Loading) {
 
-    private val loggedInTrackers by lazy { trackerManager.loggedInTrackers() }
-
-    private val _allRead = MutableStateFlow(true)
-    val allRead = _allRead.asStateFlow()
-
-    private val _dateScale = MutableStateFlow(StatsDateScale.Day)
-    val dateScale = _dateScale.asStateFlow()
-
-    private val _dateOffset = MutableStateFlow(0)
-    val dateOffset = _dateOffset.asStateFlow()
-
-    private val _statsType = MutableStateFlow(StatsType.All)
-    val statsType = _statsType.asStateFlow()
-
-    private val _activeProfileId = MutableStateFlow<String?>(null)
-    val activeProfileId = _activeProfileId.asStateFlow()
-
-    private val _profiles = MutableStateFlow<List<AnkiProfile>>(emptyList())
-    val profiles = _profiles.asStateFlow()
-
-    fun setProfileFilter(profileId: String?) {
-        _activeProfileId.value = profileId
-    }
-
-    private data class CombinedFilters(
-        val allRead: Boolean,
-        val dateScale: StatsDateScale,
-        val dateOffset: Int,
-        val statsType: StatsType,
-        val activeProfileId: String?,
-    )
+    private val fixedTitleId = titleId
+    private val refreshGeneration = AtomicLong()
+    private val sectionPagingRequests = StatsPagingRequestTracker()
+    private val titlePagingRequests = StatsPagingRequestTracker()
+    private val wordPagingRequests = StatsPagingRequestTracker()
+    private val characterPagingRequests = StatsPagingRequestTracker()
+    private val sourcePagingRequests = StatsPagingRequestTracker()
+    private val sessionDetailRequests = StatsPagingRequestTracker()
+    private val sessionRelinkPreviewRequests = StatsPagingRequestTracker()
+    private val titleDetailRequests = StatsPagingRequestTracker()
+    private val titleAcquisitionRequests = StatsPagingRequestTracker()
+    private val titleSessionPagingRequests = StatsPagingRequestTracker()
+    private val titleUnitPagingRequests = StatsPagingRequestTracker()
+    private val titleSourcePagingRequests = StatsPagingRequestTracker()
+    private var refreshJob: Job? = null
+    private var vocabularySearchJob: Job? = null
+    private var titleSearchJob: Job? = null
+    private var characterSearchJob: Job? = null
+    private var sourceSearchJob: Job? = null
+    private var titleTrendsJob: Job? = null
+    private var restoreSelectionAfterRefresh = true
+    private val mutableExportDocuments = MutableSharedFlow<ImmersionExportDocument>()
+    val exportDocuments: SharedFlow<ImmersionExportDocument> = mutableExportDocuments.asSharedFlow()
 
     init {
-        val combinedFlow = combine(
-            _allRead,
-            _dateScale,
-            _dateOffset,
-            _statsType,
-            _activeProfileId
-        ) { allRead, dateScale, dateOffset, statsType, activeProfileId ->
-            CombinedFilters(allRead, dateScale, dateOffset, statsType, activeProfileId)
+        val profiles = dictionaryPreferences.profileStore.getProfiles()
+        val profileId = preferences.dashboardProfileId().get().takeIf { selected ->
+            selected.isNotBlank() && profiles.any { it.id == selected }
         }
+        val selectedTitleId = fixedTitleId ?: preferences.dashboardTitleId().get()
+            .takeIf(String::isNotBlank)
+            ?.let { runCatching { TitleId(it) }.getOrNull() }
+        val goalsEnabled = preferences.goalsEnabled().get()
+        val ankiEnabled = preferences.ankiSyncEnabled().get()
+        val requestedTab = if (fixedTitleId != null) {
+            StatsTab.TITLES
+        } else {
+            preferences.dashboardSelectedTab().get().enumOrDefault(StatsTab.OVERVIEW)
+        }
+        val initialFilter = StatsFilterState(
+            rangePreset = preferences.dashboardRangePreset().get().enumOrDefault(StatsRangePreset.TODAY),
+            periodOffset = preferences.dashboardPeriodOffset().get().coerceAtMost(0),
+            customStart = preferences.dashboardCustomStart().get().toImmersionLocalDateOrNull(),
+            customEnd = preferences.dashboardCustomEnd().get().toImmersionLocalDateOrNull(),
+            mediaKind = preferences.dashboardMediaKind().get()
+                .takeIf(String::isNotBlank)
+                ?.enumOrNull(),
+            profileId = profileId,
+            characterMetric = preferences.dashboardCharacterMetric().get(),
+            includeLegacy = preferences.includeLegacyAggregates().get(),
+            includeRereadsAndReplays = preferences.dashboardIncludeRereads().get(),
+            maturityTiers = preferences.dashboardMaturityTiers().get()
+                .decodePersistedStatsFilterSelection(MaturityTier.UNAVAILABLE),
+            provenanceStates = preferences.dashboardProvenanceStates().get()
+                .decodePersistedStatsFilterSelection(ProvenanceState.UNAVAILABLE),
+            titleId = selectedTitleId?.value,
+        )
+        val persistedCharacterScripts = preferences.dashboardCharacterScripts().get()
+        val characterScripts = when {
+            CHARACTER_ALL_SCRIPTS_SENTINEL in persistedCharacterScripts -> emptySet()
+            persistedCharacterScripts.isNotEmpty() ->
+                persistedCharacterScripts.decodeEnums<AnalyticsCharacterScript>()
+            profileId
+                ?.let { id -> profiles.find { it.id == id } }
+                ?.languageCode
+                ?.startsWith("ja", ignoreCase = true) == true ->
+                setOf(
+                    AnalyticsCharacterScript.HAN,
+                    AnalyticsCharacterScript.HIRAGANA,
+                    AnalyticsCharacterScript.KATAKANA,
+                )
+            else -> emptySet()
+        }
+        mutableState.value = StatsScreenState.Success(
+            filter = initialFilter,
+            selectedTab = resolveEnabledStatsTab(requestedTab, goalsEnabled, ankiEnabled),
+            profiles = profiles,
+            sections = StatsSections(),
+            goalsEnabled = goalsEnabled,
+            ankiEnabled = ankiEnabled,
+            trendScale = preferences.dashboardTrendScale().get(),
+            trendMetric = preferences.dashboardTrendMetric().get()
+                .enumOrDefault(StatsTrendMetric.CHARACTERS),
+            titleSort = preferences.dashboardTitleSort().get(),
+            titleFilter = AnalyticsTitleFilter(
+                state = preferences.dashboardTitleState().get(),
+                coverage = preferences.dashboardTitleCoverage().get(),
+            ),
+            titleAcquisitionBucketSize = preferences.dashboardTitleAcquisitionBucketSize().get(),
+            vocabularySort = preferences.dashboardVocabularySort().get(),
+            vocabularyFilter = VocabularyFilter(
+                knownness = preferences.dashboardVocabularyKnownness().get()
+                    .enumOrDefault(VocabularyKnownness.ALL),
+                scripts = preferences.dashboardVocabularyScripts().get()
+                    .decodeEnums<VocabularyScript>(),
+                categories = preferences.dashboardVocabularyCategories().get()
+                    .decodeEnums<VocabularyCategory>(),
+                partOfSpeechQuery = preferences.dashboardVocabularyPartOfSpeech().get()
+                    .takeIf(String::isNotBlank),
+                minimumOccurrences = preferences.dashboardVocabularyMinimumOccurrences().get()
+                    .positiveOrNull(),
+                maximumOccurrences = preferences.dashboardVocabularyMaximumOccurrences().get()
+                    .positiveOrNull(),
+                maximumFrequencyRank = preferences.dashboardVocabularyMaximumFrequencyRank().get()
+                    .positiveOrNull(),
+                exclusion = preferences.dashboardVocabularyExclusion().get()
+                    .enumOrDefault(VocabularyExclusion.INCLUDED),
+            ),
+            characterSort = preferences.dashboardCharacterSort().get(),
+            characterFilter = AnalyticsCharacterFilter(
+                scripts = characterScripts,
+                range = preferences.dashboardCharacterRange().get(),
+                priorityMode = preferences.dashboardCharacterPriorityMode().get(),
+                maximumMissingFrequencyRank =
+                preferences.dashboardCharacterMaximumMissingFrequencyRank().get()
+                    .coerceAtLeast(1),
+            ),
+            characterGridMode = preferences.dashboardCharacterGridMode().get()
+                .enumOrDefault(StatsCharacterGridMode.FREQUENCY),
+            characterLayout = preferences.dashboardCharacterLayout().get()
+                .enumOrDefault(StatsCharacterLayout.GRID),
+            characterCoverageTargetPercent =
+            preferences.dashboardCharacterCoverageTargetPercent().get().coerceIn(1, 100),
+            ankiWordCoverageTargetPercent =
+            preferences.dashboardAnkiWordCoverageTargetPercent().get().coerceIn(1, 100),
+        )
+        refresh()
+        observeFeatureFlags()
+    }
 
-        combine(
-            combinedFlow,
-            dictionaryPreferences.rawProfiles().changes()
-        ) { tuple, rawProfilesJson ->
-            val allRead = tuple.allRead
-            val dateScale = tuple.dateScale
-            val dateOffset = tuple.dateOffset
-            val statsType = tuple.statsType
-            val activeProfileId = tuple.activeProfileId
-
-            val libraryManga = if (titleId != null) {
-                if (!isNovel) {
-                    val lm = getLibraryManga.await().find { it.id.toString() == titleId }
-                        ?: getReadMangaNotInLibraryView.await().find { it.id.toString() == titleId }
-                    if (lm != null) listOf(lm) else emptyList()
+    fun refresh() {
+        refreshJob?.cancel()
+        sectionPagingRequests.invalidate()
+        titlePagingRequests.invalidate()
+        val generation = refreshGeneration.incrementAndGet()
+        val current = successState() ?: return
+        mutableState.value = current.copy(
+            sections = current.sections.refreshing(
+                selectedTab = current.selectedTab,
+                goalsEnabled = current.goalsEnabled,
+                ankiEnabled = current.ankiEnabled,
+            ),
+        )
+        refreshJob = screenModelScope.launch {
+            val filter = current.toStatsFilter()
+            coroutineScope {
+                listOf(
+                    async { loadOverview(generation, filter) },
+                    async { loadHeatmap(generation, filter) },
+                    async { loadTrends(generation, filter, current.trendScale) },
+                    async {
+                        if (current.selectedTab == StatsTab.ACTIVITY) {
+                            loadTemporalActivity(generation, filter)
+                        }
+                    },
+                    async {
+                        if (current.selectedTab == StatsTab.ACTIVITY) {
+                            loadTitleTrends(
+                                generation,
+                                filter,
+                                current.trendScale,
+                                current.titleTrendSelection,
+                            )
+                        }
+                    },
+                    async {
+                        loadTitles(
+                            generation,
+                            filter,
+                            current.titleFilter,
+                            current.titleSort,
+                        )
+                    },
+                    async { loadVocabulary(generation, filter, current.vocabularySort) },
+                    async {
+                        if (current.selectedTab == StatsTab.VOCABULARY) {
+                            loadVocabularyGrowth(generation, filter, current.trendScale)
+                        }
+                    },
+                    async {
+                        loadCharacters(
+                            generation,
+                            filter,
+                            current.characterFilter,
+                            current.characterSort,
+                        )
+                    },
+                    async {
+                        loadCharacterSummary(generation, filter, current.characterFilter)
+                    },
+                    async { loadSessions(generation, filter) },
+                    async {
+                        if (current.goalsEnabled) {
+                            loadGoals(generation, filter)
+                        }
+                    },
+                    async {
+                        if (current.ankiEnabled) {
+                            loadAnki(generation, filter)
+                        }
+                    },
+                ).awaitAll()
+            }
+            if (refreshGeneration.get() == generation) {
+                if (restoreSelectionAfterRefresh) {
+                    restoreSelectionAfterRefresh = false
+                    restorePersistedSelection()
                 } else {
-                    emptyList()
-                }
-            } else {
-                getLibraryManga.await() + if (allRead) {
-                    getReadMangaNotInLibraryView.await()
-                } else {
-                    emptyList()
-                }
-            }
-
-            val distinctLibraryManga = libraryManga.fastDistinctBy { it.id }
-            
-            val profilesList = dictionaryPreferences.profileStore.getProfiles()
-            _profiles.value = profilesList
-
-            val resolver = dictionaryPreferences.profileResolver
-
-            // Build full resolver map for all distinct library manga
-            val libraryMangaProfileMap = distinctLibraryManga.associate { lm ->
-                val dbManga = lm.manga
-                val source = dbManga.source.let { sourceManager.getOrStub(it) }
-                lm.id to resolver.resolve(
-                    mangaId = lm.id,
-                    sourceId = dbManga.source,
-                    sourceLang = source.lang,
-                ).id
-            }
-
-            // Filter library manga by active profile
-            val profileFilteredLibraryManga = if (activeProfileId != null) {
-                distinctLibraryManga.filter { libraryMangaProfileMap[it.id] == activeProfileId }
-            } else {
-                distinctLibraryManga
-            }
-            
-            val filteredLibraryManga = when (statsType) {
-                StatsType.All -> profileFilteredLibraryManga
-                StatsType.Manga -> profileFilteredLibraryManga
-                StatsType.Novels -> emptyList()
-            }
-
-            // Build dynamic resolver map for manga
-            val allMangaStats = if (titleId != null) {
-                if (!isNovel) {
-                    com.canopus.chimareader.data.MangaStatsStorage.loadAll(context).filter { it.mangaId.toString() == titleId }
-                } else {
-                    emptyList()
-                }
-            } else {
-                com.canopus.chimareader.data.MangaStatsStorage.loadAll(context)
-            }
-            val uniqueMangaIds = allMangaStats.map { it.mangaId }.distinct()
-            val mangaProfileMap = uniqueMangaIds.associateWith { mangaId ->
-                if (mangaId == 0L) {
-                    ""
-                } else {
-                    val dbManga = distinctLibraryManga.find { it.id == mangaId }?.manga
-                    val source = dbManga?.source?.let { sourceManager.getOrStub(it) }
-                    resolver.resolve(
-                        mangaId = mangaId,
-                        sourceId = dbManga?.source ?: 0L,
-                        sourceLang = source?.lang ?: "",
-                    ).id
-                }
-            }
-
-            // Filter manga stats by profile
-            val profileFilteredMangaStats = if (activeProfileId != null) {
-                allMangaStats.filter { mangaProfileMap[it.mangaId] == activeProfileId }
-            } else {
-                allMangaStats
-            }
-
-            val libraryMangaIds = profileFilteredLibraryManga.map { it.id }.toSet()
-            val libraryFilteredMangaStats = if (allRead) profileFilteredMangaStats else profileFilteredMangaStats.filter { it.mangaId in libraryMangaIds || it.mangaId == 0L }
-            val filteredMangaStats = filterMangaStatsByScale(libraryFilteredMangaStats, dateScale, dateOffset)
-
-            // Load and filter novels
-            val allNovels = if (titleId != null) {
-                if (isNovel) {
-                    BookStorage.loadAllBooks(context).filter { it.id == titleId }
-                } else {
-                    emptyList()
-                }
-            } else if (statsType == StatsType.All || statsType == StatsType.Novels) {
-                BookStorage.loadAllBooks(context)
-            } else {
-                emptyList()
-            }
-            
-            // Build dynamic resolver map for novels
-            val novelProfileMap = allNovels.associate { novel ->
-                novel.id to resolver.resolve(novelId = novel.id).id
-            }
-
-            val profileFilteredNovels = if (activeProfileId != null) {
-                allNovels.filter { novelProfileMap[it.id] == activeProfileId }
-            } else {
-                allNovels
-            }
-
-            val novelStats = profileFilteredNovels.associate { novel ->
-                val bookDir = BookStorage.getBookDirectory(context, novel.id)
-                novel.id to (BookStorage.loadStatistics(bookDir) ?: emptyList())
-            }
-
-            // Filter novel stats by profile (keys are already filtered)
-            val profileFilteredNovelStatsMap = novelStats
-            
-            val allNovelStatsList = profileFilteredNovelStatsMap.values.flatten()
-            val filteredNovelStats = filterNovelStatsByScale(allNovelStatsList, dateScale, dateOffset)
-
-            val mangaReadDuration = filteredMangaStats.sumOf { it.readingTime }
-            val novelReadDurationSeconds = filteredNovelStats.sumOf { it.readingTime }
-            val novelReadDurationMs = (novelReadDurationSeconds * 1000).toLong()
-            
-            val currentStatsType = if (titleId != null) {
-                if (isNovel) StatsType.Novels else StatsType.Manga
-            } else {
-                statsType
-            }
-
-            val totalReadDuration = when (currentStatsType) {
-                StatsType.All -> mangaReadDuration + novelReadDurationMs
-                StatsType.Manga -> mangaReadDuration
-                StatsType.Novels -> novelReadDurationMs
-            }
-
-            val mangaChars = filteredMangaStats.sumOf { it.charactersRead }
-            val mangaTimeMs = filteredMangaStats.sumOf { it.readingTime }
-            
-            val novelChars = filteredNovelStats.sumOf { it.charactersRead }
-            val novelTimeMs = novelReadDurationMs
-
-            val totalChars = when (currentStatsType) {
-                StatsType.All -> mangaChars + novelChars
-                StatsType.Manga -> mangaChars
-                StatsType.Novels -> novelChars
-            }
-
-            val totalTimeMs = when (currentStatsType) {
-                StatsType.All -> mangaTimeMs + novelTimeMs
-                StatsType.Manga -> mangaTimeMs
-                StatsType.Novels -> novelTimeMs
-            }
-
-            val charactersPerHour = if (totalTimeMs > 0) {
-                (totalChars.toDouble() / (totalTimeMs / 3600000.0)).toInt()
-            } else null
-
-            val streak = calculateStreak(libraryFilteredMangaStats, allNovelStatsList)
-            val historyPoints = calculateHistoryPoints(libraryFilteredMangaStats, allNovelStatsList, dateScale, dateOffset)
-            
-            // Calculate avg per day
-            val avgDurationPerDay = if (dateScale != StatsDateScale.Day && dateScale != StatsDateScale.AllTime) {
-                val (start, end) = getDateRange(dateScale, dateOffset)
-                val days = ChronoUnit.DAYS.between(start, end).coerceAtLeast(1) + 1
-                totalReadDuration / days
-            } else null
-
-            val ankiStats = com.canopus.chimareader.data.AnkiStatsStorage.loadAll(context)
-            val titleFilteredAnkiStats = if (titleId != null) {
-                ankiStats.filter { it.titleId == titleId }
-            } else {
-                ankiStats
-            }
-            val filteredAnkiStats = filterAnkiStatsByScale(titleFilteredAnkiStats, dateScale, dateOffset)
-            val firstProfileId = profilesList.firstOrNull()?.id
-            val profileFilteredAnkiStats = if (activeProfileId != null) {
-                filteredAnkiStats.filter {
-                    it.profileId == activeProfileId || (it.profileId.isEmpty() && activeProfileId == firstProfileId)
-                }
-            } else {
-                filteredAnkiStats
-            }
-            val totalAnkiCards = when (currentStatsType) {
-                StatsType.All -> profileFilteredAnkiStats.sumOf { it.mangaCards + it.novelCards }
-                StatsType.Manga -> profileFilteredAnkiStats.sumOf { it.mangaCards }
-                StatsType.Novels -> profileFilteredAnkiStats.sumOf { it.novelCards }
-            }
-
-            val overviewStatData = StatsData.Overview(
-                libraryMangaCount = when (currentStatsType) {
-                    StatsType.All -> filteredLibraryManga.size + profileFilteredNovels.size
-                    StatsType.Manga -> filteredLibraryManga.size
-                    StatsType.Novels -> profileFilteredNovels.size
-                },
-                completedMangaCount = calculateCompletedCount(filteredLibraryManga, profileFilteredNovels, currentStatsType),
-                totalReadDuration = totalReadDuration,
-                readingStreak = streak,
-                historyPoints = historyPoints,
-                avgDurationPerDay = avgDurationPerDay,
-                ankiCardsAdded = totalAnkiCards,
-                charactersRead = totalChars,
-                charactersPerHour = charactersPerHour,
-            )
-
-            val titlesStatData = StatsData.Titles(
-                startedMangaCount = calculateStartedCount(filteredLibraryManga, allNovelStatsList, currentStatsType),
-                localMangaCount = when (currentStatsType) {
-                    StatsType.All -> filteredLibraryManga.count { it.manga.isLocal() } + profileFilteredNovels.size
-                    StatsType.Manga -> filteredLibraryManga.count { it.manga.isLocal() }
-                    StatsType.Novels -> profileFilteredNovels.size
-                },
-            )
-
-            // Chapter calculations for novels
-            var novelTotalChapters = 0
-            var novelReadChapters = 0
-            if (currentStatsType == StatsType.All || currentStatsType == StatsType.Novels) {
-                profileFilteredNovels.forEach { novel ->
-                    val bookDir = BookStorage.getBookDirectory(context, novel.id)
-                    val bookmark = BookStorage.loadBookmark(bookDir)
-                    val chapterStarts = novel.chapterStarts
-                    if (chapterStarts != null && chapterStarts.size > 1) {
-                        val exploredChars = bookmark?.characterCount ?: 0
-                        novelTotalChapters += chapterStarts.size - 1
-                        novelReadChapters += chapterStarts.drop(1).count { it <= exploredChars }
-                    } else {
-                        val info = BookStorage.loadBookInfo(bookDir)
-                        novelTotalChapters += info?.chapterInfo?.size ?: 0
-                        novelReadChapters += bookmark?.chapterIndex ?: 0
+                    val selected = successState()?.selection?.title
+                    if (selected != null) {
+                        val refreshed = successState()
+                            ?.sections
+                            ?.titles
+                            ?.value
+                            ?.value
+                            ?.items
+                            ?.find { it.titleId == selected.titleId }
+                            ?: selected
+                        selectTitle(refreshed)
                     }
                 }
             }
+        }
+    }
 
-            val chapterStatData = StatsData.Chapters(
-                totalChapterCount = when (currentStatsType) {
-                    StatsType.All -> filteredLibraryManga.sumOf { it.totalChapters }.toInt() + novelTotalChapters
-                    StatsType.Manga -> filteredLibraryManga.sumOf { it.totalChapters }.toInt()
-                    StatsType.Novels -> novelTotalChapters
-                },
-                readChapterCount = when (currentStatsType) {
-                    StatsType.All -> filteredLibraryManga.sumOf { it.readCount }.toInt() + novelReadChapters
-                    StatsType.Manga -> filteredLibraryManga.sumOf { it.readCount }.toInt()
-                    StatsType.Novels -> novelReadChapters
-                },
-                downloadCount = when (currentStatsType) {
-                    StatsType.All -> filteredLibraryManga.sumOf { downloadManager.getDownloadCount(it.manga) }
-                    StatsType.Manga -> filteredLibraryManga.sumOf { downloadManager.getDownloadCount(it.manga) }
-                    StatsType.Novels -> 0
+    fun retrySection(section: StatsSection) {
+        val current = successState() ?: return
+        if (current.sections.isRefreshing(section)) return
+        if (section == StatsSection.GOALS && !current.goalsEnabled) return
+        if (section == StatsSection.ANKI && !current.ankiEnabled) return
+
+        val generation = refreshGeneration.get()
+        updateSuccess {
+            it.copy(sections = it.sections.retrying(section))
+        }
+        screenModelScope.launch {
+            val state = successState() ?: return@launch
+            if (refreshGeneration.get() != generation) return@launch
+            val filter = state.toStatsFilter()
+            when (section) {
+                StatsSection.OVERVIEW -> loadOverview(generation, filter)
+                StatsSection.HEATMAP -> loadHeatmap(generation, filter)
+                StatsSection.TRENDS -> loadTrends(generation, filter, state.trendScale)
+                StatsSection.TEMPORAL_ACTIVITY -> loadTemporalActivity(generation, filter)
+                StatsSection.TITLE_TRENDS -> loadTitleTrends(
+                    generation = generation,
+                    filter = filter,
+                    scale = state.trendScale,
+                    selection = state.titleTrendSelection,
+                )
+                StatsSection.TITLES -> loadTitles(
+                    generation = generation,
+                    filter = filter,
+                    titleFilter = state.titleFilter,
+                    sort = state.titleSort,
+                )
+                StatsSection.VOCABULARY -> loadVocabulary(
+                    generation,
+                    filter,
+                    state.vocabularySort,
+                )
+                StatsSection.VOCABULARY_GROWTH -> loadVocabularyGrowth(
+                    generation,
+                    filter,
+                    state.trendScale,
+                )
+                StatsSection.CHARACTERS -> loadCharacters(
+                    generation,
+                    filter,
+                    state.characterFilter,
+                    state.characterSort,
+                )
+                StatsSection.CHARACTER_SUMMARY -> loadCharacterSummary(
+                    generation,
+                    filter,
+                    state.characterFilter,
+                )
+                StatsSection.SESSIONS -> loadSessions(generation, filter)
+                StatsSection.GOALS -> loadGoals(generation, filter)
+                StatsSection.ANKI -> loadAnki(generation, filter)
+            }
+        }
+    }
+
+    fun rawTextDisclosureRequired(): Boolean =
+        preferences.rawTextDisclosureRequired()
+
+    fun acknowledgeRawTextDisclosure(retention: RawTextRetention) {
+        preferences.acknowledgeRawTextDisclosure(retention)
+    }
+
+    fun selectTab(tab: StatsTab) {
+        val current = successState() ?: return
+        if (
+            tab != resolveEnabledStatsTab(
+                requested = tab,
+                goalsEnabled = current.goalsEnabled,
+                ankiEnabled = current.ankiEnabled,
+            )
+        ) {
+            return
+        }
+        preferences.dashboardSelectedTab().set(tab.name)
+        clearPersistedSelection()
+        titleDetailRequests.invalidate()
+        titleAcquisitionRequests.invalidate()
+        titleSessionPagingRequests.invalidate()
+        titleUnitPagingRequests.invalidate()
+        titleSourcePagingRequests.invalidate()
+        updateSuccess {
+            it.copy(
+                selectedTab = tab,
+                selection = StatsSelection(),
+                details = StatsDetails(),
+                selectedVocabularyWordIds = emptySet(),
+                vocabularyMutationError = false,
+            )
+        }
+        loadOptionalSections(tab)
+    }
+
+    fun selectRange(preset: StatsRangePreset) {
+        preferences.dashboardRangePreset().set(preset.name)
+        preferences.dashboardPeriodOffset().set(0)
+        updateFilter { it.copy(rangePreset = preset, periodOffset = 0) }
+    }
+
+    fun movePeriod(offset: Int) {
+        val periodOffset = offset.coerceAtMost(0)
+        preferences.dashboardPeriodOffset().set(periodOffset)
+        updateFilter { it.copy(periodOffset = periodOffset) }
+    }
+
+    fun setCustomRange(start: String, end: String): Boolean {
+        val parsedStart = runCatching { ImmersionLocalDate.from(LocalDate.parse(start.trim())) }.getOrNull()
+        val parsedEnd = runCatching { ImmersionLocalDate.from(LocalDate.parse(end.trim())) }.getOrNull()
+        if (parsedStart == null || parsedEnd == null || parsedStart > parsedEnd) return false
+        preferences.dashboardRangePreset().set(StatsRangePreset.CUSTOM.name)
+        preferences.dashboardPeriodOffset().set(0)
+        preferences.dashboardCustomStart().set(parsedStart.toString())
+        preferences.dashboardCustomEnd().set(parsedEnd.toString())
+        updateFilter {
+            it.copy(
+                rangePreset = StatsRangePreset.CUSTOM,
+                periodOffset = 0,
+                customStart = parsedStart,
+                customEnd = parsedEnd,
+            )
+        }
+        return true
+    }
+
+    fun selectMedia(mediaKind: MediaKind?) {
+        preferences.dashboardMediaKind().set(mediaKind?.name.orEmpty())
+        updateFilter { it.copy(mediaKind = mediaKind) }
+    }
+
+    fun selectTitleFilter(titleId: String?) {
+        if (fixedTitleId != null) return
+        val selectedTitleId = titleId
+            ?.let { runCatching { TitleId(it) }.getOrNull() }
+            ?.value
+        preferences.dashboardTitleId().set(selectedTitleId.orEmpty())
+        updateFilter { it.copy(titleId = selectedTitleId) }
+    }
+
+    fun selectProfile(profileId: String?) {
+        preferences.dashboardProfileId().set(profileId.orEmpty())
+        updateFilter { it.copy(profileId = profileId) }
+    }
+
+    fun selectCharacterMetric(metric: CharacterMetric) {
+        preferences.dashboardCharacterMetric().set(metric)
+        updateFilter { it.copy(characterMetric = metric) }
+    }
+
+    fun setIncludeLegacy(include: Boolean) {
+        preferences.includeLegacyAggregates().set(include)
+        updateFilter { it.copy(includeLegacy = include) }
+    }
+
+    fun setIncludeRereads(include: Boolean) {
+        preferences.dashboardIncludeRereads().set(include)
+        updateFilter { it.copy(includeRereadsAndReplays = include) }
+    }
+
+    fun selectMaturityTiers(tiers: Set<MaturityTier>) {
+        preferences.dashboardMaturityTiers().set(tiers.mapTo(linkedSetOf()) { it.name })
+        updateFilter { it.copy(maturityTiers = tiers) }
+    }
+
+    fun selectProvenanceStates(states: Set<ProvenanceState>) {
+        preferences.dashboardProvenanceStates().set(states.mapTo(linkedSetOf()) { it.name })
+        updateFilter { it.copy(provenanceStates = states) }
+    }
+
+    fun selectTrendScale(scale: AnalyticsBucketScale) {
+        preferences.dashboardTrendScale().set(scale)
+        updateSuccess { it.copy(trendScale = scale) }
+        refresh()
+    }
+
+    fun selectTrendMetric(metric: StatsTrendMetric) {
+        preferences.dashboardTrendMetric().set(metric.name)
+        updateSuccess { it.copy(trendMetric = metric) }
+    }
+
+    fun selectTitleTrendSelection(selection: AnalyticsTitleSeriesSelection) {
+        updateSuccess {
+            it.copy(
+                titleTrendSelection = selection,
+                sections = it.sections.copy(titleTrends = it.sections.titleTrends.refreshing()),
+            )
+        }
+        val state = successState() ?: return
+        titleTrendsJob?.cancel()
+        val generation = refreshGeneration.get()
+        titleTrendsJob = screenModelScope.launch {
+            loadTitleTrends(
+                generation = generation,
+                filter = state.toStatsFilter(),
+                scale = state.trendScale,
+                selection = selection,
+            )
+        }
+    }
+
+    fun selectTitleSort(sort: AnalyticsTitleSort) {
+        preferences.dashboardTitleSort().set(sort)
+        updateSuccess { it.copy(titleSort = sort) }
+        refresh()
+    }
+
+    fun updateTitleFilter(filter: AnalyticsTitleFilter) {
+        val normalized = filter.copy(searchQuery = null)
+        preferences.dashboardTitleState().set(normalized.state)
+        preferences.dashboardTitleCoverage().set(normalized.coverage)
+        titlePagingRequests.invalidate()
+        updateSuccess {
+            it.copy(
+                titleFilter = normalized,
+                selection = it.selection.copy(title = null),
+                details = StatsDetails(),
+            )
+        }
+        titleDetailRequests.invalidate()
+        titleAcquisitionRequests.invalidate()
+        titleSessionPagingRequests.invalidate()
+        titleUnitPagingRequests.invalidate()
+        titleSourcePagingRequests.invalidate()
+        preferences.dashboardSelectedTitleId().delete()
+        refresh()
+    }
+
+    fun selectVocabularySort(sort: AnalyticsSort) {
+        preferences.dashboardVocabularySort().set(sort)
+        updateSuccess {
+            it.copy(
+                vocabularySort = sort,
+                selectedVocabularyWordIds = emptySet(),
+            )
+        }
+        refresh()
+    }
+
+    fun updateVocabularyFilter(filter: VocabularyFilter) {
+        val normalized = filter.copy(
+            searchQuery = null,
+            partOfSpeechQuery = filter.partOfSpeechQuery
+                ?.trim()
+                ?.takeIf(String::isNotEmpty),
+        )
+        preferences.dashboardVocabularyKnownness().set(normalized.knownness.name)
+        preferences.dashboardVocabularyScripts().set(normalized.scripts.mapTo(linkedSetOf()) { it.name })
+        preferences.dashboardVocabularyCategories().set(
+            normalized.categories.mapTo(linkedSetOf()) { it.name },
+        )
+        preferences.dashboardVocabularyPartOfSpeech().set(normalized.partOfSpeechQuery.orEmpty())
+        preferences.dashboardVocabularyMinimumOccurrences().set(normalized.minimumOccurrences ?: -1)
+        preferences.dashboardVocabularyMaximumOccurrences().set(normalized.maximumOccurrences ?: -1)
+        preferences.dashboardVocabularyMaximumFrequencyRank().set(normalized.maximumFrequencyRank ?: -1)
+        preferences.dashboardVocabularyExclusion().set(normalized.exclusion.name)
+        wordPagingRequests.invalidate()
+        preferences.dashboardSelectedWordId().delete()
+        updateSuccess {
+            it.copy(
+                vocabularyFilter = normalized,
+                selectedVocabularyWordIds = emptySet(),
+                vocabularyMutationError = false,
+                selection = it.selection.copy(word = null),
+                details = it.details.copy(wordOccurrences = StatsLoadable()),
+            )
+        }
+        refresh()
+    }
+
+    fun setVocabularyWordSelected(wordId: String, selected: Boolean) {
+        updateSuccess { state ->
+            val selection = state.selectedVocabularyWordIds.toMutableSet().apply {
+                if (selected) add(wordId) else remove(wordId)
+            }
+            state.copy(
+                selectedVocabularyWordIds = selection,
+                vocabularyMutationError = false,
+            )
+        }
+    }
+
+    fun clearVocabularyWordSelection() {
+        updateSuccess {
+            it.copy(
+                selectedVocabularyWordIds = emptySet(),
+                vocabularyMutationError = false,
+            )
+        }
+    }
+
+    fun setSelectedVocabularyWordsExcluded(excluded: Boolean) {
+        val selected = successState()?.selectedVocabularyWordIds.orEmpty()
+        if (selected.isEmpty()) return
+        updateSuccess {
+            it.copy(
+                vocabularyMutationInProgress = true,
+                vocabularyMutationError = false,
+            )
+        }
+        screenModelScope.launch {
+            val result = runCatching {
+                maintenanceRepository.setWordExclusions(
+                    wordIds = selected,
+                    excluded = excluded,
+                    updatedAtEpochMillis = System.currentTimeMillis(),
+                )
+                repairAllDirtyRollups()
+            }
+            if (result.isSuccess) {
+                preferences.dashboardSelectedWordId().delete()
+                updateSuccess {
+                    it.copy(
+                        selectedVocabularyWordIds = emptySet(),
+                        vocabularyMutationInProgress = false,
+                        vocabularyMutationError = false,
+                        selection = it.selection.copy(word = null),
+                        details = it.details.copy(wordOccurrences = StatsLoadable()),
+                    )
+                }
+                refresh()
+            } else {
+                updateSuccess {
+                    it.copy(
+                        vocabularyMutationInProgress = false,
+                        vocabularyMutationError = true,
+                    )
+                }
+            }
+        }
+    }
+
+    fun exportVocabulary() {
+        val state = successState() ?: return
+        screenModelScope.launch {
+            mutableExportDocuments.emit(
+                exportService.vocabularyCsv(
+                    filter = state.toStatsFilter(),
+                    vocabularyFilter = state.vocabularyFilter.copy(
+                        searchQuery = state.vocabularySearch.takeIf(String::isNotBlank),
+                    ),
+                    sort = state.vocabularySort,
+                ),
+            )
+        }
+    }
+
+    fun selectCharacterSort(sort: AnalyticsSort) {
+        preferences.dashboardCharacterSort().set(sort)
+        updateSuccess {
+            it.copy(
+                characterSort = sort,
+                selectedCharacterCodePoints = emptySet(),
+            )
+        }
+        refresh()
+    }
+
+    fun updateCharacterFilter(filter: AnalyticsCharacterFilter) {
+        val normalized = filter.copy(searchQuery = null)
+        preferences.dashboardCharacterScripts().set(
+            normalized.scripts
+                .mapTo(linkedSetOf()) { it.name }
+                .ifEmpty { linkedSetOf(CHARACTER_ALL_SCRIPTS_SENTINEL) },
+        )
+        preferences.dashboardCharacterRange().set(normalized.range)
+        preferences.dashboardCharacterPriorityMode().set(normalized.priorityMode)
+        preferences.dashboardCharacterMaximumMissingFrequencyRank()
+            .set(normalized.maximumMissingFrequencyRank)
+        sectionPagingRequests.invalidate()
+        characterPagingRequests.invalidate()
+        preferences.dashboardSelectedCharacter().delete()
+        updateSuccess {
+            it.copy(
+                characterFilter = normalized,
+                selectedCharacterCodePoints = emptySet(),
+                selection = it.selection.copy(character = null),
+                details = it.details.copy(
+                    characterOccurrences = StatsLoadable(),
+                    characterContainingWords = StatsLoadable(),
+                    characterAnkiItems = StatsLoadable(),
+                ),
+            )
+        }
+        refresh()
+    }
+
+    fun selectCharacterGridMode(mode: StatsCharacterGridMode) {
+        preferences.dashboardCharacterGridMode().set(mode.name)
+        updateSuccess { it.copy(characterGridMode = mode) }
+    }
+
+    fun selectCharacterLayout(layout: StatsCharacterLayout) {
+        preferences.dashboardCharacterLayout().set(layout.name)
+        updateSuccess { it.copy(characterLayout = layout) }
+    }
+
+    fun setCharacterCoverageTargetPercent(percent: Int) {
+        val normalized = percent.coerceIn(1, 100)
+        preferences.dashboardCharacterCoverageTargetPercent().set(normalized)
+        updateSuccess { it.copy(characterCoverageTargetPercent = normalized) }
+    }
+
+    fun setAnkiWordCoverageTargetPercent(percent: Int) {
+        val normalized = percent.coerceIn(1, 100)
+        preferences.dashboardAnkiWordCoverageTargetPercent().set(normalized)
+        updateSuccess { it.copy(ankiWordCoverageTargetPercent = normalized) }
+    }
+
+    fun openMissingAnkiWordsWorkbench() {
+        val state = successState() ?: return
+        val filter = state.vocabularyFilter.copy(
+            knownness = VocabularyKnownness.UNKNOWN,
+            maximumFrequencyRank = state.vocabularyFilter.maximumFrequencyRank ?: 10_000,
+            exclusion = VocabularyExclusion.INCLUDED,
+        )
+        preferences.dashboardSelectedTab().set(StatsTab.VOCABULARY.name)
+        preferences.dashboardMaturityTiers().set(emptySet())
+        preferences.dashboardVocabularySort().set(AnalyticsSort.FREQUENCY_RANK)
+        preferences.dashboardVocabularyKnownness().set(filter.knownness.name)
+        preferences.dashboardVocabularyMaximumFrequencyRank()
+            .set(checkNotNull(filter.maximumFrequencyRank))
+        preferences.dashboardVocabularyExclusion().set(filter.exclusion.name)
+        wordPagingRequests.invalidate()
+        clearPersistedSelection()
+        updateSuccess {
+            it.copy(
+                filter = it.filter.copy(maturityTiers = emptySet()),
+                selectedTab = StatsTab.VOCABULARY,
+                vocabularySort = AnalyticsSort.FREQUENCY_RANK,
+                vocabularyFilter = filter,
+                vocabularySearch = "",
+                selection = StatsSelection(),
+                details = StatsDetails(),
+                selectedVocabularyWordIds = emptySet(),
+            )
+        }
+        refresh()
+    }
+
+    fun openMissingAnkiCharactersWorkbench() {
+        val state = successState() ?: return
+        val filter = state.characterFilter.copy(
+            range = AnalyticsCharacterRange.MISSING_HIGH_FREQUENCY,
+        )
+        preferences.dashboardSelectedTab().set(StatsTab.CHARACTERS.name)
+        preferences.dashboardMaturityTiers().set(emptySet())
+        preferences.dashboardCharacterSort().set(AnalyticsSort.PRIORITY)
+        preferences.dashboardCharacterRange().set(filter.range)
+        preferences.dashboardCharacterGridMode().set(StatsCharacterGridMode.PRIORITY.name)
+        characterPagingRequests.invalidate()
+        clearPersistedSelection()
+        updateSuccess {
+            it.copy(
+                filter = it.filter.copy(maturityTiers = emptySet()),
+                selectedTab = StatsTab.CHARACTERS,
+                characterSort = AnalyticsSort.PRIORITY,
+                characterFilter = filter,
+                characterGridMode = StatsCharacterGridMode.PRIORITY,
+                characterSearch = "",
+                selection = StatsSelection(),
+                details = StatsDetails(),
+                selectedCharacterCodePoints = emptySet(),
+            )
+        }
+        refresh()
+    }
+
+    fun setCharacterSelected(codePoint: Int, selected: Boolean) {
+        updateSuccess { state ->
+            state.copy(
+                selectedCharacterCodePoints = state.selectedCharacterCodePoints
+                    .toMutableSet()
+                    .apply {
+                        if (selected) add(codePoint) else remove(codePoint)
+                    },
+            )
+        }
+    }
+
+    fun clearCharacterSelection() {
+        updateSuccess { it.copy(selectedCharacterCodePoints = emptySet()) }
+    }
+
+    fun exportSelectedCharacters() {
+        val state = successState() ?: return
+        val selected = state.selectedCharacterCodePoints.mapTo(linkedSetOf(), ::UnicodeCodePoint)
+        if (selected.isEmpty()) return
+        screenModelScope.launch {
+            mutableExportDocuments.emit(
+                exportService.selectedCharactersCsv(
+                    filter = state.toStatsFilter(),
+                    characterFilter = state.characterFilter.copy(
+                        searchQuery = state.characterSearch.takeIf(String::isNotBlank),
+                    ),
+                    sort = state.characterSort,
+                    selectedCodePoints = selected,
+                ),
+            )
+        }
+    }
+
+    fun searchTitles(query: String) {
+        titlePagingRequests.invalidate()
+        updateSuccess {
+            it.copy(
+                titleSearch = query,
+                sections = it.sections.copy(titles = it.sections.titles.refreshing()),
+            )
+        }
+        titleSearchJob?.cancel()
+        titleSearchJob = screenModelScope.launch {
+            delay(250)
+            refresh()
+        }
+    }
+
+    fun searchVocabulary(query: String) {
+        sectionPagingRequests.invalidate()
+        updateSuccess {
+            it.copy(
+                vocabularySearch = query,
+                selectedVocabularyWordIds = emptySet(),
+                vocabularyMutationError = false,
+                sections = it.sections.copy(vocabulary = it.sections.vocabulary.refreshing()),
+            )
+        }
+        vocabularySearchJob?.cancel()
+        vocabularySearchJob = screenModelScope.launch {
+            delay(250)
+            refresh()
+        }
+    }
+
+    fun searchCharacters(query: String) {
+        sectionPagingRequests.invalidate()
+        updateSuccess {
+            it.copy(
+                characterSearch = query,
+                sections = it.sections.copy(characters = it.sections.characters.refreshing()),
+            )
+        }
+        characterSearchJob?.cancel()
+        characterSearchJob = screenModelScope.launch {
+            delay(250)
+            refresh()
+        }
+    }
+
+    fun selectTitle(title: tachiyomi.domain.immersion.model.AnalyticsTitleRow?) {
+        val detailGeneration = titleDetailRequests.invalidate()
+        val acquisitionGeneration = titleAcquisitionRequests.invalidate()
+        titleSessionPagingRequests.invalidate()
+        titleUnitPagingRequests.invalidate()
+        titleSourcePagingRequests.invalidate()
+        preferences.dashboardSelectedTitleId().set(title?.titleId?.value.orEmpty())
+        updateSuccess {
+            it.copy(
+                selection = it.selection.copy(title = title),
+                details = if (title == null) {
+                    StatsDetails()
+                } else {
+                    it.details.copy(
+                        titleCaptureExcluded = StatsLoadable(refreshing = true),
+                        titleMutationInProgress = false,
+                        titleMutationError = false,
+                        titleTrends = StatsLoadable(refreshing = true),
+                        titleWordAcquisition = StatsLoadable(refreshing = true),
+                        titleSessions = StatsLoadable(refreshing = true),
+                        titleCompletedUnits = StatsLoadable(refreshing = true),
+                        titleSources = StatsLoadable(refreshing = true),
+                    )
                 },
             )
-
-            val trackers = if (titleId != null) emptyMap() else getMangaTrackMap(filteredLibraryManga)
-            val scoredTrackers = getScoredMangaTrackMap(trackers)
-            val trackerStatData = StatsData.Trackers(
-                trackedTitleCount = trackers.size,
-                meanScore = getTrackMeanScore(scoredTrackers),
-                trackerCount = if (titleId != null) 0 else loggedInTrackers.size,
+        }
+        if (title == null) return
+        screenModelScope.launch {
+            val state = successState() ?: return@launch
+            val filter = state.toStatsFilter()
+            val scopedFilter = filter.copy(
+                titleIds = setOf(title.titleId),
+                comparisonRange = null,
             )
-
-            mutableState.update {
-                StatsScreenState.Success(
-                    overview = overviewStatData,
-                    titles = titlesStatData,
-                    chapters = chapterStatData,
-                    trackers = trackerStatData,
-                    dateScale = dateScale,
-                    dateOffset = dateOffset,
-                    statsType = currentStatsType,
-                    activeProfileId = if (titleId != null) null else activeProfileId,
-                    profiles = if (titleId != null) emptyList() else profilesList,
+            val bucketSize = state.titleAcquisitionBucketSize
+            val (
+                captureExcluded,
+                trends,
+                acquisition,
+                sessions,
+                completedUnits,
+                sources,
+            ) = coroutineScope {
+                val captureDeferred = async {
+                    runCatching {
+                        maintenanceRepository.isTitleCaptureExcluded(title.titleId)
+                    }
+                }
+                val trendsDeferred = async {
+                    runCatching {
+                        analyticsService.trends(scopedFilter, AnalyticsBucketScale.DAY)
+                    }
+                }
+                val acquisitionDeferred = async {
+                    runCatching {
+                        analyticsService.titleWordAcquisition(
+                            filter = filter,
+                            titleId = title.titleId,
+                            bucketSize = bucketSize,
+                        )
+                    }
+                }
+                val sessionsDeferred = async {
+                    runCatching {
+                        analyticsService.sessions(scopedFilter, null, DETAIL_PAGE_SIZE)
+                    }
+                }
+                val unitsDeferred = async {
+                    runCatching {
+                        analyticsService.titleCompletedUnits(
+                            filter = filter,
+                            titleId = title.titleId,
+                            offset = 0,
+                            limit = DETAIL_PAGE_SIZE,
+                        )
+                    }
+                }
+                val sourcesDeferred = async {
+                    runCatching {
+                        analyticsService.titleSourceOccurrences(
+                            filter = filter,
+                            titleId = title.titleId,
+                            offset = 0,
+                            limit = DETAIL_PAGE_SIZE,
+                        )
+                    }
+                }
+                TitleDetailQueryResults(
+                    captureExcluded = captureDeferred.await(),
+                    trends = trendsDeferred.await(),
+                    acquisition = acquisitionDeferred.await(),
+                    sessions = sessionsDeferred.await(),
+                    completedUnits = unitsDeferred.await(),
+                    sources = sourcesDeferred.await(),
                 )
             }
-        }.onEach { }.launchIn(screenModelScope)
-    }
-
-    private fun getDateRange(scale: StatsDateScale, offset: Int): Pair<LocalDate, LocalDate> {
-        val now = LocalDate.now()
-        return when (scale) {
-            StatsDateScale.Day -> {
-                val date = now.plusDays(offset.toLong())
-                date to date
+            if (
+                !titleDetailRequests.isCurrent(detailGeneration) ||
+                successState()?.selection?.title?.titleId != title.titleId
+            ) {
+                return@launch
             }
-            StatsDateScale.Week -> {
-                val weekOffset = offset.toLong()
-                val start = now.plusWeeks(weekOffset).with(DayOfWeek.MONDAY)
-                val end = start.plusDays(6)
-                start to end
-            }
-            StatsDateScale.Month -> {
-                val monthOffset = offset.toLong()
-                val start = now.plusMonths(monthOffset).withDayOfMonth(1)
-                val end = start.plusMonths(1).minusDays(1)
-                start to end
-            }
-            StatsDateScale.Year -> {
-                val yearOffset = offset.toLong()
-                val start = now.plusYears(yearOffset).withDayOfYear(1)
-                val end = start.plusYears(1).minusDays(1)
-                start to end
-            }
-            StatsDateScale.AllTime -> {
-                LocalDate.of(2000, 1, 1) to now
+            updateSuccess { latest ->
+                latest.copy(
+                    details = latest.details.copy(
+                        titleCaptureExcluded = captureExcluded.toStatsLoadable(),
+                        titleTrends = trends.toStatsLoadable(),
+                        titleWordAcquisition = if (
+                            titleAcquisitionRequests.isCurrent(acquisitionGeneration) &&
+                            latest.titleAcquisitionBucketSize == bucketSize
+                        ) {
+                            acquisition.toStatsLoadable()
+                        } else {
+                            latest.details.titleWordAcquisition
+                        },
+                        titleSessions = sessions.toStatsLoadable(),
+                        titleCompletedUnits = completedUnits.toStatsLoadable(),
+                        titleSources = sources.toStatsLoadable(),
+                    ),
+                )
             }
         }
     }
 
-    private fun filterSessionsByScale(sessions: List<ReadingSession>, scale: StatsDateScale, offset: Int): List<ReadingSession> {
-        if (scale == StatsDateScale.AllTime) return sessions
-        val (start, end) = getDateRange(scale, offset)
-        val startMillis = start.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
-        val endMillis = end.plusDays(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
-
-        return sessions.filter {
-            it.readAt.time in startMillis until endMillis
+    fun selectTitleAcquisitionBucketSize(bucketSize: AnalyticsTitleAcquisitionBucketSize) {
+        preferences.dashboardTitleAcquisitionBucketSize().set(bucketSize)
+        val title = successState()?.selection?.title
+        val generation = titleAcquisitionRequests.invalidate()
+        updateSuccess {
+            it.copy(
+                titleAcquisitionBucketSize = bucketSize,
+                details = it.details.copy(
+                    titleWordAcquisition = if (title == null) {
+                        StatsLoadable()
+                    } else {
+                        it.details.titleWordAcquisition.refreshing()
+                    },
+                ),
+            )
         }
-    }
-
-    private fun filterNovelStatsByScale(stats: List<Statistics>, scale: StatsDateScale, offset: Int): List<Statistics> {
-        if (scale == StatsDateScale.AllTime) return stats
-        val (start, end) = getDateRange(scale, offset)
-        val startStr = start.toString()
-        val endStr = end.toString()
-        return stats.filter { it.dateKey in startStr..endStr }
-    }
-
-    private fun filterAnkiStatsByScale(stats: List<com.canopus.chimareader.data.AnkiStats>, scale: StatsDateScale, offset: Int): List<com.canopus.chimareader.data.AnkiStats> {
-        if (scale == StatsDateScale.AllTime) return stats
-        val (start, end) = getDateRange(scale, offset)
-        val startStr = start.toString()
-        val endStr = end.toString()
-        return stats.filter { it.dateKey in startStr..endStr }
-    }
-
-    private fun filterMangaStatsByScale(stats: List<com.canopus.chimareader.data.MangaStats>, scale: StatsDateScale, offset: Int): List<com.canopus.chimareader.data.MangaStats> {
-        if (scale == StatsDateScale.AllTime) return stats
-        val (start, end) = getDateRange(scale, offset)
-        val startStr = start.toString()
-        val endStr = end.toString()
-        return stats.filter { it.dateKey in startStr..endStr }
-    }
-
-    private fun calculateStreak(mangaStats: List<com.canopus.chimareader.data.MangaStats>, novelStats: List<Statistics>): Int {
-        val mangaDays = mangaStats.mapNotNull { 
-            try { LocalDate.parse(it.dateKey) } catch (e: Exception) { null }
-        }.toSet()
-        val novelDays = novelStats.mapNotNull { 
-            try { LocalDate.parse(it.dateKey) } catch (e: Exception) { null }
-        }.toSet()
-        
-        val allDays = (mangaDays + novelDays).sortedDescending()
-        if (allDays.isEmpty()) return 0
-        
-        var streak = 0
-        var current = LocalDate.now()
-        
-        if (!allDays.contains(current)) {
-            current = current.minusDays(1)
-        }
-        
-        for (day in allDays) {
-            if (day == current) {
-                streak++
-                current = current.minusDays(1)
-            } else if (day.isBefore(current)) {
-                break
+        if (title == null) return
+        screenModelScope.launch {
+            val state = successState() ?: return@launch
+            val result = runCatching {
+                analyticsService.titleWordAcquisition(
+                    filter = state.toStatsFilter(),
+                    titleId = title.titleId,
+                    bucketSize = bucketSize,
+                )
+            }
+            if (
+                !titleAcquisitionRequests.isCurrent(generation) ||
+                successState()?.selection?.title?.titleId != title.titleId ||
+                successState()?.titleAcquisitionBucketSize != bucketSize
+            ) {
+                return@launch
+            }
+            updateSuccess {
+                it.copy(
+                    details = it.details.copy(
+                        titleWordAcquisition = result.toStatsLoadable(),
+                    ),
+                )
             }
         }
-        return streak
     }
 
-    private fun calculateCompletedCount(libraryManga: List<LibraryManga>, novels: List<com.canopus.chimareader.data.BookMetadata>, type: StatsType): Int {
-        val mangaCompleted = libraryManga.count {
-            it.manga.status.toInt() == SManga.COMPLETED && it.unreadCount == 0L
+    fun setSelectedTitleCaptureExcluded(excluded: Boolean) {
+        val title = successState()?.selection?.title ?: return
+        updateSuccess {
+            it.copy(
+                details = it.details.copy(
+                    titleCaptureExcluded = it.details.titleCaptureExcluded.copy(refreshing = true, error = false),
+                ),
+            )
         }
-        val novelCompleted = 0 
-        
-        return when (type) {
-            StatsType.All -> mangaCompleted + novelCompleted
-            StatsType.Manga -> mangaCompleted
-            StatsType.Novels -> novelCompleted
-        }
-    }
-
-    private fun calculateStartedCount(libraryManga: List<LibraryManga>, novelStats: List<Statistics>, type: StatsType): Int {
-        val mangaStarted = libraryManga.count { it.hasStarted }
-        val novelStarted = novelStats.map { it.title }.distinct().size
-        
-        return when (type) {
-            StatsType.All -> (libraryManga.filter { it.hasStarted }.map { it.manga.title } + novelStats.map { it.title }).distinct().size
-            StatsType.Manga -> mangaStarted
-            StatsType.Novels -> novelStarted
-        }
-    }
-
-    private suspend fun getMangaTrackMap(libraryManga: List<LibraryManga>): Map<Long, List<Track>> {
-        val loggedInTrackerIds = loggedInTrackers.map { it.id }.toHashSet()
-        return libraryManga.mapNotNull { manga ->
-            val tracks = getTracks.await(manga.id)
-                .fastFilter { it.trackerId in loggedInTrackerIds }
-
-            if (tracks.isEmpty()) null else manga.id to tracks
-        }.toMap()
-    }
-
-    private fun getScoredMangaTrackMap(mangaTrackMap: Map<Long, List<Track>>): Map<Long, List<Track>> {
-        return mangaTrackMap.mapNotNull { (mangaId, tracks) ->
-            val trackList = tracks.mapNotNull { track ->
-                track.takeIf { it.score > 0.0 }
+        screenModelScope.launch {
+            val result = runCatching {
+                maintenanceRepository.setTitleCaptureExcluded(
+                    titleId = title.titleId,
+                    excluded = excluded,
+                    updatedAtEpochMillis = System.currentTimeMillis(),
+                )
             }
-            if (trackList.isEmpty()) return@mapNotNull null
-            mangaId to trackList
-        }.toMap()
-    }
-
-    private fun getTrackMeanScore(scoredMangaTrackMap: Map<Long, List<Track>>): Double {
-        return scoredMangaTrackMap
-            .map { (_, tracks) ->
-                tracks.map(::get10PointScore).average()
+            if (successState()?.selection?.title?.titleId != title.titleId) return@launch
+            updateSuccess { state ->
+                state.copy(
+                    details = state.details.copy(
+                        titleCaptureExcluded = result.fold(
+                            onSuccess = { StatsLoadable(excluded) },
+                            onFailure = {
+                                StatsLoadable(
+                                    value = state.details.titleCaptureExcluded.value,
+                                    error = true,
+                                )
+                            },
+                        ),
+                    ),
+                )
             }
-            .fastFilter { !it.isNaN() }
-            .average()
+        }
     }
 
-    private fun get10PointScore(track: Track): Double {
-        val service = trackerManager.get(track.trackerId)!!
-        return service.get10PointScore(track)
-    }
-
-    fun toggleReadManga() {
-        _allRead.update { !it }
-    }
-
-    fun setDateScale(scale: StatsDateScale) {
-        _dateScale.value = scale
-        _dateOffset.value = 0
-    }
-
-    fun setDateOffset(offset: Int) {
-        _dateOffset.value = offset
-    }
-
-    fun setStatsType(type: StatsType) {
-        _statsType.value = type
-    }
-
-    private fun calculateHistoryPoints(
-        mangaStats: List<com.canopus.chimareader.data.MangaStats>,
-        novelStats: List<Statistics>,
-        scale: StatsDateScale,
-        offset: Int,
-    ): List<StatsData.HistoryPoint> {
-        val now = LocalDate.now()
-        val (start, _) = getDateRange(scale, offset)
-
-        return when (scale) {
-            StatsDateScale.Day -> {
-                val weekStart = start.with(DayOfWeek.MONDAY)
-                (0..6).map { daysIntoWeek ->
-                    val date = weekStart.plusDays(daysIntoWeek.toLong())
-                    val label = date.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.getDefault())
-                    val value = aggregateForDate(date, mangaStats, novelStats)
-                    val pOffset = ChronoUnit.DAYS.between(now, date).toInt()
-                    StatsData.HistoryPoint(label, value, pOffset)
+    fun unlinkSelectedTitle() {
+        val title = successState()?.selection?.title ?: return
+        updateSuccess {
+            it.copy(
+                details = it.details.copy(
+                    titleMutationInProgress = true,
+                    titleMutationError = false,
+                ),
+            )
+        }
+        screenModelScope.launch {
+            val unlinkedAt = System.currentTimeMillis()
+            val result = runCatching {
+                check(
+                    maintenanceRepository.unlinkTitle(
+                        titleId = title.titleId,
+                        updatedAtEpochMillis = unlinkedAt,
+                    ),
+                ) {
+                    "Selected title no longer exists"
                 }
             }
-            StatsDateScale.Week -> {
-                val monthStart = start.plusDays(3).withDayOfMonth(1)
-                val monthEnd = monthStart.plusMonths(1).minusDays(1)
-                val firstMonday = monthStart.with(DayOfWeek.MONDAY)
-                val lastMonday = monthEnd.with(DayOfWeek.MONDAY)
-                val weeksInMonth = (ChronoUnit.WEEKS.between(firstMonday, lastMonday).toInt() + 1).coerceAtLeast(4)
-                
-                (0 until weeksInMonth).map { weeksIntoMonth ->
-                    val wStart = firstMonday.plusWeeks(weeksIntoMonth.toLong())
-                    val wEnd = wStart.plusDays(6)
-                    val label = "W${wStart.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR)}"
-                    val value = aggregateForRange(wStart, wEnd, mangaStats, novelStats)
-                    val pOffset = ChronoUnit.WEEKS.between(
-                        now.with(DayOfWeek.MONDAY),
-                        wStart
-                    ).toInt()
-                    StatsData.HistoryPoint(label, value, pOffset)
-                }
+            if (successState()?.selection?.title?.titleId != title.titleId) return@launch
+            updateSuccess { state ->
+                result.fold(
+                    onSuccess = {
+                        val unlinked = title.copy(
+                            libraryId = null,
+                            trackerId = null,
+                            mediaId = null,
+                            deletedAtEpochMillis = unlinkedAt,
+                        )
+                        val currentTitles = state.sections.titles.value
+                        state.copy(
+                            sections = state.sections.copy(
+                                titles = currentTitles?.let { analyticsResult ->
+                                    StatsLoadable(
+                                        analyticsResult.copy(
+                                            value = analyticsResult.value.copy(
+                                                items = analyticsResult.value.items.map { row ->
+                                                    if (row.titleId == title.titleId) unlinked else row
+                                                },
+                                            ),
+                                        ),
+                                    )
+                                } ?: state.sections.titles,
+                            ),
+                            titleOptions = state.titleOptions.map { row ->
+                                if (row.titleId == title.titleId) unlinked else row
+                            },
+                            titleMetadata = state.titleMetadata + (
+                                title.titleId to StatsTitlePresentationMetadata(
+                                    titleId = title.titleId,
+                                    localDisplayTitle = null,
+                                    author = null,
+                                    coverLocation = null,
+                                    linkState = StatsTitleLinkState.UNAVAILABLE,
+                                )
+                                ),
+                            selection = state.selection.copy(title = unlinked),
+                            details = state.details.copy(
+                                titleMutationInProgress = false,
+                                titleMutationError = false,
+                            ),
+                        )
+                    },
+                    onFailure = {
+                        state.copy(
+                            details = state.details.copy(
+                                titleMutationInProgress = false,
+                                titleMutationError = true,
+                            ),
+                        )
+                    },
+                )
             }
-            StatsDateScale.Month -> {
-                val yearStart = start.withDayOfYear(1)
-                (0..11).map { monthsIntoYear ->
-                    val mDate = yearStart.plusMonths(monthsIntoYear.toLong())
-                    val label = mDate.month.getDisplayName(TextStyle.SHORT, Locale.getDefault())
-                    val value = aggregateForMonth(mDate, mangaStats, novelStats)
-                    val pOffset = ChronoUnit.MONTHS.between(
-                        now.withDayOfMonth(1),
-                        mDate.withDayOfMonth(1)
-                    ).toInt()
-                    StatsData.HistoryPoint(label, value, pOffset)
+        }
+    }
+
+    fun selectWord(word: tachiyomi.domain.immersion.model.AnalyticsWordRow?) {
+        val requestGeneration = wordPagingRequests.invalidate()
+        preferences.dashboardSelectedWordId().set(word?.id.orEmpty())
+        updateSuccess {
+            it.copy(
+                selection = it.selection.copy(word = word),
+                details = it.details.copy(
+                    wordOccurrences = if (word == null) {
+                        StatsLoadable()
+                    } else {
+                        StatsLoadable(refreshing = true)
+                    },
+                ),
+            )
+        }
+        if (word != null) {
+            screenModelScope.launch {
+                val state = successState() ?: return@launch
+                val result = runCatching {
+                    analyticsService.wordOccurrences(
+                        state.toStatsFilter(),
+                        word.id,
+                        0,
+                        DETAIL_PAGE_SIZE,
+                    )
                 }
-            }
-            StatsDateScale.Year, StatsDateScale.AllTime -> {
-                (0..4).reversed().map { yearsAgo ->
-                    val yDate = now.minusYears(yearsAgo.toLong())
-                    val label = yDate.year.toString()
-                    val yStart = yDate.withDayOfYear(1)
-                    val yEnd = yDate.withDayOfYear(yDate.lengthOfYear())
-                    val value = aggregateForRange(yStart, yEnd, mangaStats, novelStats)
-                    val pOffset = -yearsAgo
-                    StatsData.HistoryPoint(label, value, pOffset)
+                if (
+                    !wordPagingRequests.isCurrent(requestGeneration) ||
+                    successState()?.selection?.word?.id != word.id
+                ) {
+                    return@launch
+                }
+                updateSuccess {
+                    it.copy(
+                        details = it.details.copy(
+                            wordOccurrences = result.fold(
+                                onSuccess = { value -> StatsLoadable(value) },
+                                onFailure = { StatsLoadable(error = true) },
+                            ),
+                        ),
+                    )
                 }
             }
         }
     }
 
-    private fun aggregateForDate(
-        date: LocalDate,
-        mangaStats: List<com.canopus.chimareader.data.MangaStats>,
-        novelStats: List<Statistics>,
-    ): Long {
-        val dateKey = date.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
-        val mangaValue = mangaStats
-            .filter { it.dateKey == dateKey }
-            .sumOf { it.readingTime }
-
-        val novelValue = novelStats
-            .filter { it.dateKey == dateKey }
-            .sumOf { (it.readingTime * 1000).toLong() }
-
-        return mangaValue + novelValue
-    }
-
-    private fun aggregateForRange(
-        start: LocalDate,
-        end: LocalDate,
-        mangaStats: List<com.canopus.chimareader.data.MangaStats>,
-        novelStats: List<Statistics>,
-    ): Long {
-        val startStr = start.toString()
-        val endStr = end.toString()
-        
-        val mangaValue = mangaStats
-            .filter { it.dateKey in startStr..endStr }
-            .sumOf { it.readingTime }
-
-        val novelValue = novelStats
-            .filter { it.dateKey in startStr..endStr }
-            .sumOf { (it.readingTime * 1000).toLong() }
-
-        return mangaValue + novelValue
-    }
-
-    private fun aggregateForMonth(
-        monthDate: LocalDate,
-        mangaStats: List<com.canopus.chimareader.data.MangaStats>,
-        novelStats: List<Statistics>,
-    ): Long {
-        val yearMonth = YearMonth.from(monthDate)
-        
-        val mangaValue = mangaStats
-            .filter { s ->
-                try {
-                    val entryDate = LocalDate.parse(s.dateKey)
-                    YearMonth.from(entryDate) == yearMonth
-                } catch (e: Exception) {
-                    false
+    fun selectCharacter(character: tachiyomi.domain.immersion.model.AnalyticsCharacterRow?) {
+        val requestGeneration = characterPagingRequests.invalidate()
+        preferences.dashboardSelectedCharacter().set(character?.codePoint?.value ?: -1)
+        updateSuccess {
+            it.copy(
+                selection = it.selection.copy(character = character),
+                details = it.details.copy(
+                    characterOccurrences = if (character == null) {
+                        StatsLoadable()
+                    } else {
+                        StatsLoadable(refreshing = true)
+                    },
+                    characterContainingWords = if (character == null) {
+                        StatsLoadable()
+                    } else {
+                        StatsLoadable(refreshing = true)
+                    },
+                    characterAnkiItems = if (character == null) {
+                        StatsLoadable()
+                    } else {
+                        StatsLoadable(refreshing = true)
+                    },
+                ),
+            )
+        }
+        if (character != null) {
+            screenModelScope.launch {
+                val state = successState() ?: return@launch
+                val filter = state.toStatsFilter()
+                val profileIds = state.filter.profileId
+                    ?.let(::listOf)
+                    ?: state.profiles.map { it.id }
+                val (occurrences, containingWords, ankiItems) = coroutineScope {
+                    val occurrenceResult = async {
+                        runCatching {
+                            analyticsService.characterOccurrences(
+                                filter,
+                                character.codePoint,
+                                0,
+                                DETAIL_PAGE_SIZE,
+                            )
+                        }
+                    }
+                    val containingWordResult = async {
+                        runCatching {
+                            analyticsService.characterContainingWords(
+                                filter = filter,
+                                codePoint = character.codePoint,
+                                sort = AnalyticsSort.MOST_OCCURRENCES,
+                                offset = 0,
+                                limit = DETAIL_PAGE_SIZE,
+                            )
+                        }
+                    }
+                    val ankiItemResult = async {
+                        runCatching {
+                            loadCharacterAnkiItems(
+                                repository = ankiRepository,
+                                profileIds = profileIds,
+                                codePoint = character.codePoint,
+                            )
+                        }
+                    }
+                    Triple(
+                        occurrenceResult.await(),
+                        containingWordResult.await(),
+                        ankiItemResult.await(),
+                    )
+                }
+                if (
+                    !characterPagingRequests.isCurrent(requestGeneration) ||
+                    successState()?.selection?.character?.codePoint != character.codePoint
+                ) {
+                    return@launch
+                }
+                updateSuccess {
+                    it.copy(
+                        details = it.details.copy(
+                            characterOccurrences = occurrences.fold(
+                                onSuccess = { value -> StatsLoadable(value) },
+                                onFailure = { StatsLoadable(error = true) },
+                            ),
+                            characterContainingWords = containingWords.fold(
+                                onSuccess = { value -> StatsLoadable(value) },
+                                onFailure = { StatsLoadable(error = true) },
+                            ),
+                            characterAnkiItems = ankiItems.fold(
+                                onSuccess = { value -> StatsLoadable(value) },
+                                onFailure = { StatsLoadable(error = true) },
+                            ),
+                        ),
+                    )
                 }
             }
-            .sumOf { it.readingTime }
+        }
+    }
 
-        val novelValue = novelStats
-            .filter { s ->
-                try {
-                    val entryDate = LocalDate.parse(s.dateKey)
-                    YearMonth.from(entryDate) == yearMonth
-                } catch (e: Exception) {
-                    false
+    fun selectSession(session: tachiyomi.domain.immersion.model.ImmersionSession?) {
+        val requestGeneration = sessionDetailRequests.invalidate()
+        sessionRelinkPreviewRequests.invalidate()
+        preferences.dashboardSelectedSessionId().set(session?.id?.value.orEmpty())
+        updateSuccess {
+            it.copy(
+                selection = it.selection.copy(session = session),
+                details = it.details.copy(
+                    session = if (session == null) {
+                        StatsLoadable()
+                    } else {
+                        StatsLoadable(refreshing = true)
+                    },
+                    sessionDeletionPreview = if (session == null) {
+                        StatsLoadable()
+                    } else {
+                        StatsLoadable(refreshing = true)
+                    },
+                    sessionRelinkPreview = StatsLoadable(),
+                ),
+            )
+        }
+        if (session != null) {
+            screenModelScope.launch {
+                val state = successState() ?: return@launch
+                val (detailResult, deletionPreviewResult) = coroutineScope {
+                    val detail = async {
+                        runCatching {
+                            analyticsService.sessionDetail(
+                                state.toStatsFilter(),
+                                session.id,
+                            )
+                        }
+                    }
+                    val deletionPreview = async {
+                        runCatching {
+                            maintenanceRepository.previewSessionDeletion(session.id)
+                        }
+                    }
+                    detail.await() to deletionPreview.await()
+                }
+                if (
+                    !sessionDetailRequests.isCurrent(requestGeneration) ||
+                    successState()?.selection?.session?.id != session.id
+                ) {
+                    return@launch
+                }
+                updateSuccess {
+                    it.copy(
+                        details = it.details.copy(
+                            session = detailResult.fold(
+                                onSuccess = { value -> StatsLoadable(value) },
+                                onFailure = { StatsLoadable(error = true) },
+                            ),
+                            sessionDeletionPreview = deletionPreviewResult.fold(
+                                onSuccess = { value ->
+                                    value?.let { StatsLoadable(value = it) }
+                                        ?: StatsLoadable(error = true)
+                                },
+                                onFailure = { StatsLoadable(error = true) },
+                            ),
+                        ),
+                    )
                 }
             }
-            .sumOf { (it.readingTime * 1000).toLong() }
+        }
+    }
 
-        return mangaValue + novelValue
+    fun previewSessionRelink(targetTitleId: TitleId) {
+        val session = successState()?.selection?.session ?: return
+        if (session.titleId == targetTitleId) return
+        val requestGeneration = sessionRelinkPreviewRequests.invalidate()
+        val request = ImmersionTitleMutationRequest.RelinkSession(
+            sourceTitleId = session.titleId,
+            targetTitleId = targetTitleId,
+            sessionId = session.id,
+        )
+        updateSuccess {
+            it.copy(
+                details = it.details.copy(
+                    sessionRelinkPreview = StatsLoadable(refreshing = true),
+                ),
+            )
+        }
+        screenModelScope.launch {
+            val result = runCatching {
+                maintenanceRepository.previewTitleMutation(request)
+            }
+            if (
+                !sessionRelinkPreviewRequests.isCurrent(requestGeneration) ||
+                successState()?.selection?.session?.id != session.id
+            ) {
+                return@launch
+            }
+            updateSuccess {
+                it.copy(
+                    details = it.details.copy(
+                        sessionRelinkPreview = result.fold(
+                            onSuccess = { preview -> StatsLoadable(preview) },
+                            onFailure = { StatsLoadable(error = true) },
+                        ),
+                    ),
+                )
+            }
+        }
+    }
+
+    fun clearSessionRelinkPreview() {
+        sessionRelinkPreviewRequests.invalidate()
+        updateSuccess {
+            it.copy(
+                details = it.details.copy(sessionRelinkPreview = StatsLoadable()),
+            )
+        }
+    }
+
+    fun applySessionRelink() {
+        val state = successState() ?: return
+        val session = state.selection.session ?: return
+        val preview = state.details.sessionRelinkPreview.value ?: return
+        if (!preview.canApply) return
+        sessionRelinkPreviewRequests.invalidate()
+        updateSuccess {
+            it.copy(
+                details = it.details.copy(
+                    sessionRelinkPreview = it.details.sessionRelinkPreview.refreshing(),
+                ),
+            )
+        }
+        screenModelScope.launch {
+            val result = runCatching {
+                maintenanceRepository.applyTitleMutation(
+                    expectedPreview = preview,
+                    appliedAtEpochMillis = System.currentTimeMillis(),
+                )
+                repairAllDirtyRollups()
+            }
+            if (successState()?.selection?.session?.id != session.id) return@launch
+            result.fold(
+                onSuccess = {
+                    selectSession(null)
+                    refresh()
+                },
+                onFailure = {
+                    updateSuccess { latest ->
+                        latest.copy(
+                            details = latest.details.copy(
+                                sessionRelinkPreview = StatsLoadable(error = true),
+                            ),
+                        )
+                    }
+                },
+            )
+        }
+    }
+
+    fun deleteSession(session: tachiyomi.domain.immersion.model.ImmersionSession) {
+        val expectedPreview = successState()?.details?.sessionDeletionPreview?.value ?: return
+        screenModelScope.launch {
+            val deleted = try {
+                maintenanceRepository.deleteSession(session.id, expectedPreview)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                null
+            }
+            if (deleted == null) {
+                selectSession(session)
+                return@launch
+            }
+            repairAllDirtyRollups()
+            selectSession(null)
+            refresh()
+        }
+    }
+
+    fun searchSources(query: String) {
+        sourceSearchJob?.cancel()
+        val requestGeneration = sourcePagingRequests.invalidate()
+        updateSuccess {
+            it.copy(
+                sourceSearch = query,
+                details = it.details.copy(
+                    sourceSearch = if (query.isBlank()) {
+                        StatsLoadable()
+                    } else {
+                        StatsLoadable(refreshing = true)
+                    },
+                ),
+            )
+        }
+        if (query.isBlank()) {
+            return
+        }
+        sourceSearchJob = screenModelScope.launch {
+            delay(250)
+            val state = successState() ?: return@launch
+            val result = runCatching {
+                analyticsService.sourceSearch(
+                    state.toStatsFilter(),
+                    query,
+                    0,
+                    DETAIL_PAGE_SIZE,
+                )
+            }
+            if (
+                !sourcePagingRequests.isCurrent(requestGeneration) ||
+                successState()?.sourceSearch != query
+            ) {
+                return@launch
+            }
+            updateSuccess {
+                it.copy(
+                    details = it.details.copy(
+                        sourceSearch = result.fold(
+                            onSuccess = { value -> StatsLoadable(value) },
+                            onFailure = { StatsLoadable(error = true) },
+                        ),
+                    ),
+                )
+            }
+        }
+    }
+
+    fun loadMoreWordOccurrences() {
+        val state = successState() ?: return
+        val requestGeneration = wordPagingRequests.snapshot()
+        val word = state.selection.word ?: return
+        val currentLoadable = state.details.wordOccurrences
+        if (currentLoadable.refreshing) return
+        val currentResult = currentLoadable.value ?: return
+        val offset = currentResult.value.nextOffset ?: return
+        updateSuccess {
+            it.copy(
+                details = it.details.copy(
+                    wordOccurrences = it.details.wordOccurrences.refreshing(),
+                ),
+            )
+        }
+        screenModelScope.launch {
+            val result = runCatching {
+                analyticsService.wordOccurrences(
+                    filter = state.toStatsFilter(),
+                    wordId = word.id,
+                    offset = offset,
+                    limit = DETAIL_PAGE_SIZE,
+                )
+            }
+            if (
+                !wordPagingRequests.isCurrent(requestGeneration) ||
+                successState()?.selection?.word?.id != word.id
+            ) {
+                return@launch
+            }
+            updateSuccess { latest ->
+                val nextLoadable = result.fold(
+                    onSuccess = { next ->
+                        StatsLoadable(
+                            next.copy(
+                                value = mergeAnalyticsPages(
+                                    current = currentResult.value,
+                                    next = next.value,
+                                    keyOf = { it.statsOccurrenceKey() },
+                                ),
+                            ),
+                        )
+                    },
+                    onFailure = {
+                        latest.details.wordOccurrences.copy(refreshing = false, error = true)
+                    },
+                )
+                latest.copy(details = latest.details.copy(wordOccurrences = nextLoadable))
+            }
+        }
+    }
+
+    fun loadMoreCharacterOccurrences() {
+        val state = successState() ?: return
+        val requestGeneration = characterPagingRequests.snapshot()
+        val character = state.selection.character ?: return
+        val currentLoadable = state.details.characterOccurrences
+        if (currentLoadable.refreshing) return
+        val currentResult = currentLoadable.value ?: return
+        val offset = currentResult.value.nextOffset ?: return
+        updateSuccess {
+            it.copy(
+                details = it.details.copy(
+                    characterOccurrences = it.details.characterOccurrences.refreshing(),
+                ),
+            )
+        }
+        screenModelScope.launch {
+            val result = runCatching {
+                analyticsService.characterOccurrences(
+                    filter = state.toStatsFilter(),
+                    codePoint = character.codePoint,
+                    offset = offset,
+                    limit = DETAIL_PAGE_SIZE,
+                )
+            }
+            if (
+                !characterPagingRequests.isCurrent(requestGeneration) ||
+                successState()?.selection?.character?.codePoint != character.codePoint
+            ) {
+                return@launch
+            }
+            updateSuccess { latest ->
+                val nextLoadable = result.fold(
+                    onSuccess = { next ->
+                        StatsLoadable(
+                            next.copy(
+                                value = mergeAnalyticsPages(
+                                    current = currentResult.value,
+                                    next = next.value,
+                                    keyOf = { it.statsOccurrenceKey() },
+                                ),
+                            ),
+                        )
+                    },
+                    onFailure = {
+                        latest.details.characterOccurrences.copy(refreshing = false, error = true)
+                    },
+                )
+                latest.copy(details = latest.details.copy(characterOccurrences = nextLoadable))
+            }
+        }
+    }
+
+    fun loadMoreSourceSearch() {
+        val state = successState() ?: return
+        val requestGeneration = sourcePagingRequests.snapshot()
+        val query = state.sourceSearch.takeIf(String::isNotBlank) ?: return
+        val currentLoadable = state.details.sourceSearch
+        if (currentLoadable.refreshing) return
+        val currentResult = currentLoadable.value ?: return
+        val offset = currentResult.value.nextOffset ?: return
+        updateSuccess {
+            it.copy(
+                details = it.details.copy(
+                    sourceSearch = it.details.sourceSearch.refreshing(),
+                ),
+            )
+        }
+        screenModelScope.launch {
+            val result = runCatching {
+                analyticsService.sourceSearch(
+                    filter = state.toStatsFilter(),
+                    query = query,
+                    offset = offset,
+                    limit = DETAIL_PAGE_SIZE,
+                )
+            }
+            if (
+                !sourcePagingRequests.isCurrent(requestGeneration) ||
+                successState()?.sourceSearch != query
+            ) {
+                return@launch
+            }
+            updateSuccess { latest ->
+                val nextLoadable = result.fold(
+                    onSuccess = { next ->
+                        StatsLoadable(
+                            next.copy(
+                                value = mergeAnalyticsPages(
+                                    current = currentResult.value,
+                                    next = next.value,
+                                    keyOf = { it.statsOccurrenceKey() },
+                                ),
+                            ),
+                        )
+                    },
+                    onFailure = {
+                        latest.details.sourceSearch.copy(refreshing = false, error = true)
+                    },
+                )
+                latest.copy(details = latest.details.copy(sourceSearch = nextLoadable))
+            }
+        }
+    }
+
+    fun loadMoreVocabulary() {
+        val state = successState() ?: return
+        val requestGeneration = sectionPagingRequests.snapshot()
+        val currentLoadable = state.sections.vocabulary
+        if (currentLoadable.refreshing) return
+        val currentResult = currentLoadable.value ?: return
+        val offset = currentResult.value.nextOffset ?: return
+        updateSuccess {
+            it.copy(
+                sections = it.sections.copy(vocabulary = it.sections.vocabulary.refreshing()),
+            )
+        }
+        screenModelScope.launch {
+            val result = runCatching {
+                analyticsService.vocabulary(
+                    state.toStatsFilter(),
+                    state.vocabularyFilter.copy(
+                        searchQuery = state.vocabularySearch.takeIf(String::isNotBlank),
+                    ),
+                    state.vocabularySort,
+                    offset,
+                    PAGE_SIZE,
+                )
+            }
+            if (!sectionPagingRequests.isCurrent(requestGeneration)) return@launch
+            updateSuccess { latest ->
+                if (result.isFailure) {
+                    latest.copy(
+                        sections = latest.sections.copy(
+                            vocabulary = latest.sections.vocabulary.copy(refreshing = false, error = true),
+                        ),
+                    )
+                } else {
+                    val next = result.getOrThrow()
+                    val mergedPage = mergeAnalyticsPages(
+                        current = currentResult.value,
+                        next = next.value,
+                        keyOf = { it.id },
+                    )
+                    latest.copy(
+                        sections = latest.sections.copy(
+                            vocabulary = StatsLoadable(next.copy(value = mergedPage)),
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    fun loadMoreTitles() {
+        val state = successState() ?: return
+        val requestGeneration = titlePagingRequests.snapshot()
+        val currentLoadable = state.sections.titles
+        if (currentLoadable.refreshing) return
+        val currentResult = currentLoadable.value ?: return
+        val offset = currentResult.value.nextOffset ?: return
+        updateSuccess {
+            it.copy(
+                sections = it.sections.copy(titles = it.sections.titles.refreshing()),
+            )
+        }
+        screenModelScope.launch {
+            val result = runCatching {
+                val next = analyticsService.titlePage(
+                    filter = state.toStatsFilter(),
+                    titleFilter = state.titleFilter.copy(
+                        searchQuery = state.titleSearch.takeIf(String::isNotBlank),
+                    ),
+                    sort = state.titleSort,
+                    offset = offset,
+                    limit = PAGE_SIZE,
+                )
+                next to titleMetadataResolver.resolve(next.value.items)
+            }
+            if (!titlePagingRequests.isCurrent(requestGeneration)) return@launch
+            updateSuccess { latest ->
+                result.fold(
+                    onSuccess = { (next, metadata) ->
+                        latest.copy(
+                            sections = latest.sections.copy(
+                                titles = StatsLoadable(
+                                    next.copy(
+                                        value = mergeAnalyticsPages(
+                                            current = currentResult.value,
+                                            next = next.value,
+                                            keyOf = { it.titleId },
+                                        ),
+                                    ),
+                                ),
+                            ),
+                            titleMetadata = latest.titleMetadata + metadata,
+                        )
+                    },
+                    onFailure = {
+                        latest.copy(
+                            sections = latest.sections.copy(
+                                titles = latest.sections.titles.copy(
+                                    refreshing = false,
+                                    error = true,
+                                ),
+                            ),
+                        )
+                    },
+                )
+            }
+        }
+    }
+
+    fun loadMoreTitleSessions() {
+        val state = successState() ?: return
+        val title = state.selection.title ?: return
+        val requestGeneration = titleSessionPagingRequests.snapshot()
+        val currentLoadable = state.details.titleSessions
+        if (currentLoadable.refreshing) return
+        val currentResult = currentLoadable.value ?: return
+        val cursor = currentResult.value.nextCursor ?: return
+        updateSuccess {
+            it.copy(
+                details = it.details.copy(
+                    titleSessions = it.details.titleSessions.refreshing(),
+                ),
+            )
+        }
+        screenModelScope.launch {
+            val result = runCatching {
+                analyticsService.sessions(
+                    filter = state.toStatsFilter().copy(
+                        titleIds = setOf(title.titleId),
+                        comparisonRange = null,
+                    ),
+                    cursor = cursor,
+                    limit = DETAIL_PAGE_SIZE,
+                )
+            }
+            if (
+                !titleSessionPagingRequests.isCurrent(requestGeneration) ||
+                successState()?.selection?.title?.titleId != title.titleId
+            ) {
+                return@launch
+            }
+            updateSuccess { latest ->
+                val nextLoadable = result.fold(
+                    onSuccess = { next ->
+                        StatsLoadable(
+                            next.copy(
+                                value = SessionPage(
+                                    items = (currentResult.value.items + next.value.items)
+                                        .distinctBy { it.id },
+                                    nextCursor = next.value.nextCursor,
+                                ),
+                            ),
+                        )
+                    },
+                    onFailure = {
+                        latest.details.titleSessions.copy(refreshing = false, error = true)
+                    },
+                )
+                latest.copy(details = latest.details.copy(titleSessions = nextLoadable))
+            }
+        }
+    }
+
+    fun loadMoreTitleCompletedUnits() {
+        val state = successState() ?: return
+        val title = state.selection.title ?: return
+        val requestGeneration = titleUnitPagingRequests.snapshot()
+        val currentLoadable = state.details.titleCompletedUnits
+        if (currentLoadable.refreshing) return
+        val currentResult = currentLoadable.value ?: return
+        val offset = currentResult.value.nextOffset ?: return
+        updateSuccess {
+            it.copy(
+                details = it.details.copy(
+                    titleCompletedUnits = it.details.titleCompletedUnits.refreshing(),
+                ),
+            )
+        }
+        screenModelScope.launch {
+            val result = runCatching {
+                analyticsService.titleCompletedUnits(
+                    filter = state.toStatsFilter(),
+                    titleId = title.titleId,
+                    offset = offset,
+                    limit = DETAIL_PAGE_SIZE,
+                )
+            }
+            if (
+                !titleUnitPagingRequests.isCurrent(requestGeneration) ||
+                successState()?.selection?.title?.titleId != title.titleId
+            ) {
+                return@launch
+            }
+            updateSuccess { latest ->
+                val nextLoadable = result.fold(
+                    onSuccess = { next ->
+                        StatsLoadable(
+                            next.copy(
+                                value = mergeAnalyticsPages(
+                                    current = currentResult.value,
+                                    next = next.value,
+                                    keyOf = { it.titleId to it.completionUnitId },
+                                ),
+                            ),
+                        )
+                    },
+                    onFailure = {
+                        latest.details.titleCompletedUnits.copy(refreshing = false, error = true)
+                    },
+                )
+                latest.copy(details = latest.details.copy(titleCompletedUnits = nextLoadable))
+            }
+        }
+    }
+
+    fun loadMoreTitleSources() {
+        val state = successState() ?: return
+        val title = state.selection.title ?: return
+        val requestGeneration = titleSourcePagingRequests.snapshot()
+        val currentLoadable = state.details.titleSources
+        if (currentLoadable.refreshing) return
+        val currentResult = currentLoadable.value ?: return
+        val offset = currentResult.value.nextOffset ?: return
+        updateSuccess {
+            it.copy(
+                details = it.details.copy(
+                    titleSources = it.details.titleSources.refreshing(),
+                ),
+            )
+        }
+        screenModelScope.launch {
+            val result = runCatching {
+                analyticsService.titleSourceOccurrences(
+                    filter = state.toStatsFilter(),
+                    titleId = title.titleId,
+                    offset = offset,
+                    limit = DETAIL_PAGE_SIZE,
+                )
+            }
+            if (
+                !titleSourcePagingRequests.isCurrent(requestGeneration) ||
+                successState()?.selection?.title?.titleId != title.titleId
+            ) {
+                return@launch
+            }
+            updateSuccess { latest ->
+                val nextLoadable = result.fold(
+                    onSuccess = { next ->
+                        StatsLoadable(
+                            next.copy(
+                                value = mergeAnalyticsPages(
+                                    current = currentResult.value,
+                                    next = next.value,
+                                    keyOf = { it.statsOccurrenceKey() },
+                                ),
+                            ),
+                        )
+                    },
+                    onFailure = {
+                        latest.details.titleSources.copy(refreshing = false, error = true)
+                    },
+                )
+                latest.copy(details = latest.details.copy(titleSources = nextLoadable))
+            }
+        }
+    }
+
+    fun loadMoreCharacters() {
+        val state = successState() ?: return
+        val requestGeneration = sectionPagingRequests.snapshot()
+        val currentLoadable = state.sections.characters
+        if (currentLoadable.refreshing) return
+        val currentResult = currentLoadable.value ?: return
+        val offset = currentResult.value.nextOffset ?: return
+        updateSuccess {
+            it.copy(
+                sections = it.sections.copy(characters = it.sections.characters.refreshing()),
+            )
+        }
+        screenModelScope.launch {
+            val result = runCatching {
+                analyticsService.characters(
+                    state.toStatsFilter(),
+                    state.characterSort,
+                    offset,
+                    PAGE_SIZE,
+                    state.characterSearch.takeIf(String::isNotBlank),
+                    state.characterFilter,
+                )
+            }
+            if (!sectionPagingRequests.isCurrent(requestGeneration)) return@launch
+            updateSuccess { latest ->
+                if (result.isFailure) {
+                    latest.copy(
+                        sections = latest.sections.copy(
+                            characters = latest.sections.characters.copy(refreshing = false, error = true),
+                        ),
+                    )
+                } else {
+                    val next = result.getOrThrow()
+                    val mergedPage = mergeAnalyticsPages(
+                        current = currentResult.value,
+                        next = next.value,
+                        keyOf = { it.codePoint },
+                    )
+                    latest.copy(
+                        sections = latest.sections.copy(
+                            characters = StatsLoadable(next.copy(value = mergedPage)),
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    fun loadMoreCharacterContainingWords() {
+        val state = successState() ?: return
+        val requestGeneration = characterPagingRequests.snapshot()
+        val character = state.selection.character ?: return
+        val currentLoadable = state.details.characterContainingWords
+        if (currentLoadable.refreshing) return
+        val currentResult = currentLoadable.value ?: return
+        val offset = currentResult.value.nextOffset ?: return
+        updateSuccess {
+            it.copy(
+                details = it.details.copy(
+                    characterContainingWords = it.details.characterContainingWords.refreshing(),
+                ),
+            )
+        }
+        screenModelScope.launch {
+            val result = runCatching {
+                analyticsService.characterContainingWords(
+                    filter = state.toStatsFilter(),
+                    codePoint = character.codePoint,
+                    sort = AnalyticsSort.MOST_OCCURRENCES,
+                    offset = offset,
+                    limit = DETAIL_PAGE_SIZE,
+                )
+            }
+            if (
+                !characterPagingRequests.isCurrent(requestGeneration) ||
+                successState()?.selection?.character?.codePoint != character.codePoint
+            ) {
+                return@launch
+            }
+            updateSuccess { latest ->
+                if (result.isFailure) {
+                    latest.copy(
+                        details = latest.details.copy(
+                            characterContainingWords = latest.details.characterContainingWords.copy(
+                                refreshing = false,
+                                error = true,
+                            ),
+                        ),
+                    )
+                } else {
+                    val next = result.getOrThrow()
+                    val mergedPage = mergeAnalyticsPages(
+                        current = currentResult.value,
+                        next = next.value,
+                        keyOf = { it.id },
+                    )
+                    latest.copy(
+                        details = latest.details.copy(
+                            characterContainingWords = StatsLoadable(next.copy(value = mergedPage)),
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    fun loadMoreSessions() {
+        val state = successState() ?: return
+        val requestGeneration = sectionPagingRequests.snapshot()
+        val currentLoadable = state.sections.sessions
+        if (currentLoadable.refreshing) return
+        val currentResult = currentLoadable.value ?: return
+        val cursor = currentResult.value.nextCursor ?: return
+        updateSuccess {
+            it.copy(
+                sections = it.sections.copy(sessions = it.sections.sessions.refreshing()),
+            )
+        }
+        screenModelScope.launch {
+            val result = runCatching {
+                analyticsService.sessions(
+                    state.toStatsFilter(),
+                    cursor,
+                    PAGE_SIZE,
+                )
+            }
+            if (!sectionPagingRequests.isCurrent(requestGeneration)) return@launch
+            updateSuccess { latest ->
+                if (result.isFailure) {
+                    latest.copy(
+                        sections = latest.sections.copy(
+                            sessions = latest.sections.sessions.copy(refreshing = false, error = true),
+                        ),
+                    )
+                } else {
+                    val next = result.getOrThrow()
+                    val mergedPage = SessionPage(
+                        items = (currentResult.value.items + next.value.items).distinctBy { it.id },
+                        nextCursor = next.value.nextCursor,
+                    )
+                    latest.copy(
+                        sections = latest.sections.copy(
+                            sessions = StatsLoadable(next.copy(value = mergedPage)),
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    fun saveGoal(values: StatsGoalEditorValues, existing: ImmersionGoal?): Boolean {
+        val state = successState() ?: return false
+        if (!state.goalsEnabled) return false
+        val now = System.currentTimeMillis()
+        val today = ImmersionLocalDate.from(today())
+        val goal = when {
+            existing == null -> createStatsGoal(
+                id = UUID.randomUUID().toString(),
+                values = values,
+                scope = StatsGoalScope(
+                    mediaKind = state.filter.mediaKind,
+                    profileId = state.filter.profileId,
+                    languageTag = state.profileLanguageCode()
+                        ?.takeIf(String::isNotBlank)
+                        ?.let { runCatching { LanguageTag.from(it) }.getOrNull() },
+                    titleId = state.filter.titleId
+                        ?.let { runCatching { TitleId(it) }.getOrNull() }
+                        ?: fixedTitleId,
+                ),
+                nowEpochMillis = now,
+            )
+            values.editMode == StatsGoalEditMode.RESTART_HISTORY -> restartStatsGoalHistory(
+                existing = existing,
+                replacementId = UUID.randomUUID().toString(),
+                values = values,
+                restartDate = today,
+                nowEpochMillis = now,
+            )
+            else -> editStatsGoalProspectively(
+                existing = existing,
+                values = values,
+                prospectiveStartDate = today,
+                nowEpochMillis = now,
+            )
+        } ?: return false
+        screenModelScope.launch {
+            if (existing != null && values.editMode == StatsGoalEditMode.RESTART_HISTORY) {
+                analyticsService.restartGoal(
+                    expectedGoal = existing,
+                    replacementGoal = goal,
+                    restartedAtEpochMillis = now,
+                )
+            } else {
+                analyticsService.saveGoal(goal)
+            }
+            refresh()
+        }
+        return true
+    }
+
+    fun archiveGoal(goal: ImmersionGoal) {
+        if (successState()?.goalsEnabled != true) return
+        screenModelScope.launch {
+            analyticsService.saveGoal(
+                goal.copy(
+                    state = "ARCHIVED",
+                    updatedAtEpochMillis = System.currentTimeMillis(),
+                ),
+            )
+            refresh()
+        }
+    }
+
+    fun checkInGoal(goalId: String, note: String?) {
+        if (successState()?.goalsEnabled != true) return
+        screenModelScope.launch {
+            analyticsService.checkIn(
+                goalId = goalId,
+                date = ImmersionLocalDate.from(today()),
+                completed = true,
+                note = note?.trim()?.takeIf(String::isNotEmpty),
+            )
+            refresh()
+        }
+    }
+
+    private fun updateFilter(transform: (StatsFilterState) -> StatsFilterState) {
+        clearPersistedSelection()
+        sourceSearchJob?.cancel()
+        wordPagingRequests.invalidate()
+        characterPagingRequests.invalidate()
+        sourcePagingRequests.invalidate()
+        sessionDetailRequests.invalidate()
+        titleDetailRequests.invalidate()
+        titleAcquisitionRequests.invalidate()
+        titleSessionPagingRequests.invalidate()
+        titleUnitPagingRequests.invalidate()
+        titleSourcePagingRequests.invalidate()
+        updateSuccess {
+            it.copy(
+                filter = transform(it.filter),
+                sourceSearch = "",
+                selection = StatsSelection(),
+                selectedVocabularyWordIds = emptySet(),
+                vocabularyMutationError = false,
+                details = StatsDetails(),
+            )
+        }
+        refresh()
+    }
+
+    private fun restorePersistedSelection() {
+        val state = successState() ?: return
+        when (state.selectedTab) {
+            StatsTab.TITLES -> preferences.dashboardSelectedTitleId().get()
+                .takeIf(String::isNotBlank)
+                ?.let { selectedId ->
+                    state.sections.titles.value?.value?.items
+                        ?.find { it.titleId.value == selectedId }
+                        ?.let(::selectTitle)
+                }
+            StatsTab.VOCABULARY -> preferences.dashboardSelectedWordId().get()
+                .takeIf(String::isNotBlank)
+                ?.let { selectedId ->
+                    state.sections.vocabulary.value?.value?.items
+                        ?.find { it.id == selectedId }
+                        ?.let(::selectWord)
+                }
+            StatsTab.CHARACTERS -> preferences.dashboardSelectedCharacter().get()
+                .takeIf { it >= 0 }
+                ?.let { selectedCodePoint ->
+                    state.sections.characters.value?.value?.items
+                        ?.find { it.codePoint.value == selectedCodePoint }
+                        ?.let(::selectCharacter)
+                }
+            StatsTab.SESSIONS -> preferences.dashboardSelectedSessionId().get()
+                .takeIf(String::isNotBlank)
+                ?.let { selectedId ->
+                    state.sections.sessions.value?.value?.items
+                        ?.find { it.id.value == selectedId }
+                        ?.let(::selectSession)
+                }
+            StatsTab.OVERVIEW,
+            StatsTab.ACTIVITY,
+            StatsTab.GOALS,
+            StatsTab.ANKI,
+            -> Unit
+        }
+    }
+
+    private fun clearPersistedSelection() {
+        preferences.dashboardSelectedTitleId().delete()
+        preferences.dashboardSelectedWordId().delete()
+        preferences.dashboardSelectedCharacter().delete()
+        preferences.dashboardSelectedSessionId().delete()
+    }
+
+    private fun loadOptionalSections(tab: StatsTab) {
+        val state = successState() ?: return
+        val generation = refreshGeneration.get()
+        val filter = state.toStatsFilter()
+        when (tab) {
+            StatsTab.ACTIVITY -> {
+                val loadTemporal = state.sections.temporalActivity.value == null &&
+                    !state.sections.temporalActivity.refreshing
+                val loadTitleTrends = state.sections.titleTrends.value == null &&
+                    !state.sections.titleTrends.refreshing
+                if (!loadTemporal && !loadTitleTrends) return
+                updateSuccess {
+                    it.copy(
+                        sections = it.sections.copy(
+                            temporalActivity = if (loadTemporal) {
+                                it.sections.temporalActivity.refreshing()
+                            } else {
+                                it.sections.temporalActivity
+                            },
+                            titleTrends = if (loadTitleTrends) {
+                                it.sections.titleTrends.refreshing()
+                            } else {
+                                it.sections.titleTrends
+                            },
+                        ),
+                    )
+                }
+                screenModelScope.launch {
+                    coroutineScope {
+                        buildList {
+                            if (loadTemporal) {
+                                add(async { loadTemporalActivity(generation, filter) })
+                            }
+                            if (loadTitleTrends) {
+                                add(
+                                    async {
+                                        loadTitleTrends(
+                                            generation,
+                                            filter,
+                                            state.trendScale,
+                                            state.titleTrendSelection,
+                                        )
+                                    },
+                                )
+                            }
+                        }.awaitAll()
+                    }
+                }
+            }
+            StatsTab.VOCABULARY -> {
+                if (
+                    state.sections.vocabularyGrowth.value != null ||
+                    state.sections.vocabularyGrowth.refreshing
+                ) {
+                    return
+                }
+                updateSuccess {
+                    it.copy(
+                        sections = it.sections.copy(
+                            vocabularyGrowth = it.sections.vocabularyGrowth.refreshing(),
+                        ),
+                    )
+                }
+                screenModelScope.launch {
+                    loadVocabularyGrowth(generation, filter, state.trendScale)
+                }
+            }
+            else -> Unit
+        }
+    }
+
+    private suspend fun loadOverview(generation: Long, filter: StatsFilter) =
+        updateSection(generation, { it.overview }, { sections, result ->
+            sections.copy(overview = result)
+        }) {
+            analyticsService.overview(filter)
+        }
+
+    private suspend fun loadHeatmap(generation: Long, filter: StatsFilter) =
+        updateSection(generation, { it.heatmap }, { sections, result ->
+            sections.copy(heatmap = result)
+        }) {
+            analyticsService.trends(
+                filter.forHeatmap(today()),
+                AnalyticsBucketScale.DAY,
+            )
+        }
+
+    private suspend fun loadTrends(
+        generation: Long,
+        filter: StatsFilter,
+        scale: AnalyticsBucketScale,
+    ) = updateSection(generation, { it.trends }, { sections, result ->
+        sections.copy(trends = result)
+    }) {
+        analyticsService.trends(filter, scale)
+    }
+
+    private suspend fun loadTemporalActivity(
+        generation: Long,
+        filter: StatsFilter,
+    ) = updateSection(generation, { it.temporalActivity }, { sections, result ->
+        sections.copy(temporalActivity = result)
+    }) {
+        analyticsService.temporalActivity(filter)
+    }
+
+    private suspend fun loadTitleTrends(
+        generation: Long,
+        filter: StatsFilter,
+        scale: AnalyticsBucketScale,
+        selection: AnalyticsTitleSeriesSelection,
+    ) {
+        val result = runCatching {
+            analyticsService.titleTrends(
+                filter = filter,
+                scale = scale,
+                selection = selection,
+                maxTitles = TITLE_TREND_LIMIT,
+            )
+        }
+        if (refreshGeneration.get() != generation) return
+        updateSuccess { state ->
+            if (state.titleTrendSelection != selection) return@updateSuccess state
+            val previous = state.sections.titleTrends
+            state.copy(
+                sections = state.sections.copy(
+                    titleTrends = result.fold(
+                        onSuccess = { StatsLoadable(it) },
+                        onFailure = { previous.copy(refreshing = false, error = true) },
+                    ),
+                ),
+            )
+        }
+    }
+
+    private suspend fun loadVocabularyGrowth(
+        generation: Long,
+        filter: StatsFilter,
+        scale: AnalyticsBucketScale,
+    ) = updateSection(generation, { it.vocabularyGrowth }, { sections, result ->
+        sections.copy(vocabularyGrowth = result)
+    }) {
+        analyticsService.vocabularyFirstSeen(filter, scale)
+    }
+
+    private suspend fun loadTitles(
+        generation: Long,
+        filter: StatsFilter,
+        titleFilter: AnalyticsTitleFilter,
+        sort: AnalyticsTitleSort,
+    ) {
+        val searchQuery = successState()?.titleSearch?.takeIf(String::isNotBlank)
+        val result = runCatching {
+            analyticsService.titlePage(
+                filter = filter,
+                titleFilter = titleFilter.copy(searchQuery = searchQuery),
+                sort = sort,
+                offset = 0,
+                limit = PAGE_SIZE,
+            )
+        }
+        val optionResult = runCatching {
+            analyticsService.titles(
+                StatsFilter(),
+                AnalyticsSort.ALPHABETICAL,
+            )
+        }
+        val metadataResult = result.getOrNull()?.let { titles ->
+            runCatching { titleMetadataResolver.resolve(titles.value.items) }
+        }
+        if (refreshGeneration.get() != generation) return
+        updateSuccess { state ->
+            val previous = state.sections.titles
+            val next = result.fold(
+                onSuccess = { StatsLoadable(it) },
+                onFailure = { previous.copy(refreshing = false, error = true) },
+            )
+            state.copy(
+                sections = state.sections.copy(titles = next),
+                titleOptions = optionResult.getOrNull()?.value ?: state.titleOptions,
+                titleMetadata = metadataResult?.getOrNull() ?: state.titleMetadata,
+            )
+        }
+    }
+
+    private suspend fun loadVocabulary(
+        generation: Long,
+        filter: StatsFilter,
+        sort: AnalyticsSort,
+    ) = updateSection(generation, { it.vocabulary }, { sections, result ->
+        sections.copy(vocabulary = result)
+    }) {
+        analyticsService.vocabulary(
+            filter,
+            successState()?.let { state ->
+                state.vocabularyFilter.copy(
+                    searchQuery = state.vocabularySearch.takeIf(String::isNotBlank),
+                )
+            } ?: VocabularyFilter(),
+            sort,
+            0,
+            PAGE_SIZE,
+        )
+    }
+
+    private suspend fun loadCharacters(
+        generation: Long,
+        filter: StatsFilter,
+        characterFilter: AnalyticsCharacterFilter,
+        sort: AnalyticsSort,
+    ) = updateSection(generation, { it.characters }, { sections, result ->
+        sections.copy(characters = result)
+    }) {
+        analyticsService.characters(
+            filter,
+            sort,
+            0,
+            PAGE_SIZE,
+            successState()?.characterSearch?.takeIf(String::isNotBlank),
+            characterFilter,
+        )
+    }
+
+    private suspend fun loadCharacterSummary(
+        generation: Long,
+        filter: StatsFilter,
+        characterFilter: AnalyticsCharacterFilter,
+    ) = updateSection(generation, { it.characterSummary }, { sections, result ->
+        sections.copy(characterSummary = result)
+    }) {
+        analyticsService.characterSummary(filter, characterFilter)
+    }
+
+    private suspend fun loadSessions(
+        generation: Long,
+        filter: StatsFilter,
+    ) = updateSection(generation, { it.sessions }, { sections, result ->
+        sections.copy(sessions = result)
+    }) {
+        analyticsService.sessions(filter, null, PAGE_SIZE)
+    }
+
+    private suspend fun loadGoals(
+        generation: Long,
+        filter: StatsFilter,
+    ) = updateSection(generation, { it.goals }, { sections, result ->
+        sections.copy(goals = result)
+    }) {
+        analyticsService.goals(filter)
+    }
+
+    private suspend fun loadAnki(
+        generation: Long,
+        filter: StatsFilter,
+    ) = updateSection(generation, { it.anki }, { sections, result ->
+        sections.copy(anki = result)
+    }) {
+        analyticsService.anki(filter)
+    }
+
+    private suspend fun <T> updateSection(
+        generation: Long,
+        current: (StatsSections) -> StatsLoadable<T>,
+        replace: (StatsSections, StatsLoadable<T>) -> StatsSections,
+        query: suspend () -> T,
+    ) {
+        val result = runCatching { query() }
+        if (refreshGeneration.get() != generation) return
+        updateSuccess { state ->
+            val previous = current(state.sections)
+            state.copy(
+                sections = replace(
+                    state.sections,
+                    if (result.isSuccess) {
+                        StatsLoadable(value = result.getOrThrow())
+                    } else {
+                        previous.copy(refreshing = false, error = true)
+                    },
+                ),
+            )
+        }
+    }
+
+    private fun updateSuccess(transform: (StatsScreenState.Success) -> StatsScreenState.Success) {
+        mutableState.update { state ->
+            (state as? StatsScreenState.Success)?.let(transform) ?: state
+        }
+    }
+
+    private suspend fun repairAllDirtyRollups() {
+        while (analyticsService.repairDirtyRollups(ROLLUP_REPAIR_BATCH_SIZE).isNotEmpty()) {
+            // Keep draining: one deleted session can dirty more ranges than a single batch returns.
+        }
+    }
+
+    private fun observeFeatureFlags() {
+        screenModelScope.launch {
+            combine(
+                preferences.goalsEnabled().changes().onStart {
+                    emit(preferences.goalsEnabled().get())
+                },
+                preferences.ankiSyncEnabled().changes().onStart {
+                    emit(preferences.ankiSyncEnabled().get())
+                },
+            ) { goalsEnabled, ankiEnabled -> goalsEnabled to ankiEnabled }
+                .collect { (goalsEnabled, ankiEnabled) ->
+                    val current = successState() ?: return@collect
+                    if (
+                        current.goalsEnabled == goalsEnabled &&
+                        current.ankiEnabled == ankiEnabled
+                    ) {
+                        return@collect
+                    }
+                    val selectedTab = resolveEnabledStatsTab(
+                        current.selectedTab,
+                        goalsEnabled,
+                        ankiEnabled,
+                    )
+                    if (selectedTab != current.selectedTab) {
+                        preferences.dashboardSelectedTab().set(selectedTab.name)
+                        clearPersistedSelection()
+                    }
+                    updateSuccess {
+                        it.copy(
+                            selectedTab = selectedTab,
+                            goalsEnabled = goalsEnabled,
+                            ankiEnabled = ankiEnabled,
+                            sections = it.sections.copy(
+                                goals = if (goalsEnabled) it.sections.goals else StatsLoadable(),
+                                anki = if (ankiEnabled) it.sections.anki else StatsLoadable(),
+                            ),
+                        )
+                    }
+                    refresh()
+                }
+        }
+    }
+
+    private fun successState(): StatsScreenState.Success? = mutableState.value as? StatsScreenState.Success
+
+    private fun StatsScreenState.Success.profileLanguageCode(): String? =
+        profiles.find { it.id == filter.profileId }?.languageCode
+
+    private fun StatsScreenState.Success.toStatsFilter(): StatsFilter {
+        val profile = profiles.find { it.id == filter.profileId }
+        val aggregation = profile
+            ?.ankiStatsMaturityAggregation
+            ?.let { runCatching { AnkiMaturityAggregation.valueOf(it) }.getOrNull() }
+            ?: AnkiMaturityAggregation.MAX_INTERVAL
+        return filter.toStatsFilter(
+            now = today(),
+            profileLanguageCode = profile?.languageCode,
+            ankiMaturityAggregation = aggregation,
+        )
+    }
+
+    private companion object {
+        const val PAGE_SIZE = 100
+        const val DETAIL_PAGE_SIZE = 50
+        const val TITLE_TREND_LIMIT = 5
+        const val ROLLUP_REPAIR_BATCH_SIZE = 366
+        const val CHARACTER_ALL_SCRIPTS_SENTINEL = "*"
     }
 }
+
+internal fun sessionRelinkTargets(
+    session: ImmersionSession,
+    titles: List<tachiyomi.domain.immersion.model.AnalyticsTitleRow>,
+    query: String,
+    limit: Int = 20,
+): List<tachiyomi.domain.immersion.model.AnalyticsTitleRow> {
+    require(limit > 0)
+    val normalizedQuery = query.trim()
+    return titles.asSequence()
+        .filter { title ->
+            title.titleId != session.titleId &&
+                title.mediaKind == session.mediaKind &&
+                title.profileId == session.profileId &&
+                title.languageTag == session.languageTag
+        }
+        .filter { title ->
+            normalizedQuery.isEmpty() ||
+                title.displayTitle.contains(normalizedQuery, ignoreCase = true) ||
+                title.sourceKey.contains(normalizedQuery, ignoreCase = true)
+        }
+        .take(limit)
+        .toList()
+}
+
+private fun StatsSections.refreshing(
+    selectedTab: StatsTab,
+    goalsEnabled: Boolean,
+    ankiEnabled: Boolean,
+): StatsSections = copy(
+    overview = overview.refreshing(),
+    heatmap = heatmap.refreshing(),
+    trends = trends.refreshing(),
+    temporalActivity = if (selectedTab == StatsTab.ACTIVITY) {
+        temporalActivity.refreshing()
+    } else {
+        StatsLoadable()
+    },
+    titleTrends = if (selectedTab == StatsTab.ACTIVITY) {
+        titleTrends.refreshing()
+    } else {
+        StatsLoadable()
+    },
+    titles = titles.refreshing(),
+    vocabulary = vocabulary.refreshing(),
+    vocabularyGrowth = if (selectedTab == StatsTab.VOCABULARY) {
+        vocabularyGrowth.refreshing()
+    } else {
+        StatsLoadable()
+    },
+    characters = characters.refreshing(),
+    characterSummary = characterSummary.refreshing(),
+    sessions = sessions.refreshing(),
+    goals = if (goalsEnabled) goals.refreshing() else StatsLoadable(),
+    anki = if (ankiEnabled) anki.refreshing() else StatsLoadable(),
+)
+
+private inline fun <reified T : Enum<T>> String.enumOrNull(): T? =
+    runCatching { enumValueOf<T>(this) }.getOrNull()
+
+private inline fun <reified T : Enum<T>> String.enumOrDefault(default: T): T =
+    enumOrNull() ?: default
+
+private inline fun <reified T : Enum<T>> Set<String>.decodeEnums(): Set<T> =
+    mapNotNullTo(linkedSetOf()) { value ->
+        runCatching { enumValueOf<T>(value) }.getOrNull()
+    }
+
+private fun Long.positiveOrNull(): Long? = takeIf { it > 0 }
+
+private data class TitleDetailQueryResults(
+    val captureExcluded: Result<Boolean>,
+    val trends: Result<AnalyticsResult<AnalyticsTrends>>,
+    val acquisition: Result<AnalyticsResult<AnalyticsTitleWordAcquisition>>,
+    val sessions: Result<AnalyticsResult<SessionPage>>,
+    val completedUnits: Result<AnalyticsResult<AnalyticsPage<AnalyticsTitleCompletedUnit>>>,
+    val sources: Result<AnalyticsResult<AnalyticsPage<AnalyticsSourceOccurrence>>>,
+)
+
+private fun <T> Result<T>.toStatsLoadable(): StatsLoadable<T> =
+    fold(
+        onSuccess = { StatsLoadable(value = it) },
+        onFailure = { StatsLoadable(error = true) },
+    )
+
+private fun String.toImmersionLocalDateOrNull(): ImmersionLocalDate? =
+    takeIf(String::isNotBlank)
+        ?.let { runCatching { ImmersionLocalDate.parse(it) }.getOrNull() }

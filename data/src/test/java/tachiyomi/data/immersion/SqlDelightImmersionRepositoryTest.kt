@@ -112,6 +112,7 @@ class SqlDelightImmersionRepositoryTest {
             "immersion_title",
             "immersion_session",
             "immersion_source_unit",
+            "immersion_source_fts",
             "immersion_event",
             "immersion_source_exposure",
             "immersion_word",
@@ -139,7 +140,13 @@ class SqlDelightImmersionRepositoryTest {
         )
 
         queryStrings(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'immersion_%'",
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+                AND name LIKE 'immersion_%'
+                AND name NOT LIKE 'immersion_source_fts_%'
+            """.trimIndent(),
         ).toSet() shouldBe expectedTables
         queryLong("SELECT count(*) FROM immersion_rollup_state WHERE scope_key = 'global'") shouldBe 1
     }
@@ -991,6 +998,16 @@ class SqlDelightImmersionRepositoryTest {
             0,
             100,
         ).items.single().occurrenceCount shouldBe 2
+        repository.inventoryMetrics(StatsFilter(dateRange = range)).let {
+            it.uniqueWords shouldBe 1
+            it.newWords shouldBe 1
+            it.distinctCharacters shouldBe 1
+            it.newCharacters shouldBe 1
+        }
+        repository.titleInventoryMetrics(StatsFilter(dateRange = range))[TITLE_ID].let {
+            it?.uniqueWords shouldBe 1
+            it?.distinctCharacters shouldBe 1
+        }
         repository.dirtyRollupRanges(1) shouldBe emptyList()
         queryLong("SELECT count(*) FROM immersion_lifetime_rollup") shouldBe 2
         queryLong("SELECT count(*) FROM immersion_applied_event") shouldBe 2

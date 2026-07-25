@@ -1,0 +1,32 @@
+CREATE VIRTUAL TABLE immersion_source_fts USING fts4(
+    source_unit_id,
+    normalized_text
+);
+
+INSERT INTO immersion_source_fts(source_unit_id, normalized_text)
+SELECT id, raw_text
+FROM immersion_source_unit
+WHERE raw_text IS NOT NULL;
+
+CREATE TRIGGER immersion_source_fts_insert
+AFTER INSERT ON immersion_source_unit
+WHEN new.raw_text IS NOT NULL
+BEGIN
+    INSERT INTO immersion_source_fts(source_unit_id, normalized_text)
+    VALUES (new.id, new.raw_text);
+END;
+
+CREATE TRIGGER immersion_source_fts_update
+AFTER UPDATE OF raw_text ON immersion_source_unit
+BEGIN
+    DELETE FROM immersion_source_fts WHERE source_unit_id = old.id;
+    INSERT INTO immersion_source_fts(source_unit_id, normalized_text)
+    SELECT new.id, new.raw_text
+    WHERE new.raw_text IS NOT NULL;
+END;
+
+CREATE TRIGGER immersion_source_fts_delete
+AFTER DELETE ON immersion_source_unit
+BEGIN
+    DELETE FROM immersion_source_fts WHERE source_unit_id = old.id;
+END;

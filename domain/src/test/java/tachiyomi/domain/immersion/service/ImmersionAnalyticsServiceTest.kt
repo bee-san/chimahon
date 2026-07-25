@@ -3,13 +3,16 @@ package tachiyomi.domain.immersion.service
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
 import io.mockk.coEvery
+import io.mockk.coJustRun
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import tachiyomi.domain.immersion.model.AnalyticsBucketScale
 import tachiyomi.domain.immersion.model.AnalyticsDataQuality
+import tachiyomi.domain.immersion.model.AnalyticsInventoryMetrics
 import tachiyomi.domain.immersion.model.CharacterVolume
 import tachiyomi.domain.immersion.model.ImmersionDailyRollup
+import tachiyomi.domain.immersion.model.ImmersionGoal
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
 import tachiyomi.domain.immersion.model.LanguageTag
 import tachiyomi.domain.immersion.model.LocalDateRange
@@ -72,8 +75,53 @@ class ImmersionAnalyticsServiceTest {
         overview.streak.longestDays shouldBe 2
     }
 
+    @Test
+    fun `daily goals apply weekday multipliers and rest days without breaking streaks`() = runTest {
+        val range = LocalDateRange(date("2026-07-24"), date("2026-07-26"))
+        stub(
+            listOf(
+                rollup("2026-07-24", 100),
+                rollup("2026-07-25", 50),
+            ),
+        )
+        coEvery { goalRepository.getGoals() } returns listOf(
+            ImmersionGoal(
+                id = "daily-characters",
+                type = "PERPETUAL_DAILY",
+                metric = "gross_characters",
+                target = 100.0,
+                period = "DAILY",
+                startDate = range.start,
+                endDate = null,
+                mediaKind = null,
+                profileId = null,
+                languageTag = null,
+                titleId = null,
+                weekdayMultipliers = "SATURDAY=0.5,SUNDAY=0",
+                restDayPolicy = "SKIP",
+                state = "ACTIVE",
+                createdAtEpochMillis = 1,
+                updatedAtEpochMillis = 1,
+            ),
+        )
+        coEvery { goalRepository.getCheckIns(any()) } returns emptyList()
+        coEvery { goalRepository.getAchievements(any()) } returns emptyList()
+        coJustRun { goalRepository.recordAchievement(any()) }
+        val service = ImmersionAnalyticsService(repository, goalRepository)
+
+        val progress = service.goals(StatsFilter(dateRange = range)).value.single()
+
+        progress.achieved shouldBe 150.0
+        progress.targetToDate shouldBe 150.0
+        progress.currentStreakDays shouldBe 2
+        progress.longestStreakDays shouldBe 2
+        progress.isRestDay shouldBe true
+    }
+
     private fun stub(rows: List<ImmersionDailyRollup>) {
         coEvery { repository.dataQuality(any(), any()) } returns AnalyticsDataQuality()
+        coEvery { repository.inventoryMetrics(any()) } returns AnalyticsInventoryMetrics()
+        coEvery { repository.titleInventoryMetrics(any()) } returns emptyMap()
         coEvery { repository.availableDateRange(any()) } returns LocalDateRange(
             rows.minOf { it.date },
             rows.maxOf { it.date },
