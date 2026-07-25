@@ -1,5 +1,8 @@
 package eu.kanade.tachiyomi.ui.reader.viewer
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.graphics.Bitmap
 import android.os.Build
 import android.util.Log
@@ -62,7 +65,15 @@ import chimahon.KanjiResult
 import chimahon.LookupResult
 import chimahon.MediaInfo
 import chimahon.anki.AnkiCardCreator
+import chimahon.anki.AnkiMediaNaming
+import chimahon.anki.AnkiMediaRequest
+import chimahon.anki.AnkiMediaSource
+import chimahon.anki.AnkiMediaWarning
 import chimahon.anki.AnkiResult
+import chimahon.anki.AnkiScreenshotMode
+import chimahon.anki.AnkiScreenshotPreparation
+import chimahon.anki.LazyAnkiMediaProvider
+import chimahon.anki.LazyAnkiScreenshotProvider
 import chimahon.util.ImageEncoder
 import eu.kanade.domain.ui.UiPreferences
 import eu.kanade.domain.ui.model.ThemeMode
@@ -143,6 +154,11 @@ fun OcrLookupPopup(
     screenshot: Bitmap? = null,
     onRequestScreenshot: (suspend () -> Bitmap?)? = null,
     onRequestSentenceAudio: (suspend () -> ByteArray?)? = null,
+    mediaRequest: AnkiMediaRequest? = null,
+    miningBusy: Boolean = false,
+    launchMiningJob: ((suspend () -> Unit) -> Boolean)? = null,
+    onMiningBusy: () -> Unit = {},
+    onAnkiMediaWarnings: (List<AnkiMediaWarning>) -> Unit = {},
     onCropTriggered: ((Long, Int?) -> Unit)? = null,
     initialLookupDeferred: kotlinx.coroutines.Deferred<chimahon.DictionaryRepository.LookupResult2>? = null,
     initialEntryJsons: List<String>? = null,
@@ -555,6 +571,93 @@ fun OcrLookupPopup(
         }
     }
 
+    fun submitMining(block: suspend () -> Unit) {
+        if (miningBusy) {
+            onMiningBusy()
+            return
+        }
+        val launcher = launchMiningJob
+        if (launcher != null) {
+            if (!launcher(block)) {
+                onMiningBusy()
+            }
+        } else {
+            miningScope.launch { block() }
+        }
+    }
+
+    fun legacyLazyMediaRequest(includeScreenshot: Boolean): AnkiMediaRequest? {
+        if (mediaRequest != null) return mediaRequest
+
+        val screenshotMode = AnkiScreenshotMode.fromStorageValue(cropMode)
+        val requestScreenshot = onRequestScreenshot
+        val screenshotProvider = if (
+            includeScreenshot &&
+            screenshotFieldMapped &&
+            screenshotMode != AnkiScreenshotMode.NONE &&
+            requestScreenshot != null
+        ) {
+            LazyAnkiScreenshotProvider {
+                val source = try {
+                    requestScreenshot()?.let { bitmap ->
+                        try {
+                            ImageEncoder.encode(bitmap)
+                                .bytes
+                                .takeIf(ByteArray::isNotEmpty)
+                                ?.let { bytes ->
+                                    AnkiMediaSource.Bytes(
+                                        data = bytes,
+                                        preferredBaseName = "chimahon_screenshot_${AnkiMediaNaming.sha256(bytes)}",
+                                        extension = "webp",
+                                    )
+                                }
+                        } finally {
+                            bitmap.recycle()
+                        }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                }
+                if (screenshotMode == AnkiScreenshotMode.ANIMATED_SCENE) {
+                    AnkiScreenshotPreparation.ExpectedNonVideo(source)
+                } else {
+                    AnkiScreenshotPreparation.Still(source)
+                }
+            }
+        } else {
+            null
+        }
+
+        val requestSentenceAudio = onRequestSentenceAudio
+        val sentenceAudioProvider = if (
+            sentenceAudioFieldMapped &&
+            requestSentenceAudio != null
+        ) {
+            LazyAnkiMediaProvider {
+                requestSentenceAudio()
+                    ?.takeIf(ByteArray::isNotEmpty)
+                    ?.let { bytes ->
+                        AnkiMediaSource.Bytes(
+                            data = bytes,
+                            preferredBaseName = "chimahon_sentence_${AnkiMediaNaming.sha256(bytes)}",
+                            extension = "m4a",
+                        )
+                    }
+            }
+        } else {
+            null
+        }
+
+        if (screenshotProvider == null && sentenceAudioProvider == null) return null
+        return AnkiMediaRequest(
+            screenshotMode = screenshotMode,
+            screenshotProvider = screenshotProvider,
+            sentenceAudioProvider = sentenceAudioProvider,
+        )
+    }
+
     fun performAnkiLookup(
         index: Int,
         glossaryIndex: Int?,
@@ -586,12 +689,8 @@ fun OcrLookupPopup(
         val shouldUseCropMode = screenshotFieldMapped && cropMode == "crop" && onCropTriggered != null
 
         if (shouldUseCropMode) {
-            miningScope.launch {
-                val sentenceAudioBytes = if (sentenceAudioFieldMapped) {
-                    onRequestSentenceAudio?.invoke()
-                } else {
-                    null
-                }
+            submitMining {
+                val effectiveMediaRequest = legacyLazyMediaRequest(includeScreenshot = false)
                 val ankiResult = AnkiCardCreator.addToAnki(
                     context = context,
                     result = result,
@@ -605,7 +704,6 @@ fun OcrLookupPopup(
                     sentence = miningSentence,
                     offset = miningOffset,
                     media = mediaInfo,
-                    sentenceAudioBytes = sentenceAudioBytes,
                     glossaryIndex = glossaryIndex,
                     selection = result.matched,
                     selectedDict = selectedDict,
@@ -616,9 +714,14 @@ fun OcrLookupPopup(
                     syncOnCreate = ankiSyncOnCreate,
                     profileId = activeProfile.id,
                     titleId = titleId,
+                    mediaRequest = effectiveMediaRequest,
                 )
                 if (ankiResult is AnkiResult.Success || ankiResult is AnkiResult.CardExists || ankiResult is AnkiResult.OpenCard) {
                     withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        if (!context.canReceiveMiningUi()) return@withContext
+                        if (ankiResult is AnkiResult.Success) {
+                            onAnkiMediaWarnings(ankiResult.warnings)
+                        }
                         when (ankiResult) {
                             is AnkiResult.Success -> {
                                 updateStatus(result.term.expression)
@@ -633,34 +736,31 @@ fun OcrLookupPopup(
                                 updateStatus(result.term.expression)
                                 chimahon.anki.AnkiDroidBridge(context).guiEditNote(ankiResult.noteId)
                             }
+                            AnkiResult.Cancelled -> Unit
                             else -> {}
                         }
                     }
                 } else {
                     withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        if (!context.canReceiveMiningUi()) return@withContext
+                        if (ankiResult is AnkiResult.Error) {
+                            onAnkiMediaWarnings(ankiResult.warnings)
+                        }
                         when (ankiResult) {
                             is AnkiResult.PermissionDenied -> context.toast(MR.strings.pref_anki_permission_denied)
                             is AnkiResult.Error -> context.toast(
                                 context.stringResource(MR.strings.anki_card_error, ankiResult.message),
                             )
                             is AnkiResult.NotConfigured -> context.toast(MR.strings.anki_not_configured)
+                            AnkiResult.Cancelled -> Unit
                             else -> {}
                         }
                     }
                 }
             }
         } else {
-            miningScope.launch {
-                val encoding = if (screenshotFieldMapped && cropMode != "no_screenshot") {
-                    onRequestScreenshot?.invoke()?.let { ImageEncoder.encode(it) }
-                } else {
-                    null
-                }
-                val sentenceAudioBytes = if (sentenceAudioFieldMapped) {
-                    onRequestSentenceAudio?.invoke()
-                } else {
-                    null
-                }
+            submitMining {
+                val effectiveMediaRequest = legacyLazyMediaRequest(includeScreenshot = true)
                 val ankiResult = AnkiCardCreator.addToAnki(
                     context = context,
                     result = result,
@@ -675,8 +775,6 @@ fun OcrLookupPopup(
                     offset = miningOffset,
                     media = mediaInfo,
                     glossaryIndex = glossaryIndex,
-                    screenshotBytes = encoding?.bytes,
-                    sentenceAudioBytes = sentenceAudioBytes,
                     selection = result.matched,
                     selectedDict = selectedDict,
                     popupSelection = popupSelection,
@@ -686,8 +784,15 @@ fun OcrLookupPopup(
                     syncOnCreate = ankiSyncOnCreate,
                     profileId = activeProfile.id,
                     titleId = titleId,
+                    mediaRequest = effectiveMediaRequest,
                 )
                 withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    if (!context.canReceiveMiningUi()) return@withContext
+                    when (ankiResult) {
+                        is AnkiResult.Success -> onAnkiMediaWarnings(ankiResult.warnings)
+                        is AnkiResult.Error -> onAnkiMediaWarnings(ankiResult.warnings)
+                        else -> Unit
+                    }
                     when (ankiResult) {
                         is AnkiResult.Success -> {
                             updateStatus(result.term.expression)
@@ -706,6 +811,7 @@ fun OcrLookupPopup(
                             context.stringResource(MR.strings.anki_card_error, ankiResult.message),
                         )
                         is AnkiResult.NotConfigured -> context.toast(MR.strings.anki_not_configured)
+                        AnkiResult.Cancelled -> Unit
                     }
                 }
             }
@@ -1353,6 +1459,11 @@ fun OcrLookupPopup(
             screenshot = screenshot,
             onRequestScreenshot = onRequestScreenshot,
             onRequestSentenceAudio = onRequestSentenceAudio,
+            mediaRequest = mediaRequest,
+            miningBusy = miningBusy,
+            launchMiningJob = launchMiningJob,
+            onMiningBusy = onMiningBusy,
+            onAnkiMediaWarnings = onAnkiMediaWarnings,
             onCropTriggered = onCropTriggered,
             usePopup = usePopup,
             onTermMatched = null,
@@ -1363,4 +1474,19 @@ fun OcrLookupPopup(
             titleId = titleId,
         )
     }
+}
+
+private fun Context.canReceiveMiningUi(): Boolean {
+    var current: Context = this
+    while (current is ContextWrapper) {
+        if (current is Activity) {
+            return !current.isFinishing && !current.isDestroyed
+        }
+        val base = current.baseContext
+        if (base === current) break
+        current = base
+    }
+    // Mining completion may outlive the Activity while the provider commit drains. A context
+    // without a live Activity is not a safe target for remembered Compose state or navigation.
+    return false
 }

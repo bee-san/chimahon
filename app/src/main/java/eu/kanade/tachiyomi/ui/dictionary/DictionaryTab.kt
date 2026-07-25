@@ -469,6 +469,7 @@ data object DictionaryTab : Tab {
                             is AnkiResult.Error -> context.toast(
                                 context.stringResource(MR.strings.anki_card_error, ankiResult.message),
                             )
+                            AnkiResult.Cancelled -> Unit
                             is AnkiResult.NotConfigured -> context.toast(MR.strings.anki_not_configured)
                         }
                     }

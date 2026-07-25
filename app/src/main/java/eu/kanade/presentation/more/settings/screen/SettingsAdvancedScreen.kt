@@ -238,8 +238,8 @@ object SettingsAdvancedScreen : SearchableSettings {
                 Preference.PreferenceItem.ListPreference(
                     preference = dictionaryPreferences.koreanParserMode(),
                     entries = persistentMapOf(
-                        KoreanParserMode.Legacy to stringResource(MR.strings.pref_dict_korean_parser_legacy),
-                        KoreanParserMode.Analyzer to stringResource(MR.strings.pref_dict_korean_parser_analyzer),
+                        KoreanParserMode.LEGACY to stringResource(MR.strings.pref_dict_korean_parser_legacy),
+                        KoreanParserMode.ANALYZER to stringResource(MR.strings.pref_dict_korean_parser_analyzer),
                     ),
                     title = stringResource(MR.strings.pref_dict_korean_parser),
                     subtitle = stringResource(MR.strings.pref_dict_korean_parser_summary),

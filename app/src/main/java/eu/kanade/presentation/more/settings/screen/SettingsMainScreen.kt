@@ -297,7 +297,7 @@ object SettingsMainScreen : Screen() {
             Item(
                 titleRes = KMR.strings.pref_category_dictionaries_and_audio,
                 subtitleRes = KMR.strings.pref_dictionary_summary,
-                icon = TranslateIcon,
+                icon = translateIcon,
                 screen = SettingsDictionaryScreen,
             ),
         ),
@@ -313,7 +313,7 @@ object SettingsMainScreen : Screen() {
             Item(
                 titleRes = KMR.strings.pref_category_anki,
                 subtitleRes = KMR.strings.pref_anki_settings_summary,
-                icon = CardsStar,
+                icon = cardsStar,
                 screen = SettingsAnkiScreen,
             ),
         ),

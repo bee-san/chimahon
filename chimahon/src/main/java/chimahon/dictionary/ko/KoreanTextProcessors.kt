@@ -5,14 +5,14 @@ package chimahon.dictionary.ko
 object KoreanTextProcessors {
 
     // Hangul algorithm constants
-    private const val SBase = 0xAC00
-    private const val LBase = 0x1100
-    private const val VBase = 0x1161
-    private const val TBase = 0x11A7
-    private const val LCount = 19
-    private const val VCount = 21
-    private const val TCount = 28
-    private const val NCount = VCount * TCount
+    private const val S_BASE = 0xAC00
+    private const val L_BASE = 0x1100
+    private const val V_BASE = 0x1161
+    private const val T_BASE = 0x11A7
+    private const val L_COUNT = 19
+    private const val V_COUNT = 21
+    private const val T_COUNT = 28
+    private const val N_COUNT = V_COUNT * T_COUNT
 
     // Standard Jamo (U+1100+) to Compatibility Jamo (U+3131+) mapping
     private val lToCompat = mapOf(
@@ -66,7 +66,7 @@ object KoreanTextProcessors {
 
     fun isHangulSyllable(ch: Char): Boolean {
         val code = ch.code
-        return code in SBase..(SBase + LCount * NCount - 1)
+        return code in S_BASE..(S_BASE + L_COUNT * N_COUNT - 1)
     }
 
     fun disassemble(text: String): String {
@@ -74,14 +74,14 @@ object KoreanTextProcessors {
         for (ch in text) {
             val code = ch.code
             if (isHangulSyllable(ch)) {
-                val sIndex = code - SBase
-                val lIndex = sIndex / NCount
-                val vIndex = (sIndex % NCount) / TCount
-                val tIndex = sIndex % TCount
-                result.appendCodePoint(lToCompat[LBase + lIndex] ?: (LBase + lIndex))
-                result.appendCodePoint(vToCompat[VBase + vIndex] ?: (VBase + vIndex))
+                val sIndex = code - S_BASE
+                val lIndex = sIndex / N_COUNT
+                val vIndex = (sIndex % N_COUNT) / T_COUNT
+                val tIndex = sIndex % T_COUNT
+                result.appendCodePoint(lToCompat[L_BASE + lIndex] ?: (L_BASE + lIndex))
+                result.appendCodePoint(vToCompat[V_BASE + vIndex] ?: (V_BASE + vIndex))
                 if (tIndex > 0) {
-                    val tCompat = tToCompat[TBase + tIndex]
+                    val tCompat = tToCompat[T_BASE + tIndex]
                     if (tCompat != null) {
                         result.appendCodePoint(tCompat)
                     }
@@ -116,13 +116,13 @@ object KoreanTextProcessors {
                                 val t = compatToT[tCode]
                                 val isNextVowel = i + 3 < chars.size && chars[i + 3].code in COMPAT_V_START..COMPAT_V_END
                                 if (t != null && !isNextVowel) {
-                                    tStandard = t - TBase
+                                    tStandard = t - T_BASE
                                     consumed = 3
                                 }
                             }
-                            val lIndex = lStandard - LBase
-                            val vIndex = vStandard - VBase
-                            val sCode = SBase + lIndex * NCount + vIndex * TCount + tStandard
+                            val lIndex = lStandard - L_BASE
+                            val vIndex = vStandard - V_BASE
+                            val sCode = S_BASE + lIndex * N_COUNT + vIndex * T_COUNT + tStandard
                             result.appendCodePoint(sCode)
                             i += consumed
                             continue

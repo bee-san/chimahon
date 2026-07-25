@@ -33,12 +33,12 @@ class NovelLibraryScreenModel(
     private val libraryPreferences: NovelLibraryPreferences = Injekt.get(),
 ) : StateScreenModel<NovelLibraryScreenModel.State>(State()) {
 
-    private val pendingSearchQuery = MutableStateFlow<String?>(null)
+    private val searchQueryFlow = MutableStateFlow<String?>(null)
 
     init {
         loadLibrary()
         screenModelScope.launch {
-            pendingSearchQuery
+            searchQueryFlow
                 .debounce(250)
                 .collect { query ->
                     mutableState.update { it.copy(searchQuery = query) }
@@ -62,7 +62,7 @@ class NovelLibraryScreenModel(
     }
 
     fun search(query: String?) {
-        pendingSearchQuery.value = query
+        searchQueryFlow.value = query
     }
 
     fun updateActiveCategoryIndex(index: Int) {
@@ -136,10 +136,10 @@ class NovelLibraryScreenModel(
             state.selection.forEach { bookId ->
                 val bookDir = BookStorage.getBookDirectory(app, bookId)
                 // Delete statistics file ΓÇö BookStorage.save will recreate it fresh on next read
-                val statsFile = java.io.File(bookDir, com.canopus.chimareader.data.FileNames.statistics)
+                val statsFile = java.io.File(bookDir, com.canopus.chimareader.data.FileNames.STATISTICS)
                 if (statsFile.exists()) statsFile.delete()
                 // Also delete bookmark so reading position resets
-                val bookmarkFile = java.io.File(bookDir, com.canopus.chimareader.data.FileNames.bookmark)
+                val bookmarkFile = java.io.File(bookDir, com.canopus.chimareader.data.FileNames.BOOKMARK)
                 if (bookmarkFile.exists()) bookmarkFile.delete()
             }
             clearSelection()

@@ -4,7 +4,7 @@ All notable changes to Chimahon are documented here.
 
 The format follows a Keep a Changelog style and uses Semantic Versioning.
 
-## [Unreleased]
+## [v2.4.0]
 
 ### Added
 - Event-backed immersion statistics for novels, manga, subtitles, and video OCR
@@ -12,6 +12,7 @@ The format follows a Keep a Changelog style and uses Semantic Versioning.
 - Searchable retained source context with validated historical reopen and lookup actions
 - Versioned statistics backup/merge, tombstones, privacy-scoped exports, retention, and repair tools
 - Home-screen statistics parity and local integrity/reconciliation diagnostics
+- Animated WebP scene mining for video Anki cards
 
 ### Changed
 - New statistics are authoritative and legacy novel, manga, and Anki JSON stores are read-only

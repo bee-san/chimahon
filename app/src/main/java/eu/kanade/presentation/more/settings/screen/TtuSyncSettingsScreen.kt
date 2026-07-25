@@ -658,18 +658,18 @@ private fun DeviceCodeSetup() {
             color = MaterialTheme.colorScheme.onSurface,
         )
         Text(
-            text = GoogleCloudOAuthConfiguration.introduction,
+            text = GoogleCloudOAuthConfiguration.INTRODUCTION,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
-            text = GoogleCloudOAuthConfiguration.ttuSetupLinkLabel,
+            text = GoogleCloudOAuthConfiguration.TTU_SETUP_LINK_LABEL,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.primary,
             textDecoration = TextDecoration.Underline,
             modifier = Modifier.clickable {
                 context.startActivity(
-                    Intent(Intent.ACTION_VIEW, Uri.parse(GoogleCloudOAuthConfiguration.ttuSetupUrl)),
+                    Intent(Intent.ACTION_VIEW, Uri.parse(GoogleCloudOAuthConfiguration.TTU_SETUP_URL)),
                 )
             },
         )

@@ -1,0 +1,11 @@
+{
+  "uniqueId": "com.github.jmir1:ffmpeg-kit",
+  "artifactVersion": "1.17",
+  "name": "FFmpegKit Android wrapper and native FFmpeg payload",
+  "description": "The Java and JNI wrapper source grants LGPL-3.0-or-later terms. The bundled native FFmpeg payload was built with GPL and version-3 features enabled and is GPL-3.0-or-later. The release source manifest must be verified before distributing a binary.",
+  "website": "https://github.com/jmir1/ffmpeg-kit/tree/8bcf912e2b008d18637bb3fb18343d62297d5253",
+  "licenses": [
+    "LGPL-3.0-or-later",
+    "GPL-3.0-or-later"
+  ]
+}

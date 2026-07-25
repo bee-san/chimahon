@@ -1,5 +1,3 @@
-@file:Suppress("ktlint:standard:no-wildcard-imports")
-
 package eu.kanade.tachiyomi.ui.dictionary
 
 import android.annotation.SuppressLint
@@ -26,7 +24,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import chimahon.DictionaryStyle
 import chimahon.LookupResult
 import eu.kanade.domain.ui.UiPreferences
-import eu.kanade.presentation.theme.colorscheme.*
 import tachiyomi.presentation.core.util.collectAsState
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
@@ -90,7 +87,7 @@ fun DictionaryEntryWebView(
     val colorScheme = remember(isDark, isAmoled, seedColor) {
         getDictionaryColorScheme(isDark, isAmoled, seedColor)
     }
-    val backgroundColor = remember(isDark, isAmoled, seedColor, colorScheme) {
+    val bgColor = remember(isDark, isAmoled, seedColor, colorScheme) {
         if (isAmoled && isDark) Color.Black else colorScheme.surface
     }
     val wordAudioAutoplay by prefs.wordAudioAutoplay().collectAsState()
@@ -159,7 +156,7 @@ fun DictionaryEntryWebView(
         )
     }
 
-    Box(modifier = modifier.background(backgroundColor)) {
+    Box(modifier = modifier.background(bgColor)) {
         AndroidView<WebView>(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx: android.content.Context ->
@@ -167,7 +164,7 @@ fun DictionaryEntryWebView(
                 (webView.parent as? android.view.ViewGroup)?.removeView(webView)
 
                 if (webView.tag !is DictionaryWebViewState) {
-                    prepareDictionaryWebViewShell(ctx, webView, bootstrapHtml, backgroundColor.toArgb())
+                    prepareDictionaryWebViewShell(ctx, webView, bootstrapHtml, bgColor.toArgb())
                 }
                 (webView.tag as? DictionaryWebViewState)?.let { state ->
                     state.onContentInvalidated = {
@@ -233,7 +230,7 @@ fun DictionaryEntryWebView(
                     webView.alpha = 1f
                 }
 
-                webView.setBackgroundColor(backgroundColor.toArgb())
+                webView.setBackgroundColor(bgColor.toArgb())
 
                 if (state.pageReady) {
                     val enableRecursive = onRecursiveLookup != null

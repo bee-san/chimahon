@@ -18,12 +18,12 @@ import androidx.compose.ui.unit.dp
  */
 
 @Suppress("CheckReturnValue")
-val CardsStar: ImageVector
+val cardsStar: ImageVector
     get() {
-        if (_cardsStar != null) {
-            return _cardsStar!!
+        if (cardsStarCache != null) {
+            return cardsStarCache!!
         }
-        _cardsStar = ImageVector.Builder(
+        cardsStarCache = ImageVector.Builder(
             name = "cards_star",
             defaultWidth = 24.dp,
             defaultHeight = 24.dp,
@@ -95,18 +95,18 @@ val CardsStar: ImageVector
                 close()
             }
         }.build()
-        return _cardsStar!!
+        return cardsStarCache!!
     }
 
-private var _cardsStar: ImageVector? = null
+private var cardsStarCache: ImageVector? = null
 
 @Suppress("CheckReturnValue")
-val TranslateIcon: ImageVector
+val translateIcon: ImageVector
     get() {
-        if (_translateIcon != null) {
-            return _translateIcon!!
+        if (translateIconCache != null) {
+            return translateIconCache!!
         }
-        _translateIcon = ImageVector.Builder(
+        translateIconCache = ImageVector.Builder(
             name = "translate",
             defaultWidth = 24.dp,
             defaultHeight = 24.dp,
@@ -167,7 +167,7 @@ val TranslateIcon: ImageVector
                 close()
             }
         }.build()
-        return _translateIcon!!
+        return translateIconCache!!
     }
 
-private var _translateIcon: ImageVector? = null
+private var translateIconCache: ImageVector? = null

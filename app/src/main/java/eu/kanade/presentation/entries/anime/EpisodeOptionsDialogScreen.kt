@@ -158,8 +158,8 @@ class EpisodeOptionsDialogScreenModel(
     private val _anime = MutableStateFlow<Anime?>(null)
     val anime = _anime.asStateFlow()
 
-    private var _hosterList = emptyList<Hoster>()
-    private var animeSource: AnimeSource? = null
+    private var loadedHosterList = emptyList<Hoster>()
+    private var loadedSource: AnimeSource? = null
 
     private val _showAllQualities = MutableStateFlow(false)
     val showAllQualities = _showAllQualities.asStateFlow()
@@ -174,7 +174,7 @@ class EpisodeOptionsDialogScreenModel(
 
             _episode.update { _ -> episode }
             _anime.update { _ -> anime }
-            animeSource = source
+            loadedSource = source
 
             val hosterListResult = withIOContext {
                 try {
@@ -190,7 +190,7 @@ class EpisodeOptionsDialogScreenModel(
             }
 
             val hosterList = hosterListResult.getOrThrow()
-            _hosterList = hosterList
+            loadedHosterList = hosterList
             _hosterExpandedList.update { _ ->
                 List(hosterList.size) { true }
             }
@@ -341,8 +341,8 @@ class EpisodeOptionsDialogScreenModel(
 
                 screenModelScope.launchIO {
                     val newHosterState = EpisodeLoader.loadHosterVideos(
-                        animeSource!!,
-                        _hosterList[hosterIndex],
+                        loadedSource!!,
+                        loadedHosterList[hosterIndex],
                     )
                     _hosterState.updateAt(hosterIndex, newHosterState)
                 }
@@ -358,7 +358,7 @@ class EpisodeOptionsDialogScreenModel(
             ?: return
 
         screenModelScope.launchIO {
-            val success = loadVideo(animeSource!!, video, hosterIndex, videoIndex)
+            val success = loadVideo(loadedSource!!, video, hosterIndex, videoIndex)
             if (success) {
                 _showAllQualities.update { _ -> false }
             }
@@ -367,7 +367,7 @@ class EpisodeOptionsDialogScreenModel(
 
     fun getHosterList(): List<Hoster>? {
         val hosterStateList = hosterState.value?.getOrNull() ?: return null
-        return _hosterList.mapIndexed { index, h ->
+        return loadedHosterList.mapIndexed { index, h ->
             if (hosterStateList[index] is HosterState.Ready) {
                 Hoster(
                     hosterName = h.hosterName,

@@ -43,6 +43,7 @@ import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import chimahon.DictionaryRepository
 import chimahon.MediaInfo
+import chimahon.anki.AnkiScreenshotMode
 import chimahon.ocr.CropPresets
 import chimahon.ocr.OcrLanguage
 import eu.kanade.tachiyomi.data.ocr.recognizePage
@@ -391,9 +392,14 @@ internal fun ScreenLookupOverlay(
         val cropPreset = chimahon.ocr.CropPresets.aspectByKey(cropPresetKey)
 
         if (selected != null) {
-            val (popupScreenshot, popupOnRequestScreenshot) = if (cropMode == "no_screenshot") {
+            val (popupScreenshot, popupOnRequestScreenshot) = if (
+                cropMode == AnkiScreenshotMode.NONE.storageValue
+            ) {
                 null to null
-            } else if (cropPreset != null) {
+            } else if (
+                cropMode != AnkiScreenshotMode.ANIMATED_SCENE.storageValue &&
+                cropPreset != null
+            ) {
                 val cropped = cropAroundAnchor(
                     bitmap = screenshot,
                     anchorX = selected.anchorX,

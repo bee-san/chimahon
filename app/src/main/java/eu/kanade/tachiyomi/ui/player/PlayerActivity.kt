@@ -474,6 +474,7 @@ class PlayerActivity : BaseActivity() {
 
     override fun onDestroy() {
         player.isExiting = true
+        viewModel.onPlayerActivityDestroyed()
 
         audioFocusRequest?.let {
             AudioManagerCompat.abandonAudioFocusRequest(audioManager, it)
