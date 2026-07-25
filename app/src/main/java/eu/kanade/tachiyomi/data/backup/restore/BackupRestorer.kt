@@ -13,11 +13,11 @@ import eu.kanade.tachiyomi.data.backup.models.BackupManga
 import eu.kanade.tachiyomi.data.backup.models.BackupPreference
 import eu.kanade.tachiyomi.data.backup.models.BackupSavedSearch
 import eu.kanade.tachiyomi.data.backup.models.BackupSourcePreferences
-import eu.kanade.tachiyomi.data.backup.restore.restorers.CategoriesRestorer
-import eu.kanade.tachiyomi.data.backup.restore.restorers.ExtensionStoreRestorer
 import eu.kanade.tachiyomi.data.backup.restore.restorers.AnimeCategoriesRestorer
 import eu.kanade.tachiyomi.data.backup.restore.restorers.AnimeExtensionRepoRestorer
 import eu.kanade.tachiyomi.data.backup.restore.restorers.AnimeRestorer
+import eu.kanade.tachiyomi.data.backup.restore.restorers.CategoriesRestorer
+import eu.kanade.tachiyomi.data.backup.restore.restorers.ExtensionStoreRestorer
 import eu.kanade.tachiyomi.data.backup.restore.restorers.FeedRestorer
 import eu.kanade.tachiyomi.data.backup.restore.restorers.MangaRestorer
 import eu.kanade.tachiyomi.data.backup.restore.restorers.PreferenceRestorer
@@ -396,7 +396,7 @@ class BackupRestorer(
     // Chimahon -->
     private fun CoroutineScope.restoreNovels(
         backupNovels: List<eu.kanade.tachiyomi.data.backup.models.BackupNovel>,
-        backupNovelCategories: List<eu.kanade.tachiyomi.data.backup.models.BackupNovelCategory>
+        backupNovelCategories: List<eu.kanade.tachiyomi.data.backup.models.BackupNovelCategory>,
     ) = launch {
         ensureActive()
 
@@ -434,7 +434,7 @@ class BackupRestorer(
 
     private fun CoroutineScope.restoreGlobalStats(
         mangaStats: List<com.canopus.chimareader.data.MangaStats>,
-        ankiStats: List<com.canopus.chimareader.data.AnkiStats>
+        ankiStats: List<com.canopus.chimareader.data.AnkiStats>,
     ) = launch {
         with(notifier) {
             if (mangaStats.isNotEmpty()) {

@@ -52,7 +52,7 @@ class TrackAddScreen(
                         onResult = { trackSearch ->
                             screenModel.updateManualResult(item.manga.id, trackSearch)
                         },
-                    )
+                    ),
                 )
             },
             onCancelItem = screenModel::cancelItem,

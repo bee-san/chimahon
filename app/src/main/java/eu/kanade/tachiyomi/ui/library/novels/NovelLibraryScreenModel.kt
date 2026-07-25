@@ -33,12 +33,12 @@ class NovelLibraryScreenModel(
     private val libraryPreferences: NovelLibraryPreferences = Injekt.get(),
 ) : StateScreenModel<NovelLibraryScreenModel.State>(State()) {
 
-    private val _searchQuery = MutableStateFlow<String?>(null)
+    private val pendingSearchQuery = MutableStateFlow<String?>(null)
 
     init {
         loadLibrary()
         screenModelScope.launch {
-            _searchQuery
+            pendingSearchQuery
                 .debounce(250)
                 .collect { query ->
                     mutableState.update { it.copy(searchQuery = query) }
@@ -50,19 +50,19 @@ class NovelLibraryScreenModel(
         screenModelScope.launch {
             val categories = categoryStorage.loadAllCategories()
             val books = BookStorage.loadAllBooks(app)
-            
-            mutableState.update { 
+
+            mutableState.update {
                 it.copy(
                     isLoading = false,
                     categories = categories.toImmutableList(),
-                    books = books.toImmutableList()
+                    books = books.toImmutableList(),
                 )
             }
         }
     }
 
     fun search(query: String?) {
-        _searchQuery.value = query
+        pendingSearchQuery.value = query
     }
 
     fun updateActiveCategoryIndex(index: Int) {
@@ -233,12 +233,12 @@ class NovelLibraryScreenModel(
         screenModelScope.launch {
             val bookDir = BookStorage.getBookDirectory(app, book.id)
             BookStorage.saveMetadata(book, bookDir)
-            
+
             // Save override
             val dictPrefs = Injekt.get<eu.kanade.tachiyomi.ui.dictionary.DictionaryPreferences>()
             val novelOverrideKey = chimahon.dictionary.DictionaryProfileResolver.novelOverrideKey(book.id)
             dictPrefs.rawProfileOverride(novelOverrideKey).set(selectedOverride)
-            
+
             loadLibrary()
             closeDialog()
         }
@@ -253,7 +253,9 @@ class NovelLibraryScreenModel(
     }
 
     enum class SortMode {
-        Alphabetical, DateAdded, LastRead
+        Alphabetical,
+        DateAdded,
+        LastRead,
     }
 
     sealed interface Dialog {
@@ -291,7 +293,7 @@ class NovelLibraryScreenModel(
 
         val coercedActiveCategoryIndex: Int
             get() = activeCategoryIndex.coerceIn(0, (displayedCategories.size - 1).coerceAtLeast(0))
-        
+
         val activeCategory: NovelCategory?
             get() = displayedCategories.getOrNull(coercedActiveCategoryIndex)
 
@@ -301,7 +303,7 @@ class NovelLibraryScreenModel(
             } else {
                 books.filter { it.title?.contains(searchQuery, ignoreCase = true) == true }
             }
-            
+
             val knownCategoryIds = categories.map { it.id }.toSet()
             val categoryBooks = filteredBooks.filter {
                 val bookCategoryIds = it.normalizedCategoryIds(knownCategoryIds)
@@ -311,7 +313,7 @@ class NovelLibraryScreenModel(
                     bookCategoryIds.contains(category.id)
                 }
             }
-            
+
             val comparator = when (sortMode) {
                 SortMode.Alphabetical -> compareBy<BookMetadata>({ it.title?.lowercase() ?: "" }, { it.id })
                 SortMode.DateAdded -> compareBy<BookMetadata>({ it.dateAdded }, { it.title?.lowercase() ?: "" }, { it.id })
@@ -363,11 +365,11 @@ class NovelLibraryScreenModel(
             return LibraryToolbarTitle(title, count)
         }
     }
-    
+
     fun setSort(mode: SortMode, descending: Boolean) {
         mutableState.update { it.copy(sortMode = mode, sortDescending = descending) }
     }
-    
+
     fun showSortDialog() {
         mutableState.update { it.copy(dialog = Dialog.SortFilter) }
     }

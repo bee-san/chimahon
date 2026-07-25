@@ -20,7 +20,8 @@ internal fun readerLifecycleAutoSyncPlan(
             inactiveElapsedMillis >= AUTO_SYNC_FOREGROUND_THRESHOLD_MILLIS,
     )
     ReaderLifecycleAutoSyncEvent.Pause,
-    ReaderLifecycleAutoSyncEvent.Dispose -> ReaderLifecycleAutoSyncPlan(
+    ReaderLifecycleAutoSyncEvent.Dispose,
+    -> ReaderLifecycleAutoSyncPlan(
         flushAutoSyncExport = true,
     )
 }

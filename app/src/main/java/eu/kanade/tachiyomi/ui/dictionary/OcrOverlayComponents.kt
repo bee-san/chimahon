@@ -270,7 +270,8 @@ fun OcrTapHint(
 }
 
 fun cropBitmap(bitmap: Bitmap, left: Float, top: Float, right: Float, bottom: Float): Bitmap {
-    val w = bitmap.width; val h = bitmap.height
+    val w = bitmap.width
+    val h = bitmap.height
     val x = (left * w).toInt().coerceIn(0, w)
     val y = (top * h).toInt().coerceIn(0, h)
     val r = (right * w).toInt().coerceIn(x + 1, w)
@@ -280,22 +281,29 @@ fun cropBitmap(bitmap: Bitmap, left: Float, top: Float, right: Float, bottom: Fl
 
 fun cropAroundAnchor(
     bitmap: Bitmap,
-    anchorX: Float, anchorY: Float,
-    anchorWidth: Float, anchorHeight: Float,
-    aspectX: Int, aspectY: Int,
+    anchorX: Float,
+    anchorY: Float,
+    anchorWidth: Float,
+    anchorHeight: Float,
+    aspectX: Int,
+    aspectY: Int,
     paddingFactor: Float = 1.5f,
 ): Bitmap {
-    val bw = bitmap.width.toFloat(); val bh = bitmap.height.toFloat()
+    val bw = bitmap.width.toFloat()
+    val bh = bitmap.height.toFloat()
     val cx = (anchorX + anchorWidth / 2f) / bw
     val cy = (anchorY + anchorHeight / 2f) / bh
     val textW = anchorWidth / bw * paddingFactor
     val textH = anchorHeight / bh * paddingFactor
     val targetRatio = if (aspectY > 0) aspectX.toFloat() / aspectY.toFloat() else 1f
-    val cropW: Float; val cropH: Float
+    val cropW: Float
+    val cropH: Float
     if (textW / textH > targetRatio) {
-        cropH = textH; cropW = textH * targetRatio
+        cropH = textH
+        cropW = textH * targetRatio
     } else {
-        cropW = textW; cropH = textW / targetRatio
+        cropW = textW
+        cropH = textW / targetRatio
     }
     val halfW = (cropW / 2f).coerceAtMost(cx).coerceAtMost(1f - cx)
     val halfH = (cropH / 2f).coerceAtMost(cy).coerceAtMost(1f - cy)

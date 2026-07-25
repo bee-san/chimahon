@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-/**
+/*
  * Code is a mix between PlayerActivity from mpvKt and the former
  * PlayerActivity from Aniyomi.
  */
@@ -34,8 +34,6 @@ import android.content.pm.PackageManager
 import android.content.res.AssetManager
 import android.content.res.Configuration
 import android.graphics.Rect
-import android.view.MotionEvent
-import android.view.ViewConfiguration
 import android.media.AudioManager
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
@@ -45,7 +43,9 @@ import android.os.Bundle
 import android.os.Environment
 import android.util.Rational
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -212,7 +212,6 @@ class PlayerActivity : BaseActivity() {
             }
         }
     }
-
 
     @SuppressLint("MissingSuperCall")
     override fun onNewIntent(intent: Intent) {
@@ -488,7 +487,6 @@ class PlayerActivity : BaseActivity() {
         player.destroy()
         castManager.cleanup()
 
-
         super.onDestroy()
     }
 
@@ -497,8 +495,6 @@ class PlayerActivity : BaseActivity() {
 
         // Mantener sesión Cast activa
         castManager.maintainCastSessionBackground()
-
-
 
         if (isInPictureInPictureMode) {
             super.onPause()
@@ -584,7 +580,6 @@ class PlayerActivity : BaseActivity() {
                 if (it != -1f) viewModel.changeBrightnessTo(it)
             }
         }
-
 
         castManager.apply {
             registerSessionListener()
@@ -820,8 +815,6 @@ class PlayerActivity : BaseActivity() {
             registerSessionListener()
         }
 
-
-
         if (!player.isExiting) {
             super.onResume()
             return
@@ -902,7 +895,6 @@ class PlayerActivity : BaseActivity() {
                 runCatching {
                     setPictureInPictureParams(createPipParams())
                 }
-        
             }
 
             "paused-for-cache" -> {
@@ -1343,7 +1335,6 @@ class PlayerActivity : BaseActivity() {
             }
             loadPlayableUrl(playableUrl)
         }
-
     }
 
     private fun torrentLinkHandler(videoUrl: String, quality: String) {
@@ -1575,5 +1566,4 @@ class PlayerActivity : BaseActivity() {
             viewModel.changeEpisode(previous = false, autoPlay = true)
         }
     }
-
 }

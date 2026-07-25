@@ -244,9 +244,11 @@ class DictionaryUpdateJob(context: Context, workerParams: WorkerParameters) :
             val request = OneTimeWorkRequestBuilder<DictionaryUpdateJob>()
                 .addTag(TAG)
                 .addTag("manual")
-                .setConstraints(Constraints.Builder()
-                    .setRequiredNetworkType(NetworkType.CONNECTED)
-                    .build())
+                .setConstraints(
+                    Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .build(),
+                )
                 .build()
             context.workManager.enqueueUniqueWork(MANUAL_WORK_NAME, ExistingWorkPolicy.KEEP, request)
             Log.d(TAG, "Manual dictionary update check enqueued")
@@ -261,8 +263,10 @@ class DictionaryUpdateJob(context: Context, workerParams: WorkerParameters) :
                 val interval = intervalHours.coerceIn(1, 168)
                 val flex = (interval / 24).coerceIn(1, 6)
                 val request = PeriodicWorkRequestBuilder<DictionaryUpdateJob>(
-                    interval.toLong(), TimeUnit.HOURS,
-                    flex.toLong(), TimeUnit.HOURS,
+                    interval.toLong(),
+                    TimeUnit.HOURS,
+                    flex.toLong(),
+                    TimeUnit.HOURS,
                 )
                     .addTag(TAG)
                     .setConstraints(constraints)

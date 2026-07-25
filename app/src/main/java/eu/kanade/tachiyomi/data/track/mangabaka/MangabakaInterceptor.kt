@@ -1,3 +1,5 @@
+@file:Suppress("ktlint:standard:filename")
+
 package eu.kanade.tachiyomi.data.track.mangabaka
 
 import eu.kanade.tachiyomi.data.track.mangabaka.dto.MangaBakaOAuth

@@ -25,12 +25,12 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.shareIn
+import logcat.LogPriority
 import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.core.common.preference.Preference
+import tachiyomi.core.common.util.system.logcat
 import tachiyomi.i18n.MR
 import java.io.File
-import logcat.LogPriority
-import tachiyomi.core.common.util.system.logcat
 
 class StorageManager(
     private val context: Context,

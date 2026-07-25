@@ -20,7 +20,6 @@ import logcat.LogPriority
 import rx.Observable
 import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.core.common.storage.extension
-import tachiyomi.i18n.MR
 import tachiyomi.core.common.storage.nameWithoutExtension
 import tachiyomi.core.common.util.lang.withIOContext
 import tachiyomi.core.common.util.system.ImageUtil
@@ -29,6 +28,7 @@ import tachiyomi.core.metadata.tachiyomi.AnimeDetails
 import tachiyomi.core.metadata.tachiyomi.EpisodeDetails
 import tachiyomi.domain.entries.anime.model.Anime
 import tachiyomi.domain.episode.service.EpisodeRecognition
+import tachiyomi.i18n.MR
 import tachiyomi.source.local.filter.anime.AnimeOrderBy
 import tachiyomi.source.local.image.anime.LocalAnimeBackgroundManager
 import tachiyomi.source.local.image.anime.LocalAnimeCoverManager
@@ -54,9 +54,9 @@ actual class LocalAnimeSource(
 
     private val json: Json by injectLazy()
 
-    private val PopularFilters = AnimeFilterList(AnimeOrderBy.Popular(context))
+    private val popularFilters = AnimeFilterList(AnimeOrderBy.Popular(context))
 
-    private val LatestFilters = AnimeFilterList(AnimeOrderBy.Latest(context))
+    private val latestFilters = AnimeFilterList(AnimeOrderBy.Latest(context))
 
     override val name = context.stringResource(MR.strings.local_anime_source)
 
@@ -69,16 +69,16 @@ actual class LocalAnimeSource(
     override val supportsLatest = true
 
     // Browse related
-    override suspend fun getPopularAnime(page: Int) = getSearchAnime(page, "", PopularFilters)
+    override suspend fun getPopularAnime(page: Int) = getSearchAnime(page, "", popularFilters)
 
-    override suspend fun getLatestUpdates(page: Int) = getSearchAnime(page, "", LatestFilters)
+    override suspend fun getLatestUpdates(page: Int) = getSearchAnime(page, "", latestFilters)
 
     override suspend fun getSearchAnime(
         page: Int,
         query: String,
         filters: AnimeFilterList,
     ): AnimesPage = withIOContext {
-        val lastModifiedLimit = if (filters === LatestFilters) {
+        val lastModifiedLimit = if (filters === latestFilters) {
             System.currentTimeMillis() - LATEST_THRESHOLD
         } else {
             0L
@@ -148,10 +148,10 @@ actual class LocalAnimeSource(
 
     // Old fetch functions
     @Deprecated("Use the non-RxJava API instead", replaceWith = ReplaceWith("getPopularAnime"))
-    override fun fetchPopularAnime(page: Int) = fetchSearchAnime(page, "", PopularFilters)
+    override fun fetchPopularAnime(page: Int) = fetchSearchAnime(page, "", popularFilters)
 
     @Deprecated("Use the non-RxJava API instead", replaceWith = ReplaceWith("getLatestUpdates"))
-    override fun fetchLatestUpdates(page: Int) = fetchSearchAnime(page, "", LatestFilters)
+    override fun fetchLatestUpdates(page: Int) = fetchSearchAnime(page, "", latestFilters)
 
     @Deprecated("Use the non-RxJava API instead", replaceWith = ReplaceWith("getSearchAnime"))
     override fun fetchSearchAnime(page: Int, query: String, filters: AnimeFilterList): Observable<AnimesPage> {

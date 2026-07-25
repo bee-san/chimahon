@@ -187,7 +187,11 @@ class ReaderViewModel(
     var einkRefreshColor by mutableStateOf("BLACK")
 
     private val ttuSyncManager: TtuSyncManager? by lazy {
-        try { Injekt.get<TtuSyncManager>() } catch (_: Exception) { null }
+        try {
+            Injekt.get<TtuSyncManager>()
+        } catch (_: Exception) {
+            null
+        }
     }
     private var syncExportJob: kotlinx.coroutines.Job? = null
     var isSyncing: Boolean = false

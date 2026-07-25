@@ -102,12 +102,12 @@ class ModelDownloader(
             val response = httpClient.newCall(request).execute()
             if (!response.isSuccessful) {
                 return@withContext Result.failure(
-                    RuntimeException("Download failed: HTTP ${response.code}")
+                    RuntimeException("Download failed: HTTP ${response.code}"),
                 )
             }
 
             val body = response.body ?: return@withContext Result.failure(
-                RuntimeException("Empty response body")
+                RuntimeException("Empty response body"),
             )
 
             body.byteStream().use { input -> extractZip(input) }

@@ -2769,6 +2769,6 @@ object KoreanDeinflector : Deinflector {
         suffixInflection("ㅈㅣㅁㅏㄴㅅㅓㄷㅗ", "ㄷㅏ", emptySet(), setOf("v", "adj", "ida")),
         suffixInflection("ㅈㅣㅁㅏㄴㅅㅓㄷㅗ", "", emptySet(), setOf("p", "f")),
         suffixInflection("ㅈㅣㅇㅛ", "ㄷㅏ", emptySet(), setOf("v", "adj", "ida")),
-        suffixInflection("ㅈㅣㅇㅛ", "", emptySet(), setOf("p", "f", "eusi"))
+        suffixInflection("ㅈㅣㅇㅛ", "", emptySet(), setOf("p", "f", "eusi")),
     )
 }

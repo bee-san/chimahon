@@ -1,5 +1,6 @@
 package eu.kanade.presentation.entries.anime
 
+import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.slideInHorizontally
@@ -44,6 +45,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import cafe.adriel.voyager.core.model.ScreenModel
 import cafe.adriel.voyager.core.model.rememberScreenModel
 import cafe.adriel.voyager.core.model.screenModelScope
@@ -53,6 +55,7 @@ import eu.kanade.tachiyomi.animesource.AnimeSource
 import eu.kanade.tachiyomi.animesource.model.Hoster
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.data.animedownload.AnimeDownloadManager
+import eu.kanade.tachiyomi.ui.player.PlayerActivity
 import eu.kanade.tachiyomi.ui.player.controls.components.sheets.HosterState
 import eu.kanade.tachiyomi.ui.player.controls.components.sheets.QualitySheetHosterContent
 import eu.kanade.tachiyomi.ui.player.controls.components.sheets.QualitySheetVideoContent
@@ -85,9 +88,6 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.cancellation.CancellationException
-import android.net.Uri
-import androidx.core.net.toUri
-import eu.kanade.tachiyomi.ui.player.PlayerActivity
 
 class EpisodeOptionsDialogScreen(
     private val useExternalDownloader: Boolean,
@@ -159,7 +159,7 @@ class EpisodeOptionsDialogScreenModel(
     val anime = _anime.asStateFlow()
 
     private var _hosterList = emptyList<Hoster>()
-    private var _source: AnimeSource? = null
+    private var animeSource: AnimeSource? = null
 
     private val _showAllQualities = MutableStateFlow(false)
     val showAllQualities = _showAllQualities.asStateFlow()
@@ -174,7 +174,7 @@ class EpisodeOptionsDialogScreenModel(
 
             _episode.update { _ -> episode }
             _anime.update { _ -> anime }
-            _source = source
+            animeSource = source
 
             val hosterListResult = withIOContext {
                 try {
@@ -341,7 +341,7 @@ class EpisodeOptionsDialogScreenModel(
 
                 screenModelScope.launchIO {
                     val newHosterState = EpisodeLoader.loadHosterVideos(
-                        _source!!,
+                        animeSource!!,
                         _hosterList[hosterIndex],
                     )
                     _hosterState.updateAt(hosterIndex, newHosterState)
@@ -358,7 +358,7 @@ class EpisodeOptionsDialogScreenModel(
             ?: return
 
         screenModelScope.launchIO {
-            val success = loadVideo(_source!!, video, hosterIndex, videoIndex)
+            val success = loadVideo(animeSource!!, video, hosterIndex, videoIndex)
             if (success) {
                 _showAllQualities.update { _ -> false }
             }

@@ -1,3 +1,5 @@
+@file:Suppress("PropertyName")
+
 package com.canopus.chimareader.data
 
 object FileNames {

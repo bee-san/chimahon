@@ -9,9 +9,9 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import eu.kanade.tachiyomi.R
 import chimahon.DictionaryStyle
 import chimahon.LookupResult
+import eu.kanade.tachiyomi.R
 
 @SuppressLint("SetJavaScriptEnabled")
 internal fun prepareDictionaryWebViewShell(
@@ -59,7 +59,6 @@ internal fun prepareDictionaryWebViewShell(
         addJavascriptInterface(state.readyBridge, "DictionaryReadyBridge")
         addJavascriptInterface(state.payloadBridge, "PayloadBridge")
         addJavascriptInterface(state.ankiJsBridge, "AnkiJsBridge")
-
 
         webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
@@ -131,7 +130,9 @@ internal class DictionaryWebViewState(
     val ankiJsBridge: AnkiJsBridge = AnkiJsBridge(webViewProvider)
     var pageReady: Boolean = false
     var fontSize: Int = 16
+
     @Volatile var contentReadyGeneration: Long = 0
+
     @Volatile var nextContentReadyRequestId: Long = 0
     var onAnkiLookup: ((Int, Int?, String?, String?, Boolean) -> Unit)? = null
     var onRecursiveLookup: ((String, String?, Int?, Float?, Float?, String?) -> Unit)? = null

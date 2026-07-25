@@ -110,15 +110,15 @@ object OwOCRMerger {
     private fun createParagraphsFromLines(lines: List<LineDict>, config: MergeConfig): List<ParagraphWithMeta> {
         val allParagraphs = mutableListOf<ParagraphWithMeta>()
         val used = BooleanArray(lines.size)
-        
+
         for (i in lines.indices) {
             if (used[i]) continue
             val cluster = mutableListOf(lines[i])
             used[i] = true
-            
+
             val queue = ArrayDeque<LineDict>()
             queue.add(lines[i])
-            
+
             while (queue.isNotEmpty()) {
                 val current = queue.removeFirst()
                 for (j in lines.indices) {
@@ -129,7 +129,7 @@ object OwOCRMerger {
                         } else {
                             candidate.isVertical
                         }
-                        
+
                         if (shouldGroupInSameParagraph(current, candidate, isVertical, config)) {
                             cluster.add(candidate)
                             queue.add(candidate)
@@ -138,14 +138,14 @@ object OwOCRMerger {
                     }
                 }
             }
-            
+
             // Re-determine orientation based on largest box
             val isVertical = cluster.maxByOrNull { it.bbox.width * it.bbox.height }?.isVertical ?: true
             val isRtl = cluster.first().isRtl
-            
+
             allParagraphs.add(createParagraphFromLines(cluster, isVertical, isRtl, config))
         }
-        
+
         return allParagraphs
     }
 
@@ -257,7 +257,9 @@ object OwOCRMerger {
 
         val avgRotation = if (filtered.isNotEmpty()) {
             filtered.map { it.bbox.rotation }.average()
-        } else 0.0
+        } else {
+            0.0
+        }
 
         val paraObj = OcrResult(
             text = textContent,
@@ -448,27 +450,26 @@ object OwOCRMerger {
         isVertical: Boolean,
         config: MergeConfig,
     ): Boolean {
-        
         val imgW = config.imageWidth ?: 1000.0
         val imgH = config.imageHeight ?: 1000.0
-        
+
         val w1 = line1.bbox.width * imgW
         val h1 = line1.bbox.height * imgH
         val w2 = line2.bbox.width * imgW
         val h2 = line2.bbox.height * imgH
-        
+
         val charSize1 = if (line1.isVertical) w1 else h1
         val charSize2 = if (line2.isVertical) w2 else h2
         val characterSize = maxOf(charSize1, charSize2)
-        
+
         val t1 = minOf(w1, h1)
         val t2 = minOf(w2, h2)
-        
+
         var thicknessRatio = 1.0
         if (t1 > 0 && t2 > 0) {
             thicknessRatio = maxOf(t1, t2) / minOf(t1, t2)
         }
-        
+
         var rotDiff = abs(line1.bbox.rotation - line2.bbox.rotation)
         while (rotDiff > Math.PI) rotDiff -= Math.PI
         if (rotDiff > Math.PI / 2) rotDiff = Math.PI - rotDiff
@@ -478,9 +479,9 @@ object OwOCRMerger {
         val area1 = w1 * h1
         val area2 = w2 * h2
         val areaRatio = if (maxOf(area1, area2) > 0) minOf(area1, area2) / maxOf(area1, area2) else 1.0
-        
+
         val isPunctuation = areaRatio < 0.10
-        
+
         val maxHDistMult: Double
         val minDensityReq: Double
         if (isPunctuation) {
@@ -493,62 +494,62 @@ object OwOCRMerger {
             maxHDistMult = 0.75
             minDensityReq = 0.50
         }
-        
+
         val furiganaHDistMult = if (thicknessRatio < 1.35 && !isPunctuation) 1.25 else 0.0
-        
+
         val mergedLeft = minOf(line1.bbox.left, line2.bbox.left) * imgW
         val mergedTop = minOf(line1.bbox.top, line2.bbox.top) * imgH
         val mergedRight = maxOf(line1.bbox.right, line2.bbox.right) * imgW
         val mergedBottom = maxOf(line1.bbox.bottom, line2.bbox.bottom) * imgH
         val mergedArea = maxOf(0.0, mergedRight - mergedLeft) * maxOf(0.0, mergedBottom - mergedTop)
-        
+
         if (mergedArea > 0 && (area1 + area2) / mergedArea < minDensityReq) {
             return false
         }
-        
+
         if (isVertical) {
             val hDist = horizontalDistance(line1.bbox, line2.bbox) * imgW
             val lineWidth = (w1 + w2) / 2
-            
+
             val yMinDiff = abs(line1.bbox.top - line2.bbox.top) * imgH
             val yOverlap = maxOf(0.0, minOf(line1.bbox.bottom, line2.bbox.bottom) * imgH - maxOf(line1.bbox.top, line2.bbox.top) * imgH)
             val minH = minOf(h1, h2)
-            
+
             val yMaxDiff = abs(line1.bbox.bottom - line2.bbox.bottom) * imgH
             if (yMinDiff > characterSize * 2.0 && yMaxDiff > characterSize * 2.0) {
                 return false // Staggered lines are probably separate bubbles
             }
-            
+
             if (hDist < lineWidth * maxHDistMult) {
                 if (yOverlap > minH * 0.5) {
                     return true
                 }
             }
-            
+
             if (furiganaHDistMult > 0 && hDist < lineWidth * furiganaHDistMult) {
                 if (yMinDiff < characterSize * 0.3 && yOverlap > minH * 0.5) {
                     return true
                 }
             }
-            
+
             if (thicknessRatio < 2.5 && hDist < lineWidth * 1.0) {
                 if (yMinDiff < characterSize * 0.5 && yOverlap > minH * 0.5) {
                     return true
                 }
             }
-            
+
             return false
         } else {
             val vDist = verticalDistance(line1.bbox, line2.bbox) * imgH
             val lineHeight = maxOf(h1, h2)
             if (vDist >= lineHeight * 1.5) return false
-            
+
             val coord1 = line2.bbox.right * imgW
             val coord2 = line1.bbox.right * imgW
             if (abs(coord1 - coord2) < 1.5 * characterSize) return true
-            
+
             if (config.supportCenterAlignedText && horizontalOverlap(line1.bbox, line2.bbox) > 0.9) return true
-            
+
             return false
         }
     }
@@ -662,7 +663,7 @@ object OwOCRMerger {
 
         val alphaRegex = Regex("[A-Za-z]")
         val digitRegex = Regex("[0-9]")
-        
+
         val imgW = config.imageWidth ?: 1000.0
         val imgH = config.imageHeight ?: 1000.0
 
@@ -780,12 +781,12 @@ object OwOCRMerger {
                     while (rotDiff > Math.PI) rotDiff -= Math.PI
                     if (rotDiff > Math.PI / 2) rotDiff = Math.PI - rotDiff
                     val distToMultipleOfPiHalf = minOf(rotDiff, abs(Math.PI / 2 - rotDiff))
-                    
+
                     if (distToMultipleOfPiHalf >= 0.1) return@findConnectedComponents false
 
                     if (isVertical) {
-                        val widthRatio = minOf(a.paragraphObj.tightBoundingBox.width, b.paragraphObj.tightBoundingBox.width) / 
-                                         maxOf(0.001, maxOf(a.paragraphObj.tightBoundingBox.width, b.paragraphObj.tightBoundingBox.width))
+                        val widthRatio = minOf(a.paragraphObj.tightBoundingBox.width, b.paragraphObj.tightBoundingBox.width) /
+                            maxOf(0.001, maxOf(a.paragraphObj.tightBoundingBox.width, b.paragraphObj.tightBoundingBox.width))
                         verticalDistance(a.paragraphObj.tightBoundingBox, b.paragraphObj.tightBoundingBox) <=
                             0.5 * charSize &&
                             widthRatio > 0.95 &&
@@ -795,8 +796,8 @@ object OwOCRMerger {
                             ) >
                             0.95
                     } else {
-                        val heightRatio = minOf(a.paragraphObj.tightBoundingBox.height, b.paragraphObj.tightBoundingBox.height) / 
-                                          maxOf(0.001, maxOf(a.paragraphObj.tightBoundingBox.height, b.paragraphObj.tightBoundingBox.height))
+                        val heightRatio = minOf(a.paragraphObj.tightBoundingBox.height, b.paragraphObj.tightBoundingBox.height) /
+                            maxOf(0.001, maxOf(a.paragraphObj.tightBoundingBox.height, b.paragraphObj.tightBoundingBox.height))
                         a.writingDirection == b.writingDirection &&
                             horizontalDistance(
                                 a.paragraphObj.tightBoundingBox,

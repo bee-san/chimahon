@@ -438,7 +438,6 @@ class AnkiDroidBridge(private val context: Context) {
         throw Exception("Model '$modelName' not found")
     }
 
-
     private fun getModelFields(modelId: Long): List<String> {
         try {
             context.contentResolver.query(
@@ -610,7 +609,7 @@ class AnkiDroidBridge(private val context: Context) {
                 arrayOf("deck_id"),
                 null,
                 null,
-                null
+                null,
             )?.use { c ->
                 while (c.moveToNext()) {
                     if (c.getLong(0) == deckId) {
@@ -625,11 +624,10 @@ class AnkiDroidBridge(private val context: Context) {
         return inDeck
     }
 
-    private val STYLE_PATTERN = Regex("(?s)<style.*?>.*?</style>")
-    private val SCRIPT_PATTERN = Regex("(?s)<script.*?>.*?</script>")
-    private val TAG_PATTERN = Regex("<.*?>")
-    private val IMG_PATTERN = Regex("<img src=[\"']?([^\"'>]+)[\"']? ?/?>")
-    private val HTML_ENTITIES_PATTERN = Regex("&#?\\w+;")
+    private val stylePattern = Regex("(?s)<style.*?>.*?</style>")
+    private val scriptPattern = Regex("(?s)<script.*?>.*?</script>")
+    private val tagPattern = Regex("<.*?>")
+    private val imagePattern = Regex("<img src=[\"']?([^\"'>]+)[\"']? ?/?>")
 
     private fun entsToTxt(htmlText: String): String {
         val htmlReplaced = htmlText.replace("&nbsp;", " ")
@@ -645,21 +643,21 @@ class AnkiDroidBridge(private val context: Context) {
     }
 
     private fun stripHTML(s: String): String {
-        var strRep = STYLE_PATTERN.replace(s, "")
-        strRep = SCRIPT_PATTERN.replace(strRep, "")
-        strRep = TAG_PATTERN.replace(strRep, "")
+        var strRep = stylePattern.replace(s, "")
+        strRep = scriptPattern.replace(strRep, "")
+        strRep = tagPattern.replace(strRep, "")
         return entsToTxt(strRep)
     }
 
     private fun stripHTMLMedia(s: String): String {
-        val replacedImg = IMG_PATTERN.replace(s) { matchResult ->
+        val replacedImg = imagePattern.replace(s) { matchResult ->
             " ${matchResult.groupValues[1]} "
         }
         return stripHTML(replacedImg)
     }
 
     private fun fieldChecksum(data: String): Long {
-        val SHA1_ZEROES = "0000000000000000000000000000000000000000"
+        val sha1Zeroes = "0000000000000000000000000000000000000000"
         val strippedData = stripHTMLMedia(data)
 
         return try {
@@ -669,7 +667,7 @@ class AnkiDroidBridge(private val context: Context) {
             var result = bigInteger.toString(16)
 
             if (result.length < 40) {
-                result = SHA1_ZEROES.substring(0, SHA1_ZEROES.length - result.length) + result
+                result = sha1Zeroes.substring(0, sha1Zeroes.length - result.length) + result
             }
             result.substring(0, 8).toLong(16)
         } catch (e: Exception) {
@@ -680,5 +678,4 @@ class AnkiDroidBridge(private val context: Context) {
 
     private fun splitFields(str: String): List<String> =
         str.split(FIELD_SEPARATOR)
-
 }

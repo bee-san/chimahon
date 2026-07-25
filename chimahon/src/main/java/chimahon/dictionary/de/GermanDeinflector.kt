@@ -47,35 +47,41 @@ object GermanDeinflector : Deinflector {
         // past participle: ge...t -> ...en/...n
         val basicPastRegex = Regex("^ge([$GERMAN_LETTERS]+)t$")
         for (suffix in listOf("n", "en")) {
-            add(Rule.Custom(
-                conditionsIn = emptySet(),
-                conditionsOut = setOf("vw"),
-                isInflected = basicPastRegex,
-                deinflectFn = { term -> term.replace(basicPastRegex, "$1$suffix") },
-            ))
+            add(
+                Rule.Custom(
+                    conditionsIn = emptySet(),
+                    conditionsOut = setOf("vw"),
+                    isInflected = basicPastRegex,
+                    deinflectFn = { term -> term.replace(basicPastRegex, "$1$suffix") },
+                ),
+            )
         }
 
         // separable past participle: prefix ge...t -> prefix...en/...n
         val prefixDisjunction = separablePrefixes.joinToString("|")
         val separablePastRegex = Regex("^($prefixDisjunction)ge([$GERMAN_LETTERS]+)t$")
         for (suffix in listOf("n", "en")) {
-            add(Rule.Custom(
-                conditionsIn = emptySet(),
-                conditionsOut = setOf("vw"),
-                isInflected = separablePastRegex,
-                deinflectFn = { term -> term.replace(separablePastRegex, "$1$2$suffix") },
-            ))
+            add(
+                Rule.Custom(
+                    conditionsIn = emptySet(),
+                    conditionsOut = setOf("vw"),
+                    isInflected = separablePastRegex,
+                    deinflectFn = { term -> term.replace(separablePastRegex, "$1$2$suffix") },
+                ),
+            )
         }
 
         // separated prefix: "word ... prefix" -> "word prefix"
         for (prefix in separablePrefixes) {
             val sepRegex = Regex("^([$GERMAN_LETTERS]+) .+ $prefix$")
-            add(Rule.Custom(
-                conditionsIn = emptySet(),
-                conditionsOut = emptySet(),
-                isInflected = sepRegex,
-                deinflectFn = { term -> term.replace(sepRegex, "$1 $prefix") },
-            ))
+            add(
+                Rule.Custom(
+                    conditionsIn = emptySet(),
+                    conditionsOut = emptySet(),
+                    isInflected = sepRegex,
+                    deinflectFn = { term -> term.replace(sepRegex, "$1 $prefix") },
+                ),
+            )
         }
 
         // zu-infinitive: prefixzu -> prefix

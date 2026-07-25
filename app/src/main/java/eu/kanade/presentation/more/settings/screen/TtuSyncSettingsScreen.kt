@@ -54,29 +54,29 @@ import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
 import cafe.adriel.voyager.navigator.LocalNavigator
 import cafe.adriel.voyager.navigator.currentOrThrow
-import eu.kanade.presentation.components.AppBar
-import eu.kanade.presentation.more.settings.widget.PreferenceGroupHeader
-import eu.kanade.presentation.more.settings.widget.SwitchPreferenceWidget
-import eu.kanade.presentation.more.settings.widget.TextPreferenceWidget
-import tachiyomi.presentation.core.components.material.Scaffold
+import com.canopus.chimareader.ttusync.DeviceCodePrompt
 import com.canopus.chimareader.ttusync.DriveAuthStatus
 import com.canopus.chimareader.ttusync.DriveAuthorizationPollResult
-import com.canopus.chimareader.ttusync.DeviceCodePrompt
 import com.canopus.chimareader.ttusync.GoogleCloudOAuthConfiguration
 import com.canopus.chimareader.ttusync.StatisticsSyncMode
 import com.canopus.chimareader.ttusync.SyncMode
 import com.canopus.chimareader.ttusync.TtuOAuthManager
 import com.canopus.chimareader.ttusync.TtuSyncManager
 import com.canopus.chimareader.ttusync.nextDeviceCodePollIntervalSeconds
+import eu.kanade.presentation.components.AppBar
+import eu.kanade.presentation.more.settings.widget.PreferenceGroupHeader
+import eu.kanade.presentation.more.settings.widget.SwitchPreferenceWidget
+import eu.kanade.presentation.more.settings.widget.TextPreferenceWidget
+import eu.kanade.tachiyomi.data.SyncStatus
+import eu.kanade.tachiyomi.util.system.toast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import tachiyomi.presentation.core.components.material.Scaffold
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
-import eu.kanade.tachiyomi.data.SyncStatus
-import eu.kanade.tachiyomi.util.system.toast
 
 @Composable
 fun TtuSyncSettingsScreen() {
@@ -87,7 +87,11 @@ fun TtuSyncSettingsScreen() {
     val syncManager = remember { Injekt.get<TtuSyncManager>() }
     val settings by syncManager.settingsFlow.collectAsState(initial = syncManager.loadSettings())
     val syncStatus = remember {
-        try { Injekt.get<SyncStatus>() } catch (_: Exception) { null }
+        try {
+            Injekt.get<SyncStatus>()
+        } catch (_: Exception) {
+            null
+        }
     }
     var ttuSyncJob by remember { mutableStateOf<Job?>(null) }
 
@@ -219,8 +223,11 @@ fun TtuSyncSettingsScreen() {
             oauthManager.revokeAccess()
             syncManager.clearCache()
             authStatus = run {
-                if (!oauthManager.isConfigured) DriveAuthStatus.MissingConfiguration
-                else DriveAuthStatus.NotConnected
+                if (!oauthManager.isConfigured) {
+                    DriveAuthStatus.MissingConfiguration
+                } else {
+                    DriveAuthStatus.NotConnected
+                }
             }
             message = null
             copyMessage = null
@@ -232,16 +239,22 @@ fun TtuSyncSettingsScreen() {
     val connectionActions = authStatus?.let { aa ->
         when (aa) {
             DriveAuthStatus.Connected -> SyncConnectionActions(
-                showConnect = false, connectEnabled = false,
-                showSignOut = true, signOutEnabled = !isAuthorizing,
+                showConnect = false,
+                connectEnabled = false,
+                showSignOut = true,
+                signOutEnabled = !isAuthorizing,
             )
             DriveAuthStatus.MissingConfiguration -> SyncConnectionActions(
-                showConnect = true, connectEnabled = !isAuthorizing,
-                showSignOut = false, signOutEnabled = false,
+                showConnect = true,
+                connectEnabled = !isAuthorizing,
+                showSignOut = false,
+                signOutEnabled = false,
             )
             DriveAuthStatus.NotConnected, is DriveAuthStatus.Failed -> SyncConnectionActions(
-                showConnect = true, connectEnabled = !isAuthorizing,
-                showSignOut = false, signOutEnabled = false,
+                showConnect = true,
+                connectEnabled = !isAuthorizing,
+                showSignOut = false,
+                signOutEnabled = false,
             )
         }
     }
@@ -308,7 +321,7 @@ fun TtuSyncSettingsScreen() {
             TextPreferenceWidget(
                 title = "Auto Sync",
                 subtitle = autoSyncSubtitle,
-                onPreferenceClick = { showAutoSyncDialog = true }
+                onPreferenceClick = { showAutoSyncDialog = true },
             )
 
             if (settings.autoSyncPeriodic) {
@@ -319,7 +332,7 @@ fun TtuSyncSettingsScreen() {
                     3 to "3 minutes",
                     10 to "10 minutes",
                     15 to "15 minutes",
-                    30 to "30 minutes"
+                    30 to "30 minutes",
                 )
                 TextPreferenceWidget(
                     title = "Periodic sync interval",
@@ -342,7 +355,7 @@ fun TtuSyncSettingsScreen() {
                                 }
                             }
                         }
-                    }
+                    },
                 )
             }
 
@@ -372,7 +385,7 @@ fun TtuSyncSettingsScreen() {
                                             }
                                         }
                                         .padding(vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                                    verticalAlignment = Alignment.CenterVertically,
                                 ) {
                                     androidx.compose.material3.Checkbox(
                                         checked = checked,
@@ -385,7 +398,7 @@ fun TtuSyncSettingsScreen() {
                                                     else -> s
                                                 }
                                             }
-                                        }
+                                        },
                                     )
                                     Spacer(Modifier.width(8.dp))
                                     Text(label)
@@ -397,7 +410,7 @@ fun TtuSyncSettingsScreen() {
                         TextButton(onClick = { showAutoSyncDialog = false }) {
                             Text("OK")
                         }
-                    }
+                    },
                 )
             }
 
@@ -526,8 +539,11 @@ fun TtuSyncSettingsScreen() {
                 Text(
                     text = text,
                     modifier = Modifier.padding(horizontal = 16.dp),
-                    color = if (authStatus is DriveAuthStatus.Failed) MaterialTheme.colorScheme.error
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (authStatus is DriveAuthStatus.Failed) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }

@@ -1,3 +1,5 @@
+@file:Suppress("ktlint:standard:backing-property-naming")
+
 package eu.kanade.presentation.more.settings.screen
 
 import androidx.compose.ui.graphics.Color

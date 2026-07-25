@@ -1,3 +1,5 @@
+@file:Suppress("ktlint:standard:no-wildcard-imports")
+
 package eu.kanade.tachiyomi.ui.dictionary
 
 import android.annotation.SuppressLint
@@ -88,7 +90,7 @@ fun DictionaryEntryWebView(
     val colorScheme = remember(isDark, isAmoled, seedColor) {
         getDictionaryColorScheme(isDark, isAmoled, seedColor)
     }
-    val BgColor = remember(isDark, isAmoled, seedColor, colorScheme) {
+    val backgroundColor = remember(isDark, isAmoled, seedColor, colorScheme) {
         if (isAmoled && isDark) Color.Black else colorScheme.surface
     }
     val wordAudioAutoplay by prefs.wordAudioAutoplay().collectAsState()
@@ -157,7 +159,7 @@ fun DictionaryEntryWebView(
         )
     }
 
-    Box(modifier = modifier.background(BgColor)) {
+    Box(modifier = modifier.background(backgroundColor)) {
         AndroidView<WebView>(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx: android.content.Context ->
@@ -165,7 +167,7 @@ fun DictionaryEntryWebView(
                 (webView.parent as? android.view.ViewGroup)?.removeView(webView)
 
                 if (webView.tag !is DictionaryWebViewState) {
-                    prepareDictionaryWebViewShell(ctx, webView, bootstrapHtml, BgColor.toArgb())
+                    prepareDictionaryWebViewShell(ctx, webView, bootstrapHtml, backgroundColor.toArgb())
                 }
                 (webView.tag as? DictionaryWebViewState)?.let { state ->
                     state.onContentInvalidated = {
@@ -203,7 +205,9 @@ fun DictionaryEntryWebView(
                             }
                             else -> false
                         }
-                    } else false
+                    } else {
+                        false
+                    }
                 }
 
                 webView
@@ -215,8 +219,8 @@ fun DictionaryEntryWebView(
                 }
                 state.onAnkiLookup = onAnkiLookup
                 state.ankiJsBridge.onAnkiLookup = onAnkiLookup
-state.onRecursiveLookup = onRecursiveLookup
-                    state.onTabSelect = onTabSelect
+                state.onRecursiveLookup = onRecursiveLookup
+                state.onTabSelect = onTabSelect
                 state.onBack = onBack
                 state.customCss = customCss
                 state.fontSize = fontSize
@@ -229,7 +233,7 @@ state.onRecursiveLookup = onRecursiveLookup
                     webView.alpha = 1f
                 }
 
-                webView.setBackgroundColor(BgColor.toArgb())
+                webView.setBackgroundColor(backgroundColor.toArgb())
 
                 if (state.pageReady) {
                     val enableRecursive = onRecursiveLookup != null

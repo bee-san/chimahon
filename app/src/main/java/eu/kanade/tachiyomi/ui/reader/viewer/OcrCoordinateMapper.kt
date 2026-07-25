@@ -108,11 +108,19 @@ object OcrCoordinateMapper {
         val rightBlocks: List<OcrTextBlock>
 
         if (isLTR) {
-            leftW = page1W; leftH = page1H; leftBlocks = blocks1
-            rightW = page2W; rightH = page2H; rightBlocks = blocks2
+            leftW = page1W
+            leftH = page1H
+            leftBlocks = blocks1
+            rightW = page2W
+            rightH = page2H
+            rightBlocks = blocks2
         } else {
-            leftW = page2W; leftH = page2H; leftBlocks = blocks2
-            rightW = page1W; rightH = page1H; rightBlocks = blocks1
+            leftW = page2W
+            leftH = page2H
+            leftBlocks = blocks2
+            rightW = page1W
+            rightH = page1H
+            rightBlocks = blocks1
         }
 
         val leftXOffset = 0f
@@ -281,8 +289,10 @@ object OcrCoordinateMapper {
             }
 
             block.copy(
-                xmin = newXmin, ymin = newYmin,
-                xmax = newXmax, ymax = newYmax,
+                xmin = newXmin,
+                ymin = newYmin,
+                xmax = newXmax,
+                ymax = newYmax,
                 lineGeometries = newGeometries,
             )
         }
@@ -378,8 +388,10 @@ object OcrCoordinateMapper {
             }
 
             block.copy(
-                xmin = newXmin, ymin = newYmin,
-                xmax = newXmax, ymax = newYmax,
+                xmin = newXmin,
+                ymin = newYmin,
+                xmax = newXmax,
+                ymax = newYmax,
                 lineGeometries = newGeometries,
             )
         }
@@ -415,8 +427,10 @@ object OcrCoordinateMapper {
             }
 
             block.copy(
-                xmin = newXmin, ymin = newYmin,
-                xmax = newXmax, ymax = newYmax,
+                xmin = newXmin,
+                ymin = newYmin,
+                xmax = newXmax,
+                ymax = newYmax,
                 lineGeometries = newGeometries,
             )
         }

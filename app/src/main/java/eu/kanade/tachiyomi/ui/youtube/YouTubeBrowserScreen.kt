@@ -328,7 +328,7 @@ class YouTubeBrowserScreen : Screen {
     });
     openInApp(window.location.href);
 })();
-""".trimIndent()
+        """.trimIndent()
         view?.evaluateJavascript(script, null)
     }
 
@@ -345,7 +345,7 @@ class YouTubeBrowserScreen : Screen {
         } catch (e) {}
     });
 })();
-""".trimIndent(),
+            """.trimIndent(),
             null,
         )
     }

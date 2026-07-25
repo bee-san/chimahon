@@ -6,7 +6,10 @@ import kotlinx.serialization.json.Json
 import java.io.File
 
 class NovelCategoryStorage(private val context: Context) {
-    private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
+    private val json = Json {
+        ignoreUnknownKeys = true
+        prettyPrint = true
+    }
     private val categoriesFile: File
         get() = File(context.filesDir, "novel_categories.json")
 

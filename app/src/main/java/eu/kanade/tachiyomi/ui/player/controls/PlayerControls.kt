@@ -59,11 +59,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -248,10 +248,12 @@ fun PlayerControls(
     )
     Box(Modifier.fillMaxSize()) {
         if (subtitleLookupRequest != null) {
-            Box(Modifier.fillMaxSize().clickable {
-                subtitleLookupRequest = null
-                if (!wasPlayerAlreadyPause) viewModel.unpause()
-            })
+            Box(
+                Modifier.fillMaxSize().clickable {
+                    subtitleLookupRequest = null
+                    if (!wasPlayerAlreadyPause) viewModel.unpause()
+                },
+            )
         }
         PlayerSubtitleTextLayer(
             text = if (subtitlesVisible) currentSubtitleText else "",
@@ -444,7 +446,7 @@ fun PlayerControls(
                 }
                 AnimatedVisibility(
                     visible =
-                    (controlsShown && !areControlsLocked || gestureSeekAmount != null) ||
+                    ((controlsShown && !areControlsLocked) || gestureSeekAmount != null) ||
                         isLoading ||
                         isLoadingEpisode,
                     enter = fadeIn(playerControlsEnterAnimationSpec()),

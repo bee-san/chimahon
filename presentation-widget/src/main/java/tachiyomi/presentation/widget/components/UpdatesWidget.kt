@@ -31,7 +31,7 @@ import tachiyomi.i18n.MR
 import tachiyomi.presentation.widget.util.columnCountForWidth
 import tachiyomi.presentation.widget.util.coverSizeForGrid
 
-const val UpdatesGridLimit = 12
+const val UPDATES_GRID_LIMIT = 12
 
 @Composable
 fun UpdatesWidget(

@@ -1194,13 +1194,17 @@ private class ReaderAndroidWebView(
                     document.documentElement.style.setProperty('width', iw + 'px', 'important');
                     document.documentElement.style.setProperty('overflow', 'hidden', 'important');
                     b.style.setProperty('overflow', 'hidden', 'important');
-                    ${if (settings.verticalWriting) """
+                    ${if (settings.verticalWriting) {
+            """
                     b.style.setProperty('column-width', pageHeight + 'px', 'important');
                     b.style.setProperty('height', pageHeight + 'px', 'important');
-                    """ else """
+                    """
+        } else {
+            """
                     b.style.setProperty('column-width', iw + 'px', 'important');
                     b.style.setProperty('height', pageHeight + 'px', 'important');
-                    """}
+                    """
+        }}
                 }
 
                 b.style.setProperty('font-size', '${settings.fontSize}px', 'important');

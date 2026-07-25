@@ -13,8 +13,8 @@ import cafe.adriel.voyager.navigator.currentOrThrow
 import eu.kanade.core.util.ifAnimeSourcesLoaded
 import eu.kanade.presentation.browse.anime.GlobalAnimeSearchScreen
 import eu.kanade.presentation.util.Screen
-import eu.kanade.tachiyomi.ui.entries.anime.AnimeScreen
 import eu.kanade.tachiyomi.ui.browse.animesource.browse.BrowseAnimeSourceScreen
+import eu.kanade.tachiyomi.ui.entries.anime.AnimeScreen
 import tachiyomi.presentation.core.screens.LoadingScreen
 
 class GlobalAnimeSearchScreen(

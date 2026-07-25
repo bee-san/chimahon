@@ -1,3 +1,5 @@
+@file:Suppress("ktlint:standard:filename")
+
 package eu.kanade.tachiyomi.data.track.mangabaka
 
 import android.net.Uri
@@ -27,10 +29,9 @@ import kotlinx.coroutines.delay
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import kotlin.time.Duration.Companion.seconds
+import okhttp3.FormBody
 import okhttp3.Headers.Companion.headersOf
 import okhttp3.Interceptor
-import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
 import tachiyomi.core.common.util.lang.withIOContext
@@ -38,12 +39,13 @@ import tachiyomi.i18n.MR
 import uy.kohesive.injekt.injectLazy
 import java.math.RoundingMode
 import java.security.SecureRandom
-import java.util.Base64
 import java.time.Instant
 import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
+import java.util.Base64
 import java.util.Locale
+import kotlin.time.Duration.Companion.seconds
 import tachiyomi.domain.track.model.Track as DomainTrack
 
 class MangaBakaApi(

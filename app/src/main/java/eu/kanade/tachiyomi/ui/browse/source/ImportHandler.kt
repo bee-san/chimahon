@@ -8,7 +8,6 @@ import com.canopus.chimareader.data.BookStorage
 import com.canopus.chimareader.data.NovelCategory
 import com.canopus.chimareader.data.NovelCategoryStorage
 import com.hippo.unifile.UniFile
-import tachiyomi.source.local.LocalSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import tachiyomi.domain.category.repository.CategoryRepository
@@ -17,6 +16,7 @@ import tachiyomi.domain.manga.model.Manga
 import tachiyomi.domain.manga.model.MangaUpdate
 import tachiyomi.domain.manga.repository.MangaRepository
 import tachiyomi.domain.storage.service.StorageManager
+import tachiyomi.source.local.LocalSource
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 
@@ -26,11 +26,11 @@ object ImportHandler {
         val mangaRepository: MangaRepository = Injekt.get()
         val storageManager: StorageManager = Injekt.get()
         val libraryPreferences: LibraryPreferences = Injekt.get()
-        
+
         val localSourceDir = storageManager.getLocalSourceDirectory() ?: return@withContext
         val safeFolderName = MangaImportUtil.getSafeFolderName(folderName)
         val mangaDir = localSourceDir.createDirectory(safeFolderName) ?: return@withContext
-        
+
         uris.forEach { uri ->
             val fileName = getFileName(context, uri) ?: return@forEach
             val file = mangaDir.createFile(fileName) ?: return@forEach
@@ -40,7 +40,7 @@ object ImportHandler {
                 }
             }
         }
-        
+
         addMangaToLibrary(safeFolderName, mangaRepository, libraryPreferences)
     }
 
@@ -48,14 +48,14 @@ object ImportHandler {
         val mangaRepository: MangaRepository = Injekt.get()
         val storageManager: StorageManager = Injekt.get()
         val libraryPreferences: LibraryPreferences = Injekt.get()
-        
+
         val localSourceDir = storageManager.getLocalSourceDirectory() ?: return@withContext
         val safeFolderName = MangaImportUtil.getSafeFolderName(folderName)
         val mangaDir = localSourceDir.createDirectory(safeFolderName) ?: return@withContext
-        
+
         val sourceDir = UniFile.fromUri(context, uri) ?: return@withContext
         val destChapterDir = mangaDir.createDirectory(sourceDir.name ?: "Imported Folder") ?: return@withContext
-        
+
         sourceDir.listFiles()?.forEach { file ->
             if (!file.isDirectory) {
                 val destFile = destChapterDir.createFile(file.name) ?: return@forEach
@@ -66,14 +66,14 @@ object ImportHandler {
                 }
             }
         }
-        
+
         addMangaToLibrary(safeFolderName, mangaRepository, libraryPreferences)
     }
 
     private suspend fun addMangaToLibrary(
         safeFolderName: String,
         mangaRepository: MangaRepository,
-        libraryPreferences: LibraryPreferences
+        libraryPreferences: LibraryPreferences,
     ) {
         val existingManga = mangaRepository.getMangaByUrlAndSourceId(safeFolderName, LocalSource.ID)
         val manga = if (existingManga == null) {
@@ -92,7 +92,7 @@ object ImportHandler {
             }
             existingManga
         }
-        
+
         if (existingManga == null) {
             val defaultCategoryId = libraryPreferences.defaultCategory().get()
             if (defaultCategoryId != -1) {
@@ -103,16 +103,16 @@ object ImportHandler {
 
     suspend fun importNovels(context: Context, uris: List<Uri>) = withContext(Dispatchers.IO) {
         val novelCategoryStorage: NovelCategoryStorage = Injekt.get()
-        
+
         uris.forEach { uri ->
             val result = BookImporter.importEpub(context, uri)
             val bookMetadata = result.metadata ?: return@forEach
-            
+
             // Add to default novel category
             val categories = novelCategoryStorage.loadAllCategories()
-            val defaultCategory = categories.find { it.isSystemCategory } 
+            val defaultCategory = categories.find { it.isSystemCategory }
                 ?: categories.firstOrNull() // Should always have a system category now
-            
+
             if (defaultCategory != null) {
                 val existingCategoryIds = bookMetadata.categoryIds
                     .filter { it.isNotBlank() }
@@ -123,7 +123,7 @@ object ImportHandler {
                     (existingCategoryIds + defaultCategory.id).distinct()
                 }
                 val updatedMetadata = bookMetadata.copy(
-                    categoryIds = updatedCategoryIds
+                    categoryIds = updatedCategoryIds,
                 )
                 val bookDir = java.io.File(BookStorage.getBooksDirectory(context), updatedMetadata.id)
                 BookStorage.saveMetadata(updatedMetadata, bookDir)

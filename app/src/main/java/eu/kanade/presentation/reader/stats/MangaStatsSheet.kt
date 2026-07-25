@@ -25,13 +25,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.canopus.chimareader.data.MangaStatsStorage
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.i18n.stringResource
 import java.time.LocalDate
@@ -45,7 +45,9 @@ data class MangaStatsDisplay(
     val readingSpeed: Int
         get() = if (readingTimeMs > 0) {
             (charactersRead.toDouble() / (readingTimeMs / 3600000.0)).toInt()
-        } else 0
+        } else {
+            0
+        }
 }
 
 data class MangaStatsEstimate(
@@ -194,8 +196,11 @@ private fun formatDuration(totalSeconds: Long): String {
     val s = totalSeconds % 60
     val m = (totalSeconds / 60) % 60
     val h = totalSeconds / 3600
-    return if (h > 0) String.format(Locale.US, "%d:%02d:%02d", h, m, s)
-    else String.format(Locale.US, "%02d:%02d", m, s)
+    return if (h > 0) {
+        String.format(Locale.US, "%d:%02d:%02d", h, m, s)
+    } else {
+        String.format(Locale.US, "%02d:%02d", m, s)
+    }
 }
 
 private fun sessionSpeed(chars: Int, timeMs: Long): Int {

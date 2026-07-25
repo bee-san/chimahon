@@ -1,3 +1,5 @@
+@file:Suppress("PropertyName")
+
 package chimahon.dictionary.ko
 
 object KoreanParserMode {

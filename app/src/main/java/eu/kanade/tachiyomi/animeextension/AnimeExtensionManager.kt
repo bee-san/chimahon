@@ -260,7 +260,7 @@ class AnimeExtensionManager(
 
     private fun AnimeExtension.Installed.updateExists(availableExtension: AnimeExtension.Available? = null): Boolean {
         val availableExt = availableExtension
-            ?: availableExtensionMapFlow.value[pkgName + ":${signatureHash}"]
+            ?: availableExtensionMapFlow.value[pkgName + ":$signatureHash"]
             ?: return false
 
         return (availableExt.versionCode > versionCode || availableExt.libVersion > libVersion)
