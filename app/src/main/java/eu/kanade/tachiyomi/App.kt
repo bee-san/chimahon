@@ -88,6 +88,7 @@ import logcat.LogPriority
 import logcat.LogcatLogger
 import mihon.core.migration.Migrator
 import mihon.core.migration.migrations.migrations
+import mihon.feature.stats.recorder.ImmersionRecorderLifecycleCoordinator
 import mihon.telemetry.TelemetryConfig
 import org.conscrypt.Conscrypt
 import tachiyomi.core.common.i18n.stringResource
@@ -169,9 +170,11 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
 
         setupNotificationChannels()
 
-        ProcessLifecycleOwner.get().lifecycle.addObserver(this)
-
         val scope = ProcessLifecycleOwner.get().lifecycleScope
+        // KMK -->
+        Injekt.get<ImmersionRecorderLifecycleCoordinator>().initialize(scope)
+        // KMK <--
+        ProcessLifecycleOwner.get().lifecycle.addObserver(this)
 
         // Show notification to disable Incognito Mode when it's enabled
         basePreferences.incognitoMode().changes()
@@ -321,6 +324,9 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
 
     override fun onStart(owner: LifecycleOwner) {
         SecureActivityDelegate.onApplicationStart()
+        // KMK -->
+        Injekt.get<ImmersionRecorderLifecycleCoordinator>().onForeground()
+        // KMK <--
 
         val syncPreferences: SyncPreferences = Injekt.get()
         val syncTriggerOpt = syncPreferences.getSyncTriggerOptions()
@@ -335,6 +341,9 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
 
     override fun onStop(owner: LifecycleOwner) {
         SecureActivityDelegate.onApplicationStopped()
+        // KMK -->
+        Injekt.get<ImmersionRecorderLifecycleCoordinator>().onBackground()
+        // KMK <--
 
         // AM (DISCORD) -->
         DiscordRPCService.stop(applicationContext)

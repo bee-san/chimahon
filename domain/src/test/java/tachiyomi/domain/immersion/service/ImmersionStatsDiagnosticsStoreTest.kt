@@ -10,21 +10,31 @@ class ImmersionStatsDiagnosticsStoreTest {
         val store = ImmersionStatsDiagnosticsStore()
 
         store.setQueueDepth(4)
+        store.recordWriteLatency(27)
         store.recordError(ImmersionDiagnosticStage.WRITE, ImmersionDiagnosticErrorCode.DATABASE_BUSY)
         store.recordError(ImmersionDiagnosticStage.INDEX, ImmersionDiagnosticErrorCode.UNSUPPORTED_LANGUAGE)
         store.recordError(ImmersionDiagnosticStage.ROLLUP, ImmersionDiagnosticErrorCode.ROLLUP_FAILED)
         store.recordDroppedCommand()
+        store.recordAbandonedRecovery(2)
+        store.setRollupLag(8)
         store.recordRepair(1234)
 
         store.state.value shouldBe ImmersionStatsDiagnostics(
             queueDepth = 4,
+            maximumQueueDepth = 4,
+            lastWriteLatencyMillis = 27,
             lastWriteError = ImmersionDiagnosticErrorCode.DATABASE_BUSY,
             lastIndexError = ImmersionDiagnosticErrorCode.UNSUPPORTED_LANGUAGE,
             lastRollupError = ImmersionDiagnosticErrorCode.ROLLUP_FAILED,
             lastRepairAtEpochMillis = 1234,
             droppedCommandCount = tachiyomi.domain.immersion.model.NonNegativeCounter(1),
+            abandonedRecoveryCount = tachiyomi.domain.immersion.model.NonNegativeCounter(2),
+            rollupLagEventCount = tachiyomi.domain.immersion.model.NonNegativeCounter(8),
         )
         shouldThrow<IllegalArgumentException> { store.setQueueDepth(-1) }
+        shouldThrow<IllegalArgumentException> { store.recordWriteLatency(-1) }
+        shouldThrow<IllegalArgumentException> { store.recordAbandonedRecovery(-1) }
+        shouldThrow<IllegalArgumentException> { store.setRollupLag(-1) }
         shouldThrow<IllegalArgumentException> { store.recordRepair(-1) }
     }
 }

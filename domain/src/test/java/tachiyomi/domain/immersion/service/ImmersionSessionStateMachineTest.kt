@@ -9,6 +9,8 @@ class ImmersionSessionStateMachineTest {
     fun `foreground active idle active background finalize flow is explicit`() {
         var state = ImmersionSessionState.NOT_STARTED
 
+        state = ImmersionSessionStateMachine.transition(state, SessionTransition.BEGIN_START)
+        state shouldBe ImmersionSessionState.STARTING
         state = ImmersionSessionStateMachine.transition(state, SessionTransition.START)
         state shouldBe ImmersionSessionState.ACTIVE
         state = ImmersionSessionStateMachine.transition(state, SessionTransition.IDLE_TIMEOUT)
@@ -21,6 +23,8 @@ class ImmersionSessionStateMachineTest {
         state shouldBe ImmersionSessionState.PAUSED
         state = ImmersionSessionStateMachine.transition(state, SessionTransition.RESUME)
         state shouldBe ImmersionSessionState.ACTIVE
+        state = ImmersionSessionStateMachine.transition(state, SessionTransition.BEGIN_FINALIZE)
+        state shouldBe ImmersionSessionState.FINALIZING
         state = ImmersionSessionStateMachine.transition(state, SessionTransition.FINALIZE)
         state shouldBe ImmersionSessionState.FINALIZED
     }
@@ -28,32 +32,56 @@ class ImmersionSessionStateMachineTest {
     @Test
     fun `transition table accepts only documented transitions`() {
         val allowed = mapOf(
-            ImmersionSessionState.NOT_STARTED to setOf(SessionTransition.START),
+            ImmersionSessionState.NOT_STARTED to setOf(
+                SessionTransition.BEGIN_START,
+                SessionTransition.SUPPRESS,
+            ),
+            ImmersionSessionState.STARTING to setOf(
+                SessionTransition.START,
+                SessionTransition.FAIL,
+            ),
             ImmersionSessionState.ACTIVE to setOf(
                 SessionTransition.PAUSE,
                 SessionTransition.RESUME,
                 SessionTransition.IDLE_TIMEOUT,
                 SessionTransition.FOREGROUND_LOST,
-                SessionTransition.FINALIZE,
+                SessionTransition.BEGIN_FINALIZE,
+                SessionTransition.FAIL,
             ),
             ImmersionSessionState.PAUSED to setOf(
                 SessionTransition.PAUSE,
                 SessionTransition.RESUME,
                 SessionTransition.FOREGROUND_LOST,
-                SessionTransition.FINALIZE,
+                SessionTransition.BEGIN_FINALIZE,
+                SessionTransition.FAIL,
             ),
             ImmersionSessionState.IDLE to setOf(
+                SessionTransition.PAUSE,
                 SessionTransition.RESUME,
                 SessionTransition.IDLE_TIMEOUT,
                 SessionTransition.FOREGROUND_LOST,
-                SessionTransition.FINALIZE,
+                SessionTransition.BEGIN_FINALIZE,
+                SessionTransition.FAIL,
             ),
             ImmersionSessionState.BACKGROUND to setOf(
                 SessionTransition.FOREGROUND_LOST,
                 SessionTransition.FOREGROUND_RESTORED,
-                SessionTransition.FINALIZE,
+                SessionTransition.BEGIN_FINALIZE,
+                SessionTransition.FAIL,
             ),
-            ImmersionSessionState.FINALIZED to setOf(SessionTransition.FINALIZE),
+            ImmersionSessionState.FINALIZING to setOf(
+                SessionTransition.FINALIZE,
+                SessionTransition.FAIL,
+            ),
+            ImmersionSessionState.FINALIZED to setOf(
+                SessionTransition.FINALIZE,
+                SessionTransition.RESET,
+            ),
+            ImmersionSessionState.FAILED to setOf(SessionTransition.RESET),
+            ImmersionSessionState.SUPPRESSED to setOf(
+                SessionTransition.SUPPRESS,
+                SessionTransition.RESET,
+            ),
         )
 
         ImmersionSessionState.entries.forEach { state ->

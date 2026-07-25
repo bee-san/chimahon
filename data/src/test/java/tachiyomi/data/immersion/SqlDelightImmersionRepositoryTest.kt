@@ -28,6 +28,7 @@ import tachiyomi.data.Reading_sessions
 import tachiyomi.data.StringListColumnAdapter
 import tachiyomi.domain.immersion.model.CharacterVolume
 import tachiyomi.domain.immersion.model.EventId
+import tachiyomi.domain.immersion.model.EventType
 import tachiyomi.domain.immersion.model.ExposureEvent
 import tachiyomi.domain.immersion.model.ImmersionDataException
 import tachiyomi.domain.immersion.model.ImmersionSessionStart
@@ -45,6 +46,7 @@ import tachiyomi.domain.immersion.model.NetCharacterProgress
 import tachiyomi.domain.immersion.model.NonNegativeCounter
 import tachiyomi.domain.immersion.model.PersistenceErrorCode
 import tachiyomi.domain.immersion.model.PersistenceResult
+import tachiyomi.domain.immersion.model.SessionEvent
 import tachiyomi.domain.immersion.model.SessionId
 import tachiyomi.domain.immersion.model.SessionStatus
 import tachiyomi.domain.immersion.model.SourceKind
@@ -240,6 +242,50 @@ class SqlDelightImmersionRepositoryTest {
     }
 
     @Test
+    fun `ordered lifecycle batch is atomic idempotent and advances only active time`() = runTest {
+        prepareSession()
+        val batch = listOf(
+            SessionEvent(
+                id = eventId(1),
+                sessionId = SESSION_ID,
+                sequence = 1,
+                occurredAtEpochMillis = 1_000,
+                timezoneOffsetSeconds = 0,
+                type = EventType.SESSION_STARTED,
+            ),
+            SessionEvent(
+                id = eventId(2),
+                sessionId = SESSION_ID,
+                sequence = 2,
+                occurredAtEpochMillis = 1_500,
+                timezoneOffsetSeconds = 0,
+                type = EventType.HEARTBEAT,
+                activeDuration = MillisecondDuration(500),
+            ),
+            SessionEvent(
+                id = eventId(3),
+                sessionId = SESSION_ID,
+                sequence = 3,
+                occurredAtEpochMillis = 1_500,
+                timezoneOffsetSeconds = 0,
+                type = EventType.PAUSED,
+            ),
+        )
+
+        repository.appendEventBatch(batch) shouldContainExactly List(3) { PersistenceResult.Applied }
+        repository.appendEventBatch(batch) shouldContainExactly List(3) { PersistenceResult.AlreadyApplied }
+
+        repository.getSession(SESSION_ID)?.let { session ->
+            session.lastSequence shouldBe 3
+            session.activeDuration shouldBe MillisecondDuration(500)
+            session.grossCharacters shouldBe NonNegativeCounter.ZERO
+            session.lastHeartbeatAtEpochMillis shouldBe 1_500
+        } shouldNotBe null
+        queryLong("SELECT count(*) FROM immersion_event") shouldBe 3
+        queryLong("SELECT count(*) FROM immersion_source_exposure") shouldBe 0
+    }
+
+    @Test
     fun `event identity conflict is typed and leaves totals unchanged`() = runTest {
         prepareSession()
         repository.appendExposure(exposure(sequence = 1, eventNumber = 1)) shouldBe PersistenceResult.Applied
@@ -339,8 +385,38 @@ class SqlDelightImmersionRepositoryTest {
 
         repository.recoverAbandonedSessions(500) shouldBe 1
 
-        repository.getSession(stale)?.status shouldBe SessionStatus.ABANDONED
+        repository.getSession(stale)?.let { session ->
+            session.status shouldBe SessionStatus.ABANDONED
+            session.endedAtEpochMillis shouldBe 100
+            session.elapsedDuration shouldBe MillisecondDuration(0)
+        }
         repository.getSession(current)?.status shouldBe SessionStatus.ACTIVE
+    }
+
+    @Test
+    fun `abandoned recovery ends at the last persisted active boundary`() = runTest {
+        prepareSession()
+        repository.appendEventBatch(
+            listOf(
+                SessionEvent(
+                    id = eventId(1),
+                    sessionId = SESSION_ID,
+                    sequence = 1,
+                    occurredAtEpochMillis = 4_000,
+                    timezoneOffsetSeconds = 0,
+                    type = EventType.HEARTBEAT,
+                    activeDuration = MillisecondDuration(1_000),
+                ),
+            ),
+        )
+
+        repository.recoverAbandonedSessions(5_000) shouldBe 1
+        repository.getSession(SESSION_ID)?.let { session ->
+            session.status shouldBe SessionStatus.ABANDONED
+            session.endedAtEpochMillis shouldBe 4_000
+            session.elapsedDuration shouldBe MillisecondDuration(3_000)
+            session.activeDuration shouldBe MillisecondDuration(1_000)
+        } shouldNotBe null
     }
 
     @Test

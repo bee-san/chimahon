@@ -36,7 +36,9 @@ import tachiyomi.domain.immersion.model.NetCharacterProgress
 import tachiyomi.domain.immersion.model.NonNegativeCounter
 import tachiyomi.domain.immersion.model.PersistenceErrorCode
 import tachiyomi.domain.immersion.model.PersistenceResult
+import tachiyomi.domain.immersion.model.RecordedImmersionEvent
 import tachiyomi.domain.immersion.model.SessionCursor
+import tachiyomi.domain.immersion.model.SessionEvent
 import tachiyomi.domain.immersion.model.SessionId
 import tachiyomi.domain.immersion.model.SessionPage
 import tachiyomi.domain.immersion.model.SessionStatus
@@ -111,6 +113,18 @@ class SqlDelightImmersionRepository(
         if (events.isEmpty()) return emptyList()
         return handler.await(inTransaction = true) {
             events.map { appendExposureInDatabase(it) }
+        }
+    }
+
+    override suspend fun appendEventBatch(events: List<RecordedImmersionEvent>): List<PersistenceResult> {
+        if (events.isEmpty()) return emptyList()
+        return handler.await(inTransaction = true) {
+            events.map { event ->
+                when (event) {
+                    is ExposureEvent -> appendExposureInDatabase(event)
+                    is SessionEvent -> appendSessionEventInDatabase(event)
+                }
+            }
         }
     }
 
@@ -666,6 +680,56 @@ class SqlDelightImmersionRepository(
         return PersistenceResult.Applied
     }
 
+    private fun Database.appendSessionEventInDatabase(event: SessionEvent): PersistenceResult {
+        val payloadHash = event.payloadHash()
+        val existing = immersionQueries.selectImmersionEventById(event.id.value).executeAsOneOrNull()
+        if (existing != null) {
+            if (existing.payload_hash != payloadHash) {
+                throw identityConflict("Event ${event.id.value} was retried with a different payload")
+            }
+            return PersistenceResult.AlreadyApplied
+        }
+        val sequenceOwner = immersionQueries
+            .selectImmersionEventBySequence(event.sessionId.value, event.sequence)
+            .executeAsOneOrNull()
+        if (sequenceOwner != null) {
+            throw ImmersionDataException(
+                PersistenceErrorCode.SEQUENCE_CONFLICT,
+                "Session sequence ${event.sequence} already belongs to ${sequenceOwner.id}",
+            )
+        }
+        val session = immersionQueries.selectImmersionSessionById(event.sessionId.value).executeAsOneOrNull()
+            ?: throw identityConflict("Session ${event.sessionId.value} does not exist")
+        immersionQueries.insertImmersionEvent(
+            id = event.id.value,
+            sessionId = event.sessionId.value,
+            sequence = event.sequence,
+            occurredAt = event.occurredAtEpochMillis,
+            timezoneOffsetSeconds = event.timezoneOffsetSeconds.toLong(),
+            type = event.type.name,
+            sourceUnitId = null,
+            activeDurationDeltaMs = event.activeDuration.value,
+            grossCharacterDelta = 0,
+            uniqueSourceCharacterDelta = 0,
+            netCharacterDelta = 0,
+            payloadHash = payloadHash,
+        )
+        immersionQueries.advanceImmersionSessionForEvent(
+            activeDurationDeltaMs = event.activeDuration.value,
+            sequence = event.sequence,
+            occurredAt = event.occurredAtEpochMillis,
+            sessionId = event.sessionId.value,
+        )
+        if (immersionQueries.selectImmersionChanges().executeAsOne() != 1L) {
+            throw ImmersionDataException(
+                PersistenceErrorCode.SESSION_NOT_ACTIVE,
+                "Session ${event.sessionId.value} is inactive or expected sequence ${session.last_sequence + 1}",
+            )
+        }
+        immersionQueries.incrementImmersionRevision(event.occurredAtEpochMillis)
+        return PersistenceResult.Applied
+    }
+
     private fun Database.checkExactlyOneChange(operation: String) {
         if (immersionQueries.selectImmersionChanges().executeAsOne() != 1L) {
             throw identityConflict("No row was found while $operation")
@@ -843,6 +907,20 @@ private fun ExposureEvent.payloadHash(): String {
     output.writeLong(netCharacters.value)
     output.writeLong(replayOrdinal.toLong())
     output.writeField(exposurePolicy)
+    return MessageDigest.getInstance("SHA-256")
+        .digest(output.toByteArray())
+        .joinToString("") { "%02x".format(it) }
+}
+
+private fun SessionEvent.payloadHash(): String {
+    val output = ByteArrayOutputStream()
+    output.writeField(id.value)
+    output.writeField(sessionId.value)
+    output.writeLong(sequence)
+    output.writeLong(occurredAtEpochMillis)
+    output.writeLong(timezoneOffsetSeconds.toLong())
+    output.writeField(type.name)
+    output.writeLong(activeDuration.value)
     return MessageDigest.getInstance("SHA-256")
         .digest(output.toByteArray())
         .joinToString("") { "%02x".format(it) }

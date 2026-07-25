@@ -9,6 +9,7 @@ import tachiyomi.domain.immersion.model.ImmersionTitle
 import tachiyomi.domain.immersion.model.MillisecondDuration
 import tachiyomi.domain.immersion.model.PersistenceErrorCode
 import tachiyomi.domain.immersion.model.PersistenceResult
+import tachiyomi.domain.immersion.model.RecordedImmersionEvent
 import tachiyomi.domain.immersion.model.SessionId
 import tachiyomi.domain.immersion.model.SessionStatus
 import tachiyomi.domain.immersion.service.ImmersionDiagnosticErrorCode
@@ -37,6 +38,15 @@ class FeatureFlaggedImmersionRecorderRepository(
     override suspend fun appendExposureBatch(events: List<ExposureEvent>): List<PersistenceResult> {
         if (!isEnabled()) return disabledDelegate.appendExposureBatch(events)
         return runCatching { delegate.appendExposureBatch(events) }
+            .getOrElse { error ->
+                diagnostics.recordError(ImmersionDiagnosticStage.WRITE, error.toDiagnosticCode())
+                List(events.size) { PersistenceResult.Failed(error.toPersistenceCode()) }
+            }
+    }
+
+    override suspend fun appendEventBatch(events: List<RecordedImmersionEvent>): List<PersistenceResult> {
+        if (!isEnabled()) return disabledDelegate.appendEventBatch(events)
+        return runCatching { delegate.appendEventBatch(events) }
             .getOrElse { error ->
                 diagnostics.recordError(ImmersionDiagnosticStage.WRITE, error.toDiagnosticCode())
                 List(events.size) { PersistenceResult.Failed(error.toPersistenceCode()) }
@@ -99,6 +109,9 @@ class NoOpImmersionRecorderRepository : ImmersionRecorderRepository {
     override suspend fun appendExposureBatch(events: List<ExposureEvent>) =
         List(events.size) { PersistenceResult.Disabled }
 
+    override suspend fun appendEventBatch(events: List<RecordedImmersionEvent>) =
+        List(events.size) { PersistenceResult.Disabled }
+
     override suspend fun finalizeSession(
         sessionId: SessionId,
         status: SessionStatus,
@@ -124,4 +137,8 @@ private fun Throwable.toDiagnosticCode(): ImmersionDiagnosticErrorCode {
 }
 
 private fun Throwable.toPersistenceCode(): PersistenceErrorCode =
-    (this as? ImmersionDataException)?.code ?: PersistenceErrorCode.UNKNOWN
+    (this as? ImmersionDataException)?.code ?: when {
+        message.orEmpty().contains("busy", ignoreCase = true) -> PersistenceErrorCode.DATABASE_BUSY
+        message.orEmpty().contains("database", ignoreCase = true) -> PersistenceErrorCode.DATABASE_UNAVAILABLE
+        else -> PersistenceErrorCode.UNKNOWN
+    }

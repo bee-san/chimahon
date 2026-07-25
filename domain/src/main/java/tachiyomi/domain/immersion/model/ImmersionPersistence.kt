@@ -100,21 +100,52 @@ data class ImmersionSourceUnit(
 }
 
 @Serializable
+sealed interface RecordedImmersionEvent {
+    val id: EventId
+    val sessionId: SessionId
+    val sequence: Long
+    val occurredAtEpochMillis: Long
+    val timezoneOffsetSeconds: Int
+    val type: EventType
+    val activeDuration: MillisecondDuration
+}
+
+@Serializable
+data class SessionEvent(
+    override val id: EventId,
+    override val sessionId: SessionId,
+    override val sequence: Long,
+    override val occurredAtEpochMillis: Long,
+    override val timezoneOffsetSeconds: Int,
+    override val type: EventType,
+    override val activeDuration: MillisecondDuration = MillisecondDuration(0),
+) : RecordedImmersionEvent {
+    init {
+        require(sequence > 0) { "Event sequence must be positive" }
+        require(occurredAtEpochMillis >= 0) { "Event timestamp cannot be negative" }
+        require(timezoneOffsetSeconds in MIN_ZONE_OFFSET_SECONDS..MAX_ZONE_OFFSET_SECONDS) {
+            "Event offset is outside the valid UTC offset range"
+        }
+        require(type != EventType.EXPOSURE) { "Exposure events must include a source unit" }
+    }
+}
+
+@Serializable
 data class ExposureEvent(
-    val id: EventId,
-    val sessionId: SessionId,
-    val sequence: Long,
-    val occurredAtEpochMillis: Long,
-    val timezoneOffsetSeconds: Int,
-    val type: EventType = EventType.EXPOSURE,
+    override val id: EventId,
+    override val sessionId: SessionId,
+    override val sequence: Long,
+    override val occurredAtEpochMillis: Long,
+    override val timezoneOffsetSeconds: Int,
+    override val type: EventType = EventType.EXPOSURE,
     val source: ImmersionSourceUnit,
-    val activeDuration: MillisecondDuration,
+    override val activeDuration: MillisecondDuration,
     val grossCharacters: NonNegativeCounter,
     val uniqueSourceCharacters: NonNegativeCounter,
     val netCharacters: NetCharacterProgress,
     val replayOrdinal: Int = 0,
     val exposurePolicy: String,
-) {
+) : RecordedImmersionEvent {
     init {
         require(sequence > 0) { "Event sequence must be positive" }
         require(occurredAtEpochMillis >= 0) { "Event timestamp cannot be negative" }
@@ -336,6 +367,7 @@ enum class PersistenceErrorCode {
     IDENTITY_CONFLICT,
     SEQUENCE_CONFLICT,
     SESSION_NOT_ACTIVE,
+    DATABASE_BUSY,
     DATABASE_UNAVAILABLE,
     CONSTRAINT_VIOLATION,
     UNKNOWN,
@@ -357,5 +389,5 @@ sealed interface PersistenceResult {
     data class Failed(val code: PersistenceErrorCode) : PersistenceResult
 }
 
-private const val MIN_ZONE_OFFSET_SECONDS = -18 * 60 * 60
-private const val MAX_ZONE_OFFSET_SECONDS = 18 * 60 * 60
+internal const val MIN_ZONE_OFFSET_SECONDS = -18 * 60 * 60
+internal const val MAX_ZONE_OFFSET_SECONDS = 18 * 60 * 60
