@@ -456,10 +456,21 @@ data class ImmersionAnkiSnapshot(
     val requestedAtEpochMillis: Long,
     val completedAtEpochMillis: Long?,
     val capabilityVersion: Int,
-    val status: String,
-    val errorCode: String?,
+    val capabilityState: CapabilityState,
+    val providerVersion: String?,
+    val supportsNoteModificationTime: Boolean,
+    val supportsCardModificationTime: Boolean,
+    val supportsReviewHistory: Boolean,
+    val status: AnkiSnapshotStatus,
+    val errorCode: AnkiInventoryFailure?,
+    val itemCount: Int,
+    val noteCount: Int,
+    val matureIntervalDays: Int,
+    val mappingHash: String,
+    val queryDurationMillis: Long?,
     val isComplete: Boolean,
     val isPartial: Boolean,
+    val isCurrent: Boolean,
     val isStale: Boolean,
 ) {
     init {
@@ -470,8 +481,53 @@ data class ImmersionAnkiSnapshot(
             "Snapshot completion cannot precede its request"
         }
         require(capabilityVersion > 0) { "Capability version must be positive" }
-        require(status.isNotBlank()) { "Snapshot status cannot be blank" }
+        require(itemCount >= 0) { "Snapshot item count cannot be negative" }
+        require(noteCount >= 0) { "Snapshot note count cannot be negative" }
+        require(matureIntervalDays > 0) { "Mature interval must be positive" }
+        require(mappingHash.isNotBlank()) { "Snapshot mapping hash cannot be blank" }
+        require(queryDurationMillis == null || queryDurationMillis >= 0) {
+            "Snapshot query duration cannot be negative"
+        }
         require(!(isComplete && isPartial)) { "Snapshot cannot be both complete and partial" }
+        require(!isCurrent || isComplete) { "Only a complete snapshot can be current" }
+    }
+}
+
+@Serializable
+data class ImmersionAnkiItem(
+    val snapshotId: String,
+    val noteId: Long,
+    val cardId: Long,
+    val noteTypeId: Long,
+    val deckId: Long,
+    val languageTag: LanguageTag,
+    val normalizedWord: String,
+    val normalizedReading: String,
+    val characters: Set<UnicodeCodePoint>,
+    val cardType: Int?,
+    val queue: Int?,
+    val intervalDays: Int?,
+    val due: Long?,
+    val repetitions: Int?,
+    val lapses: Int?,
+    val ease: Int?,
+    val noteModifiedAtEpochSeconds: Long?,
+    val matchConfidence: AnkiMatchConfidence,
+    val ambiguityCount: Int,
+    val maturityTier: MaturityTier,
+    val firstMatureAtEpochMillis: Long?,
+) {
+    init {
+        require(snapshotId.isNotBlank()) { "Anki item snapshot ID cannot be blank" }
+        require(noteId >= 0 && cardId >= 0) { "Anki IDs cannot be negative" }
+        require(noteTypeId >= 0 && deckId >= 0) { "Anki scope IDs cannot be negative" }
+        require(normalizedWord.isNotBlank()) { "Normalized Anki word cannot be blank" }
+        require(intervalDays == null || intervalDays >= 0) { "Anki interval cannot be negative" }
+        require(repetitions == null || repetitions >= 0) { "Anki repetitions cannot be negative" }
+        require(lapses == null || lapses >= 0) { "Anki lapses cannot be negative" }
+        require(ambiguityCount >= 0) { "Anki ambiguity count cannot be negative" }
+        require(noteModifiedAtEpochSeconds == null || noteModifiedAtEpochSeconds >= 0)
+        require(firstMatureAtEpochMillis == null || firstMatureAtEpochMillis >= 0)
     }
 }
 

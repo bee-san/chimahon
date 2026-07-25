@@ -264,4 +264,19 @@
     <string name="stats_manga_ocr_coverage_value">%1$d of %2$d pages (%3$d%%)</string>
     <string name="stats_manga_characters_unavailable">Unavailable</string>
     <string name="stats_external_player_not_captured">External-player viewing is not included in immersion statistics because reliable playback callbacks are unavailable.</string>
+    <string name="stats_anki_inventory">Statistics inventory</string>
+    <string name="stats_anki_field_automatic">Automatic from mining mapping</string>
+    <string name="stats_anki_character_from_expression">Derive from expression</string>
+    <string name="stats_anki_expression_field">Expression field</string>
+    <string name="stats_anki_reading_field">Reading field</string>
+    <string name="stats_anki_character_field">Character field</string>
+    <string name="stats_anki_mature_interval">Mature interval</string>
+    <string name="stats_anki_mature_interval_days">%1$d days</string>
+    <string name="stats_anki_multi_card_rule">Multiple-card maturity</string>
+    <string name="stats_anki_aggregation_any_card">Highest interval (any card)</string>
+    <string name="stats_anki_aggregation_all_cards">Lowest interval (all cards)</string>
+    <string name="stats_anki_cache_controls">Inventory cache controls</string>
+    <string name="stats_anki_refresh">Refresh</string>
+    <string name="stats_anki_cancel">Cancel</string>
+    <string name="stats_anki_clear_cache">Clear</string>
 </resources>

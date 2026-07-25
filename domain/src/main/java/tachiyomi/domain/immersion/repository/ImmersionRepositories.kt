@@ -2,6 +2,7 @@ package tachiyomi.domain.immersion.repository
 
 import kotlinx.coroutines.flow.Flow
 import tachiyomi.domain.immersion.model.ExposureEvent
+import tachiyomi.domain.immersion.model.ImmersionAnkiItem
 import tachiyomi.domain.immersion.model.ImmersionAnkiSnapshot
 import tachiyomi.domain.immersion.model.ImmersionGoal
 import tachiyomi.domain.immersion.model.ImmersionIntegrityReport
@@ -15,6 +16,7 @@ import tachiyomi.domain.immersion.model.IndexTerminalReason
 import tachiyomi.domain.immersion.model.IndexWorkItem
 import tachiyomi.domain.immersion.model.IndexedCharacter
 import tachiyomi.domain.immersion.model.IndexedWord
+import tachiyomi.domain.immersion.model.LanguageTag
 import tachiyomi.domain.immersion.model.MillisecondDuration
 import tachiyomi.domain.immersion.model.PersistenceResult
 import tachiyomi.domain.immersion.model.RecordedImmersionEvent
@@ -23,6 +25,8 @@ import tachiyomi.domain.immersion.model.SessionId
 import tachiyomi.domain.immersion.model.SessionPage
 import tachiyomi.domain.immersion.model.SessionStatus
 import tachiyomi.domain.immersion.model.SourceUnitId
+import tachiyomi.domain.immersion.model.UnicodeCodePoint
+import tachiyomi.domain.immersion.service.AnkiCoverage
 
 interface ImmersionRecorderRepository {
     suspend fun upsertTitle(title: ImmersionTitle): PersistenceResult
@@ -115,7 +119,48 @@ interface ImmersionGoalRepository {
 }
 
 interface ImmersionAnkiRepository {
-    suspend fun upsertSnapshot(snapshot: ImmersionAnkiSnapshot)
+    suspend fun activateSnapshot(
+        snapshot: ImmersionAnkiSnapshot,
+        items: List<ImmersionAnkiItem>,
+    )
+
+    suspend fun recordSnapshotAttempt(snapshot: ImmersionAnkiSnapshot)
+
+    suspend fun getCurrentSnapshot(profileId: String): ImmersionAnkiSnapshot?
 
     suspend fun getLatestSnapshot(profileId: String): ImmersionAnkiSnapshot?
+
+    fun observeLatestSnapshot(profileId: String): Flow<ImmersionAnkiSnapshot?>
+
+    suspend fun getCurrentItems(profileId: String): List<ImmersionAnkiItem>
+
+    suspend fun findWordItems(
+        profileId: String,
+        languageTag: LanguageTag,
+        normalizedWord: String,
+        normalizedReading: String,
+    ): List<ImmersionAnkiItem>
+
+    suspend fun findCharacterItems(
+        profileId: String,
+        codePoint: UnicodeCodePoint,
+    ): List<ImmersionAnkiItem>
+
+    suspend fun getWordCoverage(
+        profileId: String,
+        languageTag: LanguageTag,
+    ): AnkiCoverage
+
+    suspend fun getCharacterCoverage(
+        profileId: String,
+        languageTag: LanguageTag,
+    ): AnkiCoverage
+
+    suspend fun recomputeCurrentMaturity(
+        profileId: String,
+        matureIntervalDays: Int,
+        recomputedAtEpochMillis: Long,
+    )
+
+    suspend fun clearSnapshots(profileId: String)
 }

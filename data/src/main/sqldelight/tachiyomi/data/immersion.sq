@@ -370,45 +370,79 @@ CREATE TABLE immersion_anki_snapshot(
     requested_at INTEGER NOT NULL,
     completed_at INTEGER,
     capability_version INTEGER NOT NULL,
+    capability_state TEXT NOT NULL DEFAULT 'UNAVAILABLE',
+    provider_version TEXT,
+    supports_note_modification INTEGER NOT NULL DEFAULT 0,
+    supports_card_modification INTEGER NOT NULL DEFAULT 0,
+    supports_review_history INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL,
     error_code TEXT,
+    item_count INTEGER NOT NULL DEFAULT 0,
+    note_count INTEGER NOT NULL DEFAULT 0,
+    mature_interval_days INTEGER NOT NULL DEFAULT 21,
+    mapping_hash TEXT NOT NULL DEFAULT 'legacy',
+    query_duration_ms INTEGER,
     is_complete INTEGER NOT NULL DEFAULT 0,
     is_partial INTEGER NOT NULL DEFAULT 0,
+    is_current INTEGER NOT NULL DEFAULT 0,
     is_stale INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX immersion_anki_snapshot_profile_time_index
 ON immersion_anki_snapshot(profile_id, requested_at DESC, id DESC);
 
+CREATE UNIQUE INDEX immersion_anki_snapshot_current_profile_index
+ON immersion_anki_snapshot(profile_id)
+WHERE is_current = 1;
+
 CREATE TABLE immersion_anki_item(
     snapshot_id TEXT NOT NULL,
     note_id INTEGER NOT NULL,
     card_id INTEGER NOT NULL,
+    note_type_id INTEGER NOT NULL DEFAULT 0,
+    deck_id INTEGER NOT NULL DEFAULT 0,
+    language_tag TEXT NOT NULL DEFAULT 'und',
     normalized_word TEXT,
     normalized_reading TEXT,
-    character_code_point INTEGER,
     card_type INTEGER,
     queue INTEGER,
     interval_days INTEGER,
     due INTEGER,
+    repetitions INTEGER,
     lapses INTEGER,
     ease INTEGER,
+    note_modified_at INTEGER,
+    match_confidence TEXT NOT NULL DEFAULT 'HEADWORD_ONLY',
+    ambiguity_count INTEGER NOT NULL DEFAULT 0,
     maturity_tier TEXT NOT NULL,
     first_mature_at INTEGER,
     PRIMARY KEY(snapshot_id, card_id),
     FOREIGN KEY(snapshot_id) REFERENCES immersion_anki_snapshot(id) ON DELETE CASCADE,
     CHECK(interval_days IS NULL OR interval_days >= 0),
-    CHECK(lapses IS NULL OR lapses >= 0)
+    CHECK(repetitions IS NULL OR repetitions >= 0),
+    CHECK(lapses IS NULL OR lapses >= 0),
+    CHECK(ambiguity_count >= 0)
 );
 
 CREATE INDEX immersion_anki_item_word_index
-ON immersion_anki_item(normalized_word, normalized_reading, snapshot_id);
+ON immersion_anki_item(language_tag, normalized_word, normalized_reading, snapshot_id);
 
-CREATE INDEX immersion_anki_item_character_index
-ON immersion_anki_item(character_code_point, snapshot_id);
+CREATE INDEX immersion_anki_item_note_index
+ON immersion_anki_item(snapshot_id, note_id);
 
 CREATE INDEX immersion_anki_item_maturity_index
 ON immersion_anki_item(maturity_tier, snapshot_id);
+
+CREATE TABLE immersion_anki_character(
+    snapshot_id TEXT NOT NULL,
+    card_id INTEGER NOT NULL,
+    code_point INTEGER NOT NULL,
+    PRIMARY KEY(snapshot_id, card_id, code_point),
+    FOREIGN KEY(snapshot_id, card_id) REFERENCES immersion_anki_item(snapshot_id, card_id) ON DELETE CASCADE
+);
+
+CREATE INDEX immersion_anki_character_lookup_index
+ON immersion_anki_character(code_point, snapshot_id);
 
 CREATE TABLE immersion_daily_rollup(
     scope_key TEXT NOT NULL PRIMARY KEY,
@@ -1621,10 +1655,21 @@ INSERT INTO immersion_anki_snapshot(
     requested_at,
     completed_at,
     capability_version,
+    capability_state,
+    provider_version,
+    supports_note_modification,
+    supports_card_modification,
+    supports_review_history,
     status,
     error_code,
+    item_count,
+    note_count,
+    mature_interval_days,
+    mapping_hash,
+    query_duration_ms,
     is_complete,
     is_partial,
+    is_current,
     is_stale
 )
 VALUES (
@@ -1634,19 +1679,121 @@ VALUES (
     :requestedAt,
     :completedAt,
     :capabilityVersion,
+    :capabilityState,
+    :providerVersion,
+    :supportsNoteModification,
+    :supportsCardModification,
+    :supportsReviewHistory,
     :status,
     :errorCode,
+    :itemCount,
+    :noteCount,
+    :matureIntervalDays,
+    :mappingHash,
+    :queryDurationMillis,
     :isComplete,
     :isPartial,
+    :isCurrent,
     :isStale
 )
 ON CONFLICT(id) DO UPDATE SET
     completed_at = excluded.completed_at,
+    capability_state = excluded.capability_state,
+    provider_version = excluded.provider_version,
+    supports_note_modification = excluded.supports_note_modification,
+    supports_card_modification = excluded.supports_card_modification,
+    supports_review_history = excluded.supports_review_history,
     status = excluded.status,
     error_code = excluded.error_code,
+    item_count = excluded.item_count,
+    note_count = excluded.note_count,
+    mature_interval_days = excluded.mature_interval_days,
+    mapping_hash = excluded.mapping_hash,
+    query_duration_ms = excluded.query_duration_ms,
     is_complete = excluded.is_complete,
     is_partial = excluded.is_partial,
+    is_current = excluded.is_current,
     is_stale = excluded.is_stale;
+
+clearCurrentImmersionAnkiSnapshot:
+UPDATE immersion_anki_snapshot
+SET is_current = 0,
+    is_stale = 1
+WHERE profile_id = :profileId
+  AND is_current = 1;
+
+markCurrentImmersionAnkiSnapshotStale:
+UPDATE immersion_anki_snapshot
+SET is_stale = 1
+WHERE profile_id = :profileId
+  AND is_current = 1;
+
+setCurrentImmersionAnkiSnapshot:
+UPDATE immersion_anki_snapshot
+SET is_current = 1,
+    is_stale = 0
+WHERE id = :snapshotId;
+
+deleteImmersionAnkiSnapshotItems:
+DELETE FROM immersion_anki_item
+WHERE snapshot_id = :snapshotId;
+
+insertImmersionAnkiItem:
+INSERT INTO immersion_anki_item(
+    snapshot_id,
+    note_id,
+    card_id,
+    note_type_id,
+    deck_id,
+    language_tag,
+    normalized_word,
+    normalized_reading,
+    card_type,
+    queue,
+    interval_days,
+    due,
+    repetitions,
+    lapses,
+    ease,
+    note_modified_at,
+    match_confidence,
+    ambiguity_count,
+    maturity_tier,
+    first_mature_at
+)
+VALUES (
+    :snapshotId,
+    :noteId,
+    :cardId,
+    :noteTypeId,
+    :deckId,
+    :languageTag,
+    :normalizedWord,
+    :normalizedReading,
+    :cardType,
+    :queue,
+    :intervalDays,
+    :due,
+    :repetitions,
+    :lapses,
+    :ease,
+    :noteModifiedAt,
+    :matchConfidence,
+    :ambiguityCount,
+    :maturityTier,
+    :firstMatureAt
+);
+
+insertImmersionAnkiCharacter:
+INSERT INTO immersion_anki_character(snapshot_id, card_id, code_point)
+VALUES (:snapshotId, :cardId, :codePoint);
+
+selectCurrentImmersionAnkiSnapshot:
+SELECT *
+FROM immersion_anki_snapshot
+WHERE profile_id = :profileId
+  AND is_current = 1
+LIMIT 1;
 
 selectLatestImmersionAnkiSnapshot:
 SELECT *
@@ -1654,3 +1801,163 @@ FROM immersion_anki_snapshot
 WHERE profile_id = :profileId
 ORDER BY requested_at DESC, id DESC
 LIMIT 1;
+
+selectCurrentImmersionAnkiItems:
+SELECT item.*
+FROM immersion_anki_item AS item
+JOIN immersion_anki_snapshot AS snapshot
+  ON snapshot.id = item.snapshot_id
+WHERE snapshot.profile_id = :profileId
+  AND snapshot.is_current = 1
+ORDER BY item.note_id, item.card_id;
+
+selectCurrentImmersionAnkiCharacters:
+SELECT character.card_id, character.code_point
+FROM immersion_anki_character AS character
+JOIN immersion_anki_snapshot AS snapshot
+  ON snapshot.id = character.snapshot_id
+WHERE snapshot.profile_id = :profileId
+  AND snapshot.is_current = 1
+ORDER BY character.card_id, character.code_point;
+
+selectImmersionAnkiWordItems:
+SELECT item.*
+FROM immersion_anki_item AS item
+JOIN immersion_anki_snapshot AS snapshot
+  ON snapshot.id = item.snapshot_id
+WHERE snapshot.profile_id = :profileId
+  AND snapshot.is_current = 1
+  AND item.language_tag = :languageTag
+  AND item.normalized_word = :normalizedWord
+  AND (
+    :normalizedReading = ''
+    OR item.normalized_reading = :normalizedReading
+    OR item.normalized_reading = ''
+  )
+ORDER BY item.note_id, item.card_id;
+
+selectImmersionAnkiCharacterItems:
+SELECT item.*
+FROM immersion_anki_item AS item
+JOIN immersion_anki_snapshot AS snapshot
+  ON snapshot.id = item.snapshot_id
+JOIN immersion_anki_character AS character
+  ON character.snapshot_id = item.snapshot_id
+ AND character.card_id = item.card_id
+WHERE snapshot.profile_id = :profileId
+  AND snapshot.is_current = 1
+  AND character.code_point = :codePoint
+ORDER BY item.note_id, item.card_id;
+
+selectImmersionAnkiCharactersForCard:
+SELECT code_point
+FROM immersion_anki_character
+WHERE snapshot_id = :snapshotId
+  AND card_id = :cardId
+ORDER BY code_point;
+
+selectImmersionAnkiWordCoverage:
+WITH encountered AS (
+    SELECT DISTINCT
+        word.normalized_headword,
+        word.normalized_reading
+    FROM immersion_word AS word
+    JOIN immersion_word_occurrence AS occurrence
+      ON occurrence.word_id = word.id
+    JOIN immersion_source_unit AS source
+      ON source.id = occurrence.source_unit_id
+    JOIN immersion_title AS title
+      ON title.id = source.title_id
+    WHERE title.profile_id = :profileId
+      AND word.language_tag = :languageTag
+      AND word.excluded = 0
+)
+SELECT
+    COUNT(*) AS encountered_count,
+    COALESCE(SUM(
+        CASE WHEN EXISTS(
+            SELECT 1
+            FROM immersion_anki_item AS item
+            JOIN immersion_anki_snapshot AS snapshot
+              ON snapshot.id = item.snapshot_id
+            WHERE snapshot.profile_id = :profileId
+              AND snapshot.is_current = 1
+              AND item.language_tag = :languageTag
+              AND item.normalized_word = encountered.normalized_headword
+              AND item.normalized_reading = encountered.normalized_reading
+              AND item.match_confidence = 'READING_AWARE'
+        ) THEN 1 ELSE 0 END
+    ), 0) AS reading_aware_count,
+    COALESCE(SUM(
+        CASE WHEN EXISTS(
+            SELECT 1
+            FROM immersion_anki_item AS item
+            JOIN immersion_anki_snapshot AS snapshot
+              ON snapshot.id = item.snapshot_id
+            WHERE snapshot.profile_id = :profileId
+              AND snapshot.is_current = 1
+              AND item.language_tag = :languageTag
+              AND item.normalized_word = encountered.normalized_headword
+        ) THEN 1 ELSE 0 END
+    ), 0) AS headword_count
+FROM encountered;
+
+selectImmersionAnkiCharacterCoverage:
+WITH encountered AS (
+    SELECT DISTINCT character.code_point
+    FROM immersion_character AS character
+    JOIN immersion_character_occurrence AS occurrence
+      ON occurrence.character_code_point = character.code_point
+    JOIN immersion_source_unit AS source
+      ON source.id = occurrence.source_unit_id
+    JOIN immersion_title AS title
+      ON title.id = source.title_id
+    WHERE title.profile_id = :profileId
+      AND title.language_tag = :languageTag
+)
+SELECT
+    COUNT(*) AS encountered_count,
+    COALESCE(SUM(
+        CASE WHEN EXISTS(
+            SELECT 1
+            FROM immersion_anki_character AS anki_character
+            JOIN immersion_anki_snapshot AS snapshot
+              ON snapshot.id = anki_character.snapshot_id
+            WHERE snapshot.profile_id = :profileId
+              AND snapshot.is_current = 1
+              AND anki_character.code_point = encountered.code_point
+        ) THEN 1 ELSE 0 END
+    ), 0) AS covered_count
+FROM encountered;
+
+recomputeCurrentImmersionAnkiMaturity:
+UPDATE immersion_anki_item
+SET maturity_tier = CASE
+        WHEN card_type = 0 OR queue = 0 THEN 'NEW'
+        WHEN card_type IN (1, 3) OR queue IN (1, 3) THEN 'LEARNING'
+        WHEN card_type = 2 AND COALESCE(interval_days, 0) >= :matureIntervalDays THEN 'MATURE'
+        WHEN card_type = 2 THEN 'YOUNG'
+        ELSE 'UNKNOWN'
+    END,
+    first_mature_at = CASE
+        WHEN card_type = 2
+         AND COALESCE(interval_days, 0) >= :matureIntervalDays
+        THEN COALESCE(first_mature_at, :recomputedAt)
+        ELSE first_mature_at
+    END
+WHERE snapshot_id = (
+    SELECT id
+    FROM immersion_anki_snapshot
+    WHERE profile_id = :profileId
+      AND is_current = 1
+);
+
+updateCurrentImmersionAnkiMatureInterval:
+UPDATE immersion_anki_snapshot
+SET mature_interval_days = :matureIntervalDays
+WHERE profile_id = :profileId
+  AND is_current = 1;
+
+deleteImmersionAnkiSnapshots:
+DELETE FROM immersion_anki_snapshot
+WHERE profile_id = :profileId;

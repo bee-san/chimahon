@@ -95,6 +95,38 @@ enum class MaturityTier {
 }
 
 @Serializable
+enum class AnkiSnapshotStatus {
+    COMPLETE,
+    FAILED,
+    CANCELLED,
+    UNAVAILABLE,
+}
+
+@Serializable
+enum class AnkiInventoryFailure {
+    DISABLED,
+    NOT_INSTALLED,
+    PERMISSION_DENIED,
+    UNSUPPORTED_PROVIDER,
+    MISCONFIGURED_FIELDS,
+    PARTIAL_RESULT,
+    PROVIDER_ERROR,
+}
+
+@Serializable
+enum class AnkiMatchConfidence {
+    READING_AWARE,
+    HEADWORD_ONLY,
+    AMBIGUOUS,
+}
+
+@Serializable
+enum class AnkiMaturityAggregation {
+    MAX_INTERVAL,
+    MIN_INTERVAL,
+}
+
+@Serializable
 enum class CapabilityState {
     AVAILABLE,
     PARTIAL,
