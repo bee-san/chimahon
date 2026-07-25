@@ -15,6 +15,7 @@ import tachiyomi.domain.immersion.model.IndexedCharacter
 import tachiyomi.domain.immersion.model.IndexedWord
 import tachiyomi.domain.immersion.model.MillisecondDuration
 import tachiyomi.domain.immersion.model.PersistenceResult
+import tachiyomi.domain.immersion.model.RecordedImmersionEvent
 import tachiyomi.domain.immersion.model.SessionCursor
 import tachiyomi.domain.immersion.model.SessionId
 import tachiyomi.domain.immersion.model.SessionPage
@@ -31,6 +32,8 @@ interface ImmersionRecorderRepository {
     suspend fun appendExposure(event: ExposureEvent): PersistenceResult
 
     suspend fun appendExposureBatch(events: List<ExposureEvent>): List<PersistenceResult>
+
+    suspend fun appendEventBatch(events: List<RecordedImmersionEvent>): List<PersistenceResult>
 
     suspend fun finalizeSession(
         sessionId: SessionId,

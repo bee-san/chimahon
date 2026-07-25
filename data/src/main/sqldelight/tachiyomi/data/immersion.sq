@@ -790,7 +790,11 @@ recoverAbandonedImmersionSessions:
 UPDATE immersion_session
 SET
     status = 'ABANDONED',
-    ended_at = coalesce(last_heartbeat_at, started_at)
+    ended_at = coalesce(last_heartbeat_at, started_at),
+    elapsed_duration_ms = max(
+        elapsed_duration_ms,
+        coalesce(last_heartbeat_at, started_at) - started_at
+    )
 WHERE
     status = 'ACTIVE'
     AND coalesce(last_heartbeat_at, started_at) < :heartbeatCutoff;
@@ -953,6 +957,17 @@ SET
     unique_source_characters = unique_source_characters + :uniqueSourceCharacterDelta,
     net_characters = net_characters + :netCharacterDelta,
     source_unit_count = source_unit_count + :sourceUnitDelta,
+    last_sequence = :sequence,
+    last_heartbeat_at = max(coalesce(last_heartbeat_at, 0), :occurredAt)
+WHERE
+    id = :sessionId
+    AND status = 'ACTIVE'
+    AND last_sequence + 1 = :sequence;
+
+advanceImmersionSessionForEvent:
+UPDATE immersion_session
+SET
+    active_duration_ms = active_duration_ms + :activeDurationDeltaMs,
     last_sequence = :sequence,
     last_heartbeat_at = max(coalesce(last_heartbeat_at, 0), :occurredAt)
 WHERE

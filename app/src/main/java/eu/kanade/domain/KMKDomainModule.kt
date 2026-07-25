@@ -1,6 +1,7 @@
 package eu.kanade.domain
 
 import mihon.feature.stats.legacy.LegacyStatsImporter
+import mihon.feature.stats.recorder.ImmersionRecorderLifecycleCoordinator
 import tachiyomi.data.immersion.SqlDelightImmersionRepository
 import tachiyomi.data.libraryUpdateError.LibraryUpdateErrorRepositoryImpl
 import tachiyomi.data.libraryUpdateError.LibraryUpdateErrorWithRelationsRepositoryImpl
@@ -15,6 +16,11 @@ import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
 import tachiyomi.domain.immersion.repository.ImmersionRecorderRepository
 import tachiyomi.domain.immersion.repository.ImmersionStatsRepository
 import tachiyomi.domain.immersion.repository.NoOpImmersionRecorderRepository
+import tachiyomi.domain.immersion.service.DefaultImmersionRecorder
+import tachiyomi.domain.immersion.service.ImmersionDeviceIdProvider
+import tachiyomi.domain.immersion.service.ImmersionRecorder
+import tachiyomi.domain.immersion.service.ImmersionRecorderConfiguration
+import tachiyomi.domain.immersion.service.ImmersionShadowMonitor
 import tachiyomi.domain.immersion.service.ImmersionStatsDiagnosticsStore
 import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
 import tachiyomi.domain.libraryUpdateError.interactor.DeleteLibraryUpdateErrors
@@ -38,6 +44,7 @@ class KMKDomainModule : InjektModule {
     override fun InjektRegistrar.registerInjectables() {
         addSingletonFactory { ImmersionStatsPreferences(get()) }
         addSingletonFactory { ImmersionStatsDiagnosticsStore() }
+        addSingletonFactory { ImmersionShadowMonitor() }
         addSingletonFactory { SqlDelightImmersionRepository(get()) }
         addSingletonFactory { NoOpImmersionRecorderRepository() }
         addSingletonFactory<ImmersionRecorderRepository> {
@@ -55,6 +62,25 @@ class KMKDomainModule : InjektModule {
         addSingletonFactory<ImmersionMaintenanceRepository> { get<SqlDelightImmersionRepository>() }
         addSingletonFactory<ImmersionGoalRepository> { get<SqlDelightImmersionRepository>() }
         addSingletonFactory<ImmersionAnkiRepository> { get<SqlDelightImmersionRepository>() }
+        addSingletonFactory<ImmersionRecorder> {
+            val preferences = get<ImmersionStatsPreferences>()
+            DefaultImmersionRecorder(
+                repository = get<SqlDelightImmersionRepository>(),
+                deviceIdProvider = ImmersionDeviceIdProvider { get<eu.kanade.domain.sync.SyncPreferences>().uniqueDeviceID() },
+                captureEnabled = { preferences.captureEnabled().get() },
+                diagnostics = get(),
+                configuration = ImmersionRecorderConfiguration(
+                    idleTimeoutMillis = preferences.readerIdleTimeoutSeconds().get() * 1_000L,
+                ),
+            )
+        }
+        addSingletonFactory {
+            ImmersionRecorderLifecycleCoordinator(
+                recorder = get(),
+                basePreferences = get(),
+                statsPreferences = get(),
+            )
+        }
         addFactory { GetLegacyAggregateTotals(get()) }
         addSingletonFactory {
             LegacyStatsImporter(
