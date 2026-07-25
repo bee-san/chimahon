@@ -1,25 +1,24 @@
 package eu.kanade.tachiyomi.ui.entries.anime
 
 import android.content.Context
-import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.runtime.Immutable
-import androidx.palette.graphics.Palette
+import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.flowWithLifecycle
+import androidx.palette.graphics.Palette
+import cafe.adriel.voyager.core.model.StateScreenModel
+import cafe.adriel.voyager.core.model.screenModelScope
 import coil3.Image
 import coil3.asDrawable
 import coil3.imageLoader
 import coil3.request.ImageRequest
 import coil3.request.allowHardware
-import cafe.adriel.voyager.core.model.StateScreenModel
-import cafe.adriel.voyager.core.model.screenModelScope
 import eu.kanade.core.util.addOrRemove
 import eu.kanade.core.util.insertSeparators
 import eu.kanade.domain.entries.anime.interactor.SetAnimeViewerFlags
-import eu.kanade.domain.ui.UiPreferences
 import eu.kanade.domain.entries.anime.interactor.UpdateAnime
 import eu.kanade.domain.entries.anime.model.downloadedFilter
 import eu.kanade.domain.entries.anime.model.episodesFiltered
@@ -34,19 +33,21 @@ import eu.kanade.domain.entries.anime.model.toDomainAnime
 import eu.kanade.domain.entries.anime.model.toSAnime
 import eu.kanade.domain.episode.interactor.GetAvailableAnimeScanlators
 import eu.kanade.domain.episode.interactor.GetExcludedAnimeScanlators
-import eu.kanade.domain.episode.interactor.SetSeenStatus
 import eu.kanade.domain.episode.interactor.SetExcludedAnimeScanlators
+import eu.kanade.domain.episode.interactor.SetSeenStatus
 import eu.kanade.domain.episode.interactor.SyncEpisodesWithSource
 import eu.kanade.domain.track.anime.interactor.AddAnimeTracks
 import eu.kanade.domain.track.interactor.TrackEpisode
 import eu.kanade.domain.track.model.AutoTrackState
 import eu.kanade.domain.track.service.TrackPreferences
+import eu.kanade.domain.ui.UiPreferences
 import eu.kanade.presentation.entries.DownloadAction
 import eu.kanade.presentation.entries.anime.components.EpisodeDownloadAction
 import eu.kanade.presentation.util.formattedMessage
+import eu.kanade.tachiyomi.animesource.AnimeSource
 import eu.kanade.tachiyomi.animesource.model.FetchType
-import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.model.SAnime
+import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.data.animedownload.AnimeDownloadCache
 import eu.kanade.tachiyomi.data.animedownload.AnimeDownloadManager
 import eu.kanade.tachiyomi.data.animedownload.model.AnimeDownload
@@ -55,7 +56,6 @@ import eu.kanade.tachiyomi.data.torrentServer.service.TorrentServerService
 import eu.kanade.tachiyomi.data.track.EnhancedAnimeTracker
 import eu.kanade.tachiyomi.data.track.TrackerManager
 import eu.kanade.tachiyomi.network.HttpException
-import eu.kanade.tachiyomi.animesource.AnimeSource
 import eu.kanade.tachiyomi.source.isSourceForTorrents
 import eu.kanade.tachiyomi.torrentServer.TorrentServerUtils
 import eu.kanade.tachiyomi.ui.entries.anime.RelatedAnime.Companion.isLoading
@@ -87,7 +87,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import logcat.LogPriority
-import tachiyomi.domain.episode.interactor.FilterEpisodesForDownload
 import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.core.common.preference.CheckboxState
 import tachiyomi.core.common.preference.TriState
@@ -98,8 +97,11 @@ import tachiyomi.core.common.util.lang.withIOContext
 import tachiyomi.core.common.util.lang.withUIContext
 import tachiyomi.core.common.util.system.logcat
 import tachiyomi.data.source.NoResultsException
-import tachiyomi.domain.history.interactor.UpsertAnimeHistory
-import tachiyomi.domain.history.model.AnimeHistoryUpdate
+import tachiyomi.domain.category.interactor.GetAnimeCategories
+import tachiyomi.domain.category.interactor.SetAnimeCategories
+import tachiyomi.domain.category.model.AnimeCategory
+import tachiyomi.domain.category.model.Category
+import tachiyomi.domain.download.service.DownloadPreferences
 import tachiyomi.domain.entries.anime.interactor.GetAnimeWithEpisodes
 import tachiyomi.domain.entries.anime.interactor.GetDuplicateLibraryAnime
 import tachiyomi.domain.entries.anime.interactor.NetworkToLocalAnime
@@ -115,21 +117,19 @@ import tachiyomi.domain.entries.anime.model.SeasonDisplayMode
 import tachiyomi.domain.entries.anime.model.applyFilter
 import tachiyomi.domain.entries.anime.model.asAnimeCover
 import tachiyomi.domain.entries.anime.repository.AnimeRepository
-import tachiyomi.domain.category.interactor.GetAnimeCategories
-import tachiyomi.domain.category.interactor.SetAnimeCategories
-import tachiyomi.domain.category.model.AnimeCategory
-import tachiyomi.domain.category.model.Category
-import tachiyomi.domain.download.service.DownloadPreferences
+import tachiyomi.domain.episode.interactor.FilterEpisodesForDownload
 import tachiyomi.domain.episode.interactor.SetAnimeDefaultEpisodeFlags
-import tachiyomi.domain.season.interactor.SetAnimeDefaultSeasonFlags
 import tachiyomi.domain.episode.interactor.UpdateEpisode
 import tachiyomi.domain.episode.model.Episode
 import tachiyomi.domain.episode.model.EpisodeUpdate
 import tachiyomi.domain.episode.service.calculateChapterGap
 import tachiyomi.domain.episode.service.getEpisodeSort
+import tachiyomi.domain.history.interactor.UpsertAnimeHistory
+import tachiyomi.domain.history.model.AnimeHistoryUpdate
 import tachiyomi.domain.library.service.LibraryPreferences
-import tachiyomi.domain.source.anime.service.AnimeSourceManager
+import tachiyomi.domain.season.interactor.SetAnimeDefaultSeasonFlags
 import tachiyomi.domain.source.anime.model.StubAnimeSource
+import tachiyomi.domain.source.anime.service.AnimeSourceManager
 import tachiyomi.domain.storage.service.StoragePreferences
 import tachiyomi.domain.track.anime.repository.AnimeTrackRepository
 import tachiyomi.i18n.MR
@@ -1782,8 +1782,9 @@ class AnimeScreenModel(
             val filterActive: Boolean
                 get() = when (anime.fetchType) {
                     eu.kanade.tachiyomi.animesource.model.FetchType.Seasons -> anime.seasonsFiltered()
-                    eu.kanade.tachiyomi.animesource.model.FetchType.Episodes -> scanlatorFilterActive ||
-                        anime.episodesFiltered()
+                    eu.kanade.tachiyomi.animesource.model.FetchType.Episodes ->
+                        scanlatorFilterActive ||
+                            anime.episodesFiltered()
                 }
 
             val scanlatorFilterActive: Boolean

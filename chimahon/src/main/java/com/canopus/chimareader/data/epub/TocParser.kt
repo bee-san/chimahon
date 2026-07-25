@@ -29,7 +29,7 @@ class TocParser {
             val labelNode = point.children().firstOrNull { it.tagName().endsWith("navLabel", ignoreCase = true) }
             val textNode = labelNode?.children()?.firstOrNull { it.tagName().endsWith("text", ignoreCase = true) }
             val label = textNode?.text() ?: labelNode?.text() ?: "Unknown"
-            
+
             val contentNode = point.children().firstOrNull { it.tagName().endsWith("content", ignoreCase = true) }
             val href = contentNode?.attr("src") ?: ""
             val decodedHref = java.net.URLDecoder.decode(href, "UTF-8")
@@ -40,8 +40,8 @@ class TocParser {
                     id = id,
                     label = label,
                     href = decodedHref,
-                    children = children
-                )
+                    children = children,
+                ),
             )
         }
 
@@ -56,8 +56,8 @@ class TocParser {
 
     private fun findTocNav(elements: org.jsoup.select.Elements): org.jsoup.nodes.Element? {
         return elements.firstOrNull { nav ->
-            nav.tagName().endsWith("nav", ignoreCase = true) && 
-            (nav.attr("epub:type").contains("toc") || nav.attr("type").contains("toc"))
+            nav.tagName().endsWith("nav", ignoreCase = true) &&
+                (nav.attr("epub:type").contains("toc") || nav.attr("type").contains("toc"))
         }
     }
 
@@ -78,8 +78,8 @@ class TocParser {
                         id = java.util.UUID.randomUUID().toString(),
                         label = label,
                         href = decodedHref,
-                        children = children
-                    )
+                        children = children,
+                    ),
                 )
             }
         }

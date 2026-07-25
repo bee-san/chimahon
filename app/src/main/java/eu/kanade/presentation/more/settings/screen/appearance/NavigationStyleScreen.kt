@@ -86,13 +86,14 @@ class NavigationStyleScreen : Screen() {
         val moreTitle = stringResource(SYMR.strings.pref_nav_section_more)
         val disabledTitle = stringResource(SYMR.strings.pref_nav_section_disabled)
 
-
         // Build flat list: headers + tab entries
         val flatItems = remember(navTabLayoutStr) {
             val layout = NavTabLayout.parse(navTabLayoutStr)
             val filteredLayout = if (Injekt.get<UiPreferences>().useConsolidatedLibrary().get()) {
                 NavTabLayout(layout.entries.filter { it.key != NavTabLayout.KEY_NOVELS && it.key != NavTabLayout.KEY_ANIME })
-            } else layout
+            } else {
+                layout
+            }
             buildFlatList(filteredLayout, resolvedTabTitles, navbarTitle, moreTitle, disabledTitle)
         }
 

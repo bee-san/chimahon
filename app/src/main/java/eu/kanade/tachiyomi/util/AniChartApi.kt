@@ -1,8 +1,8 @@
 package eu.kanade.tachiyomi.util
 
 import androidx.compose.runtime.Immutable
-import tachiyomi.domain.entries.anime.model.Anime
 import eu.kanade.tachiyomi.ui.entries.anime.track.TrackItem
+import tachiyomi.domain.entries.anime.model.Anime
 
 @Immutable
 class AniChartApi {

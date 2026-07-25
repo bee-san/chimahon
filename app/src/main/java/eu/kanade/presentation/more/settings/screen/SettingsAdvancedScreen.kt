@@ -44,10 +44,10 @@ import eu.kanade.presentation.more.settings.screen.debug.DebugInfoScreen
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.core.security.SecurityPreferences
 import eu.kanade.tachiyomi.data.download.DownloadCache
-import eu.kanade.tachiyomi.data.ocr.ModelDownloader
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.data.library.MetadataUpdateJob
 import eu.kanade.tachiyomi.data.library.anime.AnimeMetadataUpdateJob
+import eu.kanade.tachiyomi.data.ocr.ModelDownloader
 import eu.kanade.tachiyomi.data.updater.AppUpdateJob
 import eu.kanade.tachiyomi.network.NetworkHelper
 import eu.kanade.tachiyomi.network.NetworkPreferences
@@ -188,14 +188,17 @@ object SettingsAdvancedScreen : SearchableSettings {
             ),
             kotlin.run {
                 val importLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.OpenDocument()
+                    ActivityResultContracts.OpenDocument(),
                 ) { uri ->
                     if (uri != null) {
                         scope.launch {
                             val result = Injekt.get<ModelDownloader>().importFromUri(uri)
                             context.toast(
-                                if (result.isSuccess) "OCR models imported"
-                                else "Import failed: ${result.exceptionOrNull()?.message}"
+                                if (result.isSuccess) {
+                                    "OCR models imported"
+                                } else {
+                                    "Import failed: ${result.exceptionOrNull()?.message}"
+                                },
                             )
                         }
                     }
@@ -235,8 +238,8 @@ object SettingsAdvancedScreen : SearchableSettings {
                 Preference.PreferenceItem.ListPreference(
                     preference = dictionaryPreferences.koreanParserMode(),
                     entries = persistentMapOf(
-                        KoreanParserMode.Legacy to stringResource(MR.strings.pref_dict_korean_parser_legacy),
-                        KoreanParserMode.Analyzer to stringResource(MR.strings.pref_dict_korean_parser_analyzer),
+                        KoreanParserMode.LEGACY to stringResource(MR.strings.pref_dict_korean_parser_legacy),
+                        KoreanParserMode.ANALYZER to stringResource(MR.strings.pref_dict_korean_parser_analyzer),
                     ),
                     title = stringResource(MR.strings.pref_dict_korean_parser),
                     subtitle = stringResource(MR.strings.pref_dict_korean_parser_summary),

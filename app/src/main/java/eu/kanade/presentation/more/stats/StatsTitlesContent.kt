@@ -90,7 +90,7 @@ private fun StatsTitleListItem(
             modifier = Modifier
                 .width(56.dp)
                 .fillMaxHeight()
-                .clip(RoundedCornerShape(4.dp))
+                .clip(RoundedCornerShape(4.dp)),
         ) {
             if (item.isNovel) {
                 val file = item.coverData as? File
@@ -149,7 +149,7 @@ private fun StatsTitleListItem(
                     modifier = Modifier.padding(top = 2.dp),
                 )
             }
-            
+
             val infoText = buildString {
                 if (item.readDurationMs > 0) {
                     append(formatDuration(item.readDurationMs))

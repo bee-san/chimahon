@@ -6,8 +6,6 @@ import cafe.adriel.voyager.core.model.screenModelScope
 import eu.kanade.domain.source.interactor.ToggleLanguage
 import eu.kanade.domain.source.service.SourcePreferences
 import kotlinx.collections.immutable.ImmutableList
-import tachiyomi.core.common.preference.getAndSet
-import java.util.SortedMap
 import kotlinx.collections.immutable.ImmutableSet
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
@@ -15,11 +13,13 @@ import kotlinx.collections.immutable.toImmutableSet
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
+import tachiyomi.core.common.preference.getAndSet
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.domain.source.anime.model.AnimeSource
 import tachiyomi.domain.source.anime.service.AnimeSourceManager
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
+import java.util.SortedMap
 
 class AnimeSourcesFilterScreenModel(
     private val animeSourceManager: AnimeSourceManager = Injekt.get(),

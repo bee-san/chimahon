@@ -125,7 +125,7 @@ class TtuOAuthManager(private val context: Context) {
             "access_denied" -> DriveAuthorizationPollResult.Failed("Access denied by user")
             "expired_token" -> DriveAuthorizationPollResult.Failed("Device code expired")
             "invalid_client" -> DriveAuthorizationPollResult.Failed(
-                "Google OAuth client is invalid. Use a TVs and Limited Input devices client."
+                "Google OAuth client is invalid. Use a TVs and Limited Input devices client.",
             )
             else -> DriveAuthorizationPollResult.Failed(error)
         }

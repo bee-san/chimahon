@@ -11,16 +11,16 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.core.graphics.ColorUtils
 import androidx.core.view.WindowCompat
+import chimahon.ocr.OcrLanguage
+import chimahon.ocr.OcrResult
 import com.canopus.chimareader.data.BookMetadata
 import com.canopus.chimareader.data.BookStorage
 import com.canopus.chimareader.data.NovelReaderSettings
-import chimahon.ocr.OcrLanguage
-import chimahon.ocr.OcrResult
-import androidx.core.graphics.ColorUtils
 import java.io.File
 
 open class NovelReaderActivity : ComponentActivity() {
@@ -64,7 +64,8 @@ open class NovelReaderActivity : ComponentActivity() {
             android.view.KeyEvent.KEYCODE_DPAD_LEFT, android.view.KeyEvent.KEYCODE_DPAD_RIGHT,
             android.view.KeyEvent.KEYCODE_DPAD_UP, android.view.KeyEvent.KEYCODE_DPAD_DOWN,
             android.view.KeyEvent.KEYCODE_PAGE_UP, android.view.KeyEvent.KEYCODE_PAGE_DOWN,
-            android.view.KeyEvent.KEYCODE_MENU -> return true
+            android.view.KeyEvent.KEYCODE_MENU,
+            -> return true
         }
         return super.onKeyDown(keyCode, event)
     }

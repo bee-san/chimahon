@@ -22,7 +22,6 @@ import androidx.core.graphics.drawable.toDrawable
 import androidx.core.graphics.get
 import androidx.core.graphics.green
 import androidx.core.graphics.red
-import java.io.ByteArrayInputStream
 import androidx.exifinterface.media.ExifInterface
 import com.hippo.unifile.UniFile
 import eu.kanade.tachiyomi.util.system.GLUtil
@@ -31,6 +30,7 @@ import okio.Buffer
 import okio.BufferedSource
 import tachiyomi.decoder.Format
 import tachiyomi.decoder.ImageDecoder
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream

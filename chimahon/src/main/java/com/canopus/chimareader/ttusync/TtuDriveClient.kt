@@ -33,16 +33,22 @@ class TtuDriveClient(
         const val TITLE_FOLDER_IDS_KEY = "titleFolderIds"
     }
 
-    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    private val json = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+    }
     private val cachePreferences = context.applicationContext.getSharedPreferences(CACHE_NAME, Context.MODE_PRIVATE)
     private var rootFolderId: String? = cachePreferences.getString(ROOT_FOLDER_ID_KEY, null)
     private var titleToFolderId: MutableMap<String, String> = cachePreferences
         .getStringSet(TITLE_FOLDER_IDS_KEY, emptySet())
         ?.mapNotNull { encoded ->
             val separator = encoded.indexOf('=')
-            if (separator <= 0) null
-            else encoded.substring(0, separator).urlQueryDecoded() to
-                encoded.substring(separator + 1).urlQueryDecoded()
+            if (separator <= 0) {
+                null
+            } else {
+                encoded.substring(0, separator).urlQueryDecoded() to
+                    encoded.substring(separator + 1).urlQueryDecoded()
+            }
         }
         ?.toMap()
         ?.toMutableMap()

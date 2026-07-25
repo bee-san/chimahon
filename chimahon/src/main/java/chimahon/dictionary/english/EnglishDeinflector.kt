@@ -116,14 +116,16 @@ object EnglishDeinflector : Deinflector {
         addAll(createPhrasalVerbInflections(thirdPersonSgPresentSuffixInflections))
 
         // Phrasal verb with interposed object: "word object particle" -> "word particle"
-        add(Rule.Custom(
-            conditionsIn = emptySet(),
-            conditionsOut = setOf("v_phr"),
-            isInflected = Regex("^\\w* (?:(?!\\b($phrasalVerbWordDisjunction)\\b).)+ (?:$particlesDisjunction)"),
-            deinflectFn = { term ->
-                term.replace(Regex("(?<=\\w) (?:(?!\\b($phrasalVerbWordDisjunction)\\b).)+ (?=(?:$particlesDisjunction))"), " ")
-            },
-        ))
+        add(
+            Rule.Custom(
+                conditionsIn = emptySet(),
+                conditionsOut = setOf("v_phr"),
+                isInflected = Regex("^\\w* (?:(?!\\b($phrasalVerbWordDisjunction)\\b).)+ (?:$particlesDisjunction)"),
+                deinflectFn = { term ->
+                    term.replace(Regex("(?<=\\w) (?:(?!\\b($phrasalVerbWordDisjunction)\\b).)+ (?=(?:$particlesDisjunction))"), " ")
+                },
+            ),
+        )
 
         // Archaic: 'd -> ed
         add(suffixInflection("'d", "ed", setOf("v"), setOf("v")))

@@ -43,6 +43,7 @@ import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import chimahon.DictionaryRepository
 import chimahon.MediaInfo
+import chimahon.anki.AnkiScreenshotMode
 import chimahon.ocr.CropPresets
 import chimahon.ocr.OcrLanguage
 import eu.kanade.tachiyomi.data.ocr.recognizePage
@@ -54,18 +55,18 @@ import eu.kanade.tachiyomi.ui.reader.viewer.fullText
 import eu.kanade.tachiyomi.ui.reader.viewer.isLookupStartChar
 import eu.kanade.tachiyomi.util.system.toast
 import eu.kanade.tachiyomi.util.view.setComposeContent
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import tachiyomi.core.common.i18n.stringResource as contextStringResource
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.i18n.stringResource
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
+import tachiyomi.core.common.i18n.stringResource as contextStringResource
 
 private const val TAP_HINT_DURATION_MS = 1_200L
 
@@ -391,9 +392,14 @@ internal fun ScreenLookupOverlay(
         val cropPreset = chimahon.ocr.CropPresets.aspectByKey(cropPresetKey)
 
         if (selected != null) {
-            val (popupScreenshot, popupOnRequestScreenshot) = if (cropMode == "no_screenshot") {
+            val (popupScreenshot, popupOnRequestScreenshot) = if (
+                cropMode == AnkiScreenshotMode.NONE.storageValue
+            ) {
                 null to null
-            } else if (cropPreset != null) {
+            } else if (
+                cropMode != AnkiScreenshotMode.ANIMATED_SCENE.storageValue &&
+                cropPreset != null
+            ) {
                 val cropped = cropAroundAnchor(
                     bitmap = screenshot,
                     anchorX = selected.anchorX,

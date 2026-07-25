@@ -44,21 +44,24 @@ import cafe.adriel.voyager.navigator.currentOrThrow
 import eu.kanade.core.util.ifAnimeSourcesLoaded
 import eu.kanade.presentation.browse.anime.BrowseAnimeSourceContent
 import eu.kanade.presentation.browse.anime.MissingSourceScreen
-import eu.kanade.presentation.browse.anime.components.ChangeAnimeCategoryDialog
 import eu.kanade.presentation.browse.anime.components.BrowseAnimeSourceToolbar
+import eu.kanade.presentation.browse.anime.components.ChangeAnimeCategoryDialog
 import eu.kanade.presentation.components.SearchToolbar
 import eu.kanade.presentation.entries.anime.DuplicateAnimeDialog
 import eu.kanade.presentation.util.AssistContentScreen
 import eu.kanade.presentation.util.Screen
 import eu.kanade.tachiyomi.animesource.AnimeCatalogueSource
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
-import tachiyomi.core.common.Constants
 import eu.kanade.tachiyomi.ui.browse.animeextension.details.AnimeSourcePreferencesScreen
 import eu.kanade.tachiyomi.ui.category.CategoryScreen
 import eu.kanade.tachiyomi.ui.entries.anime.AnimeScreen
 import eu.kanade.tachiyomi.ui.webview.WebViewScreen
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.receiveAsFlow
 import mihon.feature.animemigration.dialog.MigrateAnimeDialog
 import mihon.presentation.core.util.collectAsLazyPagingItems
+import tachiyomi.core.common.Constants
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.domain.entries.anime.interactor.GetAnime
 import tachiyomi.domain.entries.anime.model.Anime
@@ -73,9 +76,6 @@ import tachiyomi.presentation.core.screens.LoadingScreen
 import tachiyomi.source.local.entries.anime.LocalAnimeSource
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.receiveAsFlow
 
 data class BrowseAnimeSourceScreen(
     val sourceId: Long,

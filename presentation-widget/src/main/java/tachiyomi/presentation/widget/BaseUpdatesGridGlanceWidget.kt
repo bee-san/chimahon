@@ -41,7 +41,7 @@ import tachiyomi.domain.manga.model.MangaCover
 import tachiyomi.domain.updates.interactor.GetUpdates
 import tachiyomi.domain.updates.model.UpdatesWithRelations
 import tachiyomi.presentation.widget.components.LockedWidget
-import tachiyomi.presentation.widget.components.UpdatesGridLimit
+import tachiyomi.presentation.widget.components.UPDATES_GRID_LIMIT
 import tachiyomi.presentation.widget.components.UpdatesWidget
 import tachiyomi.presentation.widget.components.UpdatesWidgetItem
 import tachiyomi.presentation.widget.util.appWidgetBackgroundRadius
@@ -93,7 +93,7 @@ abstract class BaseUpdatesGridGlanceWidget(
                     .subscribe(read = false, after = DateLimit.toEpochMilli())
                     .first()
                     .prepareData(
-                        limit = UpdatesGridLimit,
+                        limit = UPDATES_GRID_LIMIT,
                         coverWidthPx = coverWidthDp.value.toInt().dpToPx,
                         coverHeightPx = coverHeightDp.value.toInt().dpToPx,
                     )

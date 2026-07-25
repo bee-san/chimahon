@@ -4,7 +4,9 @@ package eu.kanade.domain.ui.model
  * Sections a tab can be assigned to in the navigation layout.
  */
 enum class NavSection {
-    NAVBAR, MORE, DISABLED
+    NAVBAR,
+    MORE,
+    DISABLED,
 }
 
 /**
@@ -38,8 +40,13 @@ data class NavTabLayout(
         const val KEY_ANIME = "Anime"
 
         val ALL_KEYS = listOf(
-            KEY_LIBRARY, KEY_NOVELS, KEY_ANIME, KEY_UPDATES, KEY_HISTORY,
-            KEY_BROWSE, KEY_DICTIONARY,
+            KEY_LIBRARY,
+            KEY_NOVELS,
+            KEY_ANIME,
+            KEY_UPDATES,
+            KEY_HISTORY,
+            KEY_BROWSE,
+            KEY_DICTIONARY,
         )
 
         /**

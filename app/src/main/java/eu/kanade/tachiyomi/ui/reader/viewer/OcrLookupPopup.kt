@@ -1,27 +1,35 @@
 package eu.kanade.tachiyomi.ui.reader.viewer
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.graphics.Bitmap
 import android.os.Build
 import android.util.Log
 import android.webkit.WebView
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.statusBars
-import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -36,46 +44,49 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
-import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.text.style.TextOverflow
-import eu.kanade.domain.ui.model.ThemeMode
-import eu.kanade.domain.ui.UiPreferences
-import eu.kanade.presentation.theme.colorscheme.CustomColorScheme
 import chimahon.DictionaryRepository
 import chimahon.KanjiEntry
 import chimahon.KanjiResult
 import chimahon.LookupResult
 import chimahon.MediaInfo
 import chimahon.anki.AnkiCardCreator
+import chimahon.anki.AnkiMediaNaming
+import chimahon.anki.AnkiMediaRequest
+import chimahon.anki.AnkiMediaSource
+import chimahon.anki.AnkiMediaWarning
 import chimahon.anki.AnkiResult
+import chimahon.anki.AnkiScreenshotMode
+import chimahon.anki.AnkiScreenshotPreparation
+import chimahon.anki.LazyAnkiMediaProvider
+import chimahon.anki.LazyAnkiScreenshotProvider
 import chimahon.util.ImageEncoder
-import eu.kanade.tachiyomi.ui.dictionary.buildKanjiEntryJson
+import eu.kanade.domain.ui.UiPreferences
+import eu.kanade.domain.ui.model.ThemeMode
+import eu.kanade.presentation.theme.colorscheme.CustomColorScheme
 import eu.kanade.tachiyomi.ui.dictionary.DictionaryEntryWebView
 import eu.kanade.tachiyomi.ui.dictionary.DictionaryPreferences
-import eu.kanade.tachiyomi.ui.dictionary.getDictionaryColorScheme
 import eu.kanade.tachiyomi.ui.dictionary.TabInfo
+import eu.kanade.tachiyomi.ui.dictionary.buildKanjiEntryJson
+import eu.kanade.tachiyomi.ui.dictionary.getDictionaryColorScheme
 import eu.kanade.tachiyomi.ui.dictionary.getDictionaryPaths
 import eu.kanade.tachiyomi.ui.dictionary.orderLookupResultsForDisplay
 import eu.kanade.tachiyomi.ui.dictionary.stopDictionaryAudio
 import eu.kanade.tachiyomi.util.system.toast
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.drag
-import androidx.compose.ui.input.pointer.positionChange
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -121,7 +132,6 @@ private data class RecursivePopupRequest(
     val entryJsons: List<String>? = null,
 )
 
-
 @Composable
 fun OcrLookupPopup(
     visible: Boolean = true,
@@ -142,6 +152,11 @@ fun OcrLookupPopup(
     screenshot: Bitmap? = null,
     onRequestScreenshot: (suspend () -> Bitmap?)? = null,
     onRequestSentenceAudio: (suspend () -> ByteArray?)? = null,
+    mediaRequest: AnkiMediaRequest? = null,
+    miningBusy: Boolean = false,
+    launchMiningJob: ((suspend () -> Unit) -> Boolean)? = null,
+    onMiningBusy: () -> Unit = {},
+    onAnkiMediaWarnings: (List<AnkiMediaWarning>) -> Unit = {},
     onCropTriggered: ((Long, Int?) -> Unit)? = null,
     initialLookupDeferred: kotlinx.coroutines.Deferred<chimahon.DictionaryRepository.LookupResult2>? = null,
     initialEntryJsons: List<String>? = null,
@@ -214,7 +229,6 @@ fun OcrLookupPopup(
         onDispose { webView.setOnScrollChangeListener(null) }
     }
 
-
     val density = LocalDensity.current
 
     val dictionaryPreferences = remember { Injekt.get<DictionaryPreferences>() }
@@ -265,7 +279,7 @@ fun OcrLookupPopup(
     val colorScheme = remember(isDark, isAmoled, seedColor) {
         getDictionaryColorScheme(isDark, isAmoled, seedColor)
     }
-    val BgColor = remember(isDark, isAmoled, seedColor, colorScheme) {
+    val backgroundColor = remember(isDark, isAmoled, seedColor, colorScheme) {
         if (isAmoled && isDark) Color.Black else colorScheme.surface
     }
 
@@ -478,10 +492,16 @@ fun OcrLookupPopup(
             screenHeightPx - anchorY - anchorHeight - with(density) { 12.dp.toPx() },
         ).toDp().coerceAtLeast(120.dp)
         Pair(
-            if (isRecursiveChild) popupWidthPref.dp.coerceAtMost(childMaxWidth).coerceAtLeast(120.dp)
-            else popupWidthPref.dp.coerceIn(280.dp, sw * 0.9f),
-            if (isRecursiveChild) popupHeightPref.dp.coerceAtMost(childMaxHeight).coerceAtLeast(120.dp)
-            else popupHeightPref.dp.coerceIn(200.dp, sh * 0.8f),
+            if (isRecursiveChild) {
+                popupWidthPref.dp.coerceAtMost(childMaxWidth).coerceAtLeast(120.dp)
+            } else {
+                popupWidthPref.dp.coerceIn(280.dp, sw * 0.9f)
+            },
+            if (isRecursiveChild) {
+                popupHeightPref.dp.coerceAtMost(childMaxHeight).coerceAtLeast(120.dp)
+            } else {
+                popupHeightPref.dp.coerceIn(200.dp, sh * 0.8f)
+            },
         )
     }
 
@@ -515,6 +535,93 @@ fun OcrLookupPopup(
         }
     }
 
+    fun submitMining(block: suspend () -> Unit) {
+        if (miningBusy) {
+            onMiningBusy()
+            return
+        }
+        val launcher = launchMiningJob
+        if (launcher != null) {
+            if (!launcher(block)) {
+                onMiningBusy()
+            }
+        } else {
+            miningScope.launch { block() }
+        }
+    }
+
+    fun legacyLazyMediaRequest(includeScreenshot: Boolean): AnkiMediaRequest? {
+        if (mediaRequest != null) return mediaRequest
+
+        val screenshotMode = AnkiScreenshotMode.fromStorageValue(cropMode)
+        val requestScreenshot = onRequestScreenshot
+        val screenshotProvider = if (
+            includeScreenshot &&
+            screenshotFieldMapped &&
+            screenshotMode != AnkiScreenshotMode.NONE &&
+            requestScreenshot != null
+        ) {
+            LazyAnkiScreenshotProvider {
+                val source = try {
+                    requestScreenshot()?.let { bitmap ->
+                        try {
+                            ImageEncoder.encode(bitmap)
+                                .bytes
+                                .takeIf(ByteArray::isNotEmpty)
+                                ?.let { bytes ->
+                                    AnkiMediaSource.Bytes(
+                                        data = bytes,
+                                        preferredBaseName = "chimahon_screenshot_${AnkiMediaNaming.sha256(bytes)}",
+                                        extension = "webp",
+                                    )
+                                }
+                        } finally {
+                            bitmap.recycle()
+                        }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                }
+                if (screenshotMode == AnkiScreenshotMode.ANIMATED_SCENE) {
+                    AnkiScreenshotPreparation.ExpectedNonVideo(source)
+                } else {
+                    AnkiScreenshotPreparation.Still(source)
+                }
+            }
+        } else {
+            null
+        }
+
+        val requestSentenceAudio = onRequestSentenceAudio
+        val sentenceAudioProvider = if (
+            sentenceAudioFieldMapped &&
+            requestSentenceAudio != null
+        ) {
+            LazyAnkiMediaProvider {
+                requestSentenceAudio()
+                    ?.takeIf(ByteArray::isNotEmpty)
+                    ?.let { bytes ->
+                        AnkiMediaSource.Bytes(
+                            data = bytes,
+                            preferredBaseName = "chimahon_sentence_${AnkiMediaNaming.sha256(bytes)}",
+                            extension = "m4a",
+                        )
+                    }
+            }
+        } else {
+            null
+        }
+
+        if (screenshotProvider == null && sentenceAudioProvider == null) return null
+        return AnkiMediaRequest(
+            screenshotMode = screenshotMode,
+            screenshotProvider = screenshotProvider,
+            sentenceAudioProvider = sentenceAudioProvider,
+        )
+    }
+
     fun performAnkiLookup(
         index: Int,
         glossaryIndex: Int?,
@@ -546,12 +653,8 @@ fun OcrLookupPopup(
         val shouldUseCropMode = screenshotFieldMapped && cropMode == "crop" && onCropTriggered != null
 
         if (shouldUseCropMode) {
-            miningScope.launch {
-                val sentenceAudioBytes = if (sentenceAudioFieldMapped) {
-                    onRequestSentenceAudio?.invoke()
-                } else {
-                    null
-                }
+            submitMining {
+                val effectiveMediaRequest = legacyLazyMediaRequest(includeScreenshot = false)
                 val ankiResult = AnkiCardCreator.addToAnki(
                     context = context,
                     result = result,
@@ -565,7 +668,6 @@ fun OcrLookupPopup(
                     sentence = miningSentence,
                     offset = miningOffset,
                     media = mediaInfo,
-                    sentenceAudioBytes = sentenceAudioBytes,
                     glossaryIndex = glossaryIndex,
                     selection = result.matched,
                     selectedDict = selectedDict,
@@ -576,9 +678,14 @@ fun OcrLookupPopup(
                     syncOnCreate = ankiSyncOnCreate,
                     profileId = activeProfile.id,
                     titleId = titleId,
+                    mediaRequest = effectiveMediaRequest,
                 )
                 if (ankiResult is AnkiResult.Success || ankiResult is AnkiResult.CardExists || ankiResult is AnkiResult.OpenCard) {
                     withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        if (!context.canReceiveMiningUi()) return@withContext
+                        if (ankiResult is AnkiResult.Success) {
+                            onAnkiMediaWarnings(ankiResult.warnings)
+                        }
                         when (ankiResult) {
                             is AnkiResult.Success -> {
                                 updateStatus(result.term.expression)
@@ -593,34 +700,31 @@ fun OcrLookupPopup(
                                 updateStatus(result.term.expression)
                                 chimahon.anki.AnkiDroidBridge(context).guiEditNote(ankiResult.noteId)
                             }
+                            AnkiResult.Cancelled -> Unit
                             else -> {}
                         }
                     }
                 } else {
                     withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        if (!context.canReceiveMiningUi()) return@withContext
+                        if (ankiResult is AnkiResult.Error) {
+                            onAnkiMediaWarnings(ankiResult.warnings)
+                        }
                         when (ankiResult) {
                             is AnkiResult.PermissionDenied -> context.toast(MR.strings.pref_anki_permission_denied)
                             is AnkiResult.Error -> context.toast(
                                 context.stringResource(MR.strings.anki_card_error, ankiResult.message),
                             )
                             is AnkiResult.NotConfigured -> context.toast(MR.strings.anki_not_configured)
+                            AnkiResult.Cancelled -> Unit
                             else -> {}
                         }
                     }
                 }
             }
         } else {
-            miningScope.launch {
-                val encoding = if (screenshotFieldMapped && cropMode != "no_screenshot") {
-                    onRequestScreenshot?.invoke()?.let { ImageEncoder.encode(it) }
-                } else {
-                    null
-                }
-                val sentenceAudioBytes = if (sentenceAudioFieldMapped) {
-                    onRequestSentenceAudio?.invoke()
-                } else {
-                    null
-                }
+            submitMining {
+                val effectiveMediaRequest = legacyLazyMediaRequest(includeScreenshot = true)
                 val ankiResult = AnkiCardCreator.addToAnki(
                     context = context,
                     result = result,
@@ -635,8 +739,6 @@ fun OcrLookupPopup(
                     offset = miningOffset,
                     media = mediaInfo,
                     glossaryIndex = glossaryIndex,
-                    screenshotBytes = encoding?.bytes,
-                    sentenceAudioBytes = sentenceAudioBytes,
                     selection = result.matched,
                     selectedDict = selectedDict,
                     popupSelection = popupSelection,
@@ -646,8 +748,15 @@ fun OcrLookupPopup(
                     syncOnCreate = ankiSyncOnCreate,
                     profileId = activeProfile.id,
                     titleId = titleId,
+                    mediaRequest = effectiveMediaRequest,
                 )
                 withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    if (!context.canReceiveMiningUi()) return@withContext
+                    when (ankiResult) {
+                        is AnkiResult.Success -> onAnkiMediaWarnings(ankiResult.warnings)
+                        is AnkiResult.Error -> onAnkiMediaWarnings(ankiResult.warnings)
+                        else -> Unit
+                    }
                     when (ankiResult) {
                         is AnkiResult.Success -> {
                             updateStatus(result.term.expression)
@@ -666,6 +775,7 @@ fun OcrLookupPopup(
                             context.stringResource(MR.strings.anki_card_error, ankiResult.message),
                         )
                         is AnkiResult.NotConfigured -> context.toast(MR.strings.anki_not_configured)
+                        AnkiResult.Cancelled -> Unit
                     }
                 }
             }
@@ -716,66 +826,66 @@ fun OcrLookupPopup(
                 }
             }
             else -> {
-            w = minOf(popupWidthPx, screenWidthPx)
-            h = minOf(popupHeightPx, screenHeightPx)
+                w = minOf(popupWidthPx, screenWidthPx)
+                h = minOf(popupHeightPx, screenHeightPx)
 
-            val ax = anchorX
-            val ay = anchorY
-            val aw = anchorWidth
-            val ah = anchorHeight
-            val acx = ax + aw / 2f
-            val acy = ay + ah / 2f
+                val ax = anchorX
+                val ay = anchorY
+                val aw = anchorWidth
+                val ah = anchorHeight
+                val acx = ax + aw / 2f
+                val acy = ay + ah / 2f
 
-            val expW = maxOf(aw, 1f)
-            val expH = maxOf(ah, 1f)
+                val expW = maxOf(aw, 1f)
+                val expH = maxOf(ah, 1f)
 
-            // 4 candidate positions (top-left corner of popup)
-            data class Pos(val x: Float, val y: Float)
+                // 4 candidate positions (top-left corner of popup)
+                data class Pos(val x: Float, val y: Float)
 
-            val right  = Pos(ax + expW + gapPx, acy - h / 2f) // Right of full term
-            val left   = Pos(ax - w - gapPx, acy - h / 2f) // Left of anchor
-            val below  = Pos(acx - w / 2f, ay + expH + gapPx) // Below full term
-            val above  = Pos(acx - w / 2f, ay - h - gapPx) // Above anchor
+                val right = Pos(ax + expW + gapPx, acy - h / 2f) // Right of full term
+                val left = Pos(ax - w - gapPx, acy - h / 2f) // Left of anchor
+                val below = Pos(acx - w / 2f, ay + expH + gapPx) // Below full term
+                val above = Pos(acx - w / 2f, ay - h - gapPx) // Above anchor
 
-            val all = listOf(right, left, below, above)
+                val all = listOf(right, left, below, above)
 
-            // Priority order: 0=Right, 1=Left, 2=Below, 3=Above
-            val order = if (isRecursiveChild) {
-                if (acy < screenHeightPx / 2f) listOf(2, 3, 0, 1) else listOf(3, 2, 0, 1)
-            } else if (isVertical) {
-                if (acx < screenWidthPx / 2f) listOf(0, 1, 2, 3) else listOf(1, 0, 2, 3)
-            } else {
-                if (acy < screenHeightPx / 2f) listOf(2, 3, 0, 1) else listOf(3, 2, 0, 1)
-            }
-
-            var bx = paddingPx
-            var by = paddingPx
-            var found = false
-
-            for (idx in order) {
-                val p = all[idx]
-                val cx = p.x.coerceIn(paddingPx, screenWidthPx - w - paddingPx)
-                val cy = p.y.coerceIn(paddingPx, screenHeightPx - h - paddingPx)
-
-                val overlaps = cx < ax + expW && cx + w > ax &&
-                    cy < ay + expH && cy + h > ay
-
-                if (!overlaps) {
-                    bx = cx
-                    by = cy
-                    found = true
-                    break
+                // Priority order: 0=Right, 1=Left, 2=Below, 3=Above
+                val order = if (isRecursiveChild) {
+                    if (acy < screenHeightPx / 2f) listOf(2, 3, 0, 1) else listOf(3, 2, 0, 1)
+                } else if (isVertical) {
+                    if (acx < screenWidthPx / 2f) listOf(0, 1, 2, 3) else listOf(1, 0, 2, 3)
+                } else {
+                    if (acy < screenHeightPx / 2f) listOf(2, 3, 0, 1) else listOf(3, 2, 0, 1)
                 }
-            }
 
-            if (!found) {
-                val pref = all[order[0]]
-                bestX = pref.x.coerceIn(paddingPx, screenWidthPx - w - paddingPx)
-                bestY = pref.y.coerceIn(paddingPx, screenHeightPx - h - paddingPx)
-            } else {
-                bestX = bx
-                bestY = by
-            }
+                var bx = paddingPx
+                var by = paddingPx
+                var found = false
+
+                for (idx in order) {
+                    val p = all[idx]
+                    val cx = p.x.coerceIn(paddingPx, screenWidthPx - w - paddingPx)
+                    val cy = p.y.coerceIn(paddingPx, screenHeightPx - h - paddingPx)
+
+                    val overlaps = cx < ax + expW && cx + w > ax &&
+                        cy < ay + expH && cy + h > ay
+
+                    if (!overlaps) {
+                        bx = cx
+                        by = cy
+                        found = true
+                        break
+                    }
+                }
+
+                if (!found) {
+                    val pref = all[order[0]]
+                    bestX = pref.x.coerceIn(paddingPx, screenWidthPx - w - paddingPx)
+                    bestY = pref.y.coerceIn(paddingPx, screenHeightPx - h - paddingPx)
+                } else {
+                    bestX = bx
+                    bestY = by
+                }
             }
         }
 
@@ -784,7 +894,6 @@ fun OcrLookupPopup(
 
     val actualWidthDp = with(density) { layoutResult.widthPx.toDp() }
     val actualHeightDp = with(density) { layoutResult.heightPx.toDp() }
-
 
     LaunchedEffect(visible) {
         if (!visible) {
@@ -849,7 +958,7 @@ fun OcrLookupPopup(
                         styles = emptyList(),
                         mediaDataUris = emptyMap(),
                         error = null,
-                    )
+                    ),
                 )
                 childPopupRequest = RecursivePopupRequest(
                     query = word,
@@ -954,7 +1063,7 @@ fun OcrLookupPopup(
         val chromeBackground = if (eInkMode) {
             if (isDark) Color.Black else Color.White
         } else {
-            BgColor
+            backgroundColor
         }
         val chromeText = if (eInkMode) {
             if (isDark) Color.White else Color.Black
@@ -1046,7 +1155,7 @@ fun OcrLookupPopup(
         val chromeBackground = if (eInkMode) {
             if (isDark) Color.Black else Color.White
         } else {
-            BgColor
+            backgroundColor
         }
         val chromeText = if (eInkMode) {
             if (isDark) Color.White else Color.Black
@@ -1150,7 +1259,7 @@ fun OcrLookupPopup(
                     // Consume taps on the popup itself to prevent them from falling through to the reader
                 },
             shape = RoundedCornerShape(if (eInkMode) 0.dp else 8.dp),
-            color = BgColor,
+            color = backgroundColor,
             tonalElevation = 0.dp,
             shadowElevation = if (eInkMode) 0.dp else 6.dp,
         ) {
@@ -1165,63 +1274,63 @@ fun OcrLookupPopup(
                         .weight(1f),
                 ) {
                     DictionaryEntryWebView(
-                    results = results,
-                    styles = styles,
-                    mediaDataUris = mediaDataUris,
-                    placeholder = if (isLoading || currentFrame == null) "" else "No results found",
-                    headerText = lookupString.take(20) + if (lookupString.length > 20) "…" else "",
-                    fontSize = popupFontSizePref,
-                    showFrequencyHarmonic = showFreqHarmonic,
-                    showFrequencyAverage = showFreqAverage,
-                    groupTerms = groupTerms,
-                    showPitchDiagram = showPitchDiagram,
-                    showPitchNumber = showPitchNumber,
-                    showPitchText = showPitchText,
-                    activeProfile = activeProfile,
-                    existingExpressions = existingExpressions,
-                    tabs = lookupStackState.buildTabs(),
-                    recursiveNavMode = recursiveNavMode,
-                    renderRecursiveChrome = false,
-                    customCss = customCss,
-                    wordAudioEnabled = wordAudioEnabled,
-                    // Suppress autoplay when the popup is hidden (warm shell still in
-                    // composition). Without this the WebView fires audio on a new lookup
-                    // result even while the popup is invisible to the user.
-                    wordAudioAutoplayOverride = if (visible) wordAudioAutoplay else false,
-                    groupPitches = groupPitches,
-                    requestFocusOnMount = true,
-                    entryJsons = entryJsons,
-                    webViewProvider = { webView },
-                    onAnkiLookup = onAnkiLookup,
-                    onRecursiveLookup = onRecursiveLookup,
-                    onTabSelect = onTabSelect,
-                    onBack = onBack,
-                    hideOnContentInvalidated = true,
-                    isLoading = isLoading,
-                    onContentReadyChange = { ready ->
-                        if (ready) {
-                            contentReady = true
-                            lastRenderedLookupGeneration = lookupGeneration
-                        } else {
-                            // Hide stale content only when a new top-level lookup
-                            // has started. Same-generation invalidations (e.g. Anki
-                            // status patches) keep the current content visible.
-                            if (lookupGeneration != lastRenderedLookupGeneration) {
-                                contentReady = false
+                        results = results,
+                        styles = styles,
+                        mediaDataUris = mediaDataUris,
+                        placeholder = if (isLoading || currentFrame == null) "" else "No results found",
+                        headerText = lookupString.take(20) + if (lookupString.length > 20) "…" else "",
+                        fontSize = popupFontSizePref,
+                        showFrequencyHarmonic = showFreqHarmonic,
+                        showFrequencyAverage = showFreqAverage,
+                        groupTerms = groupTerms,
+                        showPitchDiagram = showPitchDiagram,
+                        showPitchNumber = showPitchNumber,
+                        showPitchText = showPitchText,
+                        activeProfile = activeProfile,
+                        existingExpressions = existingExpressions,
+                        tabs = lookupStackState.buildTabs(),
+                        recursiveNavMode = recursiveNavMode,
+                        renderRecursiveChrome = false,
+                        customCss = customCss,
+                        wordAudioEnabled = wordAudioEnabled,
+                        // Suppress autoplay when the popup is hidden (warm shell still in
+                        // composition). Without this the WebView fires audio on a new lookup
+                        // result even while the popup is invisible to the user.
+                        wordAudioAutoplayOverride = if (visible) wordAudioAutoplay else false,
+                        groupPitches = groupPitches,
+                        requestFocusOnMount = true,
+                        entryJsons = entryJsons,
+                        webViewProvider = { webView },
+                        onAnkiLookup = onAnkiLookup,
+                        onRecursiveLookup = onRecursiveLookup,
+                        onTabSelect = onTabSelect,
+                        onBack = onBack,
+                        hideOnContentInvalidated = true,
+                        isLoading = isLoading,
+                        onContentReadyChange = { ready ->
+                            if (ready) {
+                                contentReady = true
+                                lastRenderedLookupGeneration = lookupGeneration
+                            } else {
+                                // Hide stale content only when a new top-level lookup
+                                // has started. Same-generation invalidations (e.g. Anki
+                                // status patches) keep the current content visible.
+                                if (lookupGeneration != lastRenderedLookupGeneration) {
+                                    contentReady = false
+                                }
                             }
-                        }
-                        onContentReadyChange?.invoke(ready)
-                    },
-                    modifier = Modifier.fillMaxSize(),
-                )
-
-                if (errorMessage != null) {
-                    Text(
-                        text = errorMessage!!,
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(16.dp).align(Alignment.Center)
+                            onContentReadyChange?.invoke(ready)
+                        },
+                        modifier = Modifier.fillMaxSize(),
                     )
-                }
+
+                    if (errorMessage != null) {
+                        Text(
+                            text = errorMessage!!,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(16.dp).align(Alignment.Center),
+                        )
+                    }
                 }
             }
         }
@@ -1257,7 +1366,7 @@ fun OcrLookupPopup(
                 .offset(
                     x = with(LocalDensity.current) { if (visible) layoutResult.x.toDp() else hideOffset },
                     y = with(LocalDensity.current) { if (visible) layoutResult.y.toDp() else hideOffset },
-                )
+                ),
         ) {
             if (dismissOnOutsideTap) {
                 Box(
@@ -1268,7 +1377,7 @@ fun OcrLookupPopup(
                             interactionSource = remember { MutableInteractionSource() },
                         ) {
                             dismissPopup()
-                        }
+                        },
                 )
             }
             PopupContent()
@@ -1309,6 +1418,11 @@ fun OcrLookupPopup(
             screenshot = screenshot,
             onRequestScreenshot = onRequestScreenshot,
             onRequestSentenceAudio = onRequestSentenceAudio,
+            mediaRequest = mediaRequest,
+            miningBusy = miningBusy,
+            launchMiningJob = launchMiningJob,
+            onMiningBusy = onMiningBusy,
+            onAnkiMediaWarnings = onAnkiMediaWarnings,
             onCropTriggered = onCropTriggered,
             usePopup = usePopup,
             onTermMatched = null,
@@ -1319,4 +1433,19 @@ fun OcrLookupPopup(
             titleId = titleId,
         )
     }
+}
+
+private fun Context.canReceiveMiningUi(): Boolean {
+    var current: Context = this
+    while (current is ContextWrapper) {
+        if (current is Activity) {
+            return !current.isFinishing && !current.isDestroyed
+        }
+        val base = current.baseContext
+        if (base === current) break
+        current = base
+    }
+    // Mining completion may outlive the Activity while the provider commit drains. A context
+    // without a live Activity is not a safe target for remembered Compose state or navigation.
+    return false
 }

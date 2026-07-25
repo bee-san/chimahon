@@ -32,7 +32,7 @@ dependencies {
     implementation(kotlinx.coroutines.core)
     implementation(kotlinx.serialization.protobuf)
     implementation(kotlinx.serialization.json)
-    
+
     // Compose
     implementation(compose.activity)
     implementation(compose.foundation)
@@ -57,11 +57,12 @@ dependencies {
 
     // Dependency injection
     implementation(libs.injekt)
-    
+
     // Mihon core
     implementation(projects.core.common)
     implementation(libs.unifile)
 
     testImplementation(libs.bundles.test)
+    testImplementation("org.json:json:20260522")
     testRuntimeOnly(libs.junit.platform.launcher)
 }

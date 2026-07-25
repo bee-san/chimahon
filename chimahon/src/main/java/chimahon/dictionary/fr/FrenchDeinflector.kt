@@ -2704,7 +2704,6 @@ object FrenchDeinflector : Deinflector {
         suffixInflection("t", "ir", setOf("v"), setOf("v")),
         suffixInflection("ssions", "ir", setOf("v"), setOf("v")),
         suffixInflection("ssiez", "ir", setOf("v"), setOf("v")),
-        suffixInflection("ssent", "ir", setOf("v"), setOf("v"))
+        suffixInflection("ssent", "ir", setOf("v"), setOf("v")),
     )
 }
-

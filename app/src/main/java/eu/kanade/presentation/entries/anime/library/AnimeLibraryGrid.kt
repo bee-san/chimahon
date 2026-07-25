@@ -6,15 +6,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import tachiyomi.presentation.core.util.plus
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -39,9 +38,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
@@ -57,6 +56,7 @@ import tachiyomi.presentation.core.components.BadgeGroup
 import tachiyomi.presentation.core.components.ScrollbarLazyColumn
 import tachiyomi.presentation.core.i18n.stringResource
 import tachiyomi.presentation.core.screens.EmptyScreen
+import tachiyomi.presentation.core.util.plus
 import tachiyomi.presentation.core.util.selectedBackground
 import tachiyomi.source.local.entries.anime.isLocal
 import uy.kohesive.injekt.Injekt
@@ -309,12 +309,12 @@ private fun AnimeLibraryList(
         items(
             items = items,
             key = { it.libraryAnime.id },
-            ) { item ->
-                val isSelected = item.libraryAnime.id in selection
-                val badgePrefs = remember { Injekt.get<AnimeLibraryPreferences>() }
-                val showUnseenBadge by remember { badgePrefs.unseenBadge().changes() }.collectAsState(badgePrefs.unseenBadge().get())
-                val showLocalBadge by remember { badgePrefs.localBadge().changes() }.collectAsState(badgePrefs.localBadge().get())
-                Row(
+        ) { item ->
+            val isSelected = item.libraryAnime.id in selection
+            val badgePrefs = remember { Injekt.get<AnimeLibraryPreferences>() }
+            val showUnseenBadge by remember { badgePrefs.unseenBadge().changes() }.collectAsState(badgePrefs.unseenBadge().get())
+            val showLocalBadge by remember { badgePrefs.localBadge().changes() }.collectAsState(badgePrefs.localBadge().get())
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .selectedBackground(isSelected)

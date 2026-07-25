@@ -1,12 +1,12 @@
 package com.canopus.chimareader.data
 
 object FileNames {
-    const val metadata = "metadata.json"
-    const val bookmark = "bookmark.json"
-    const val bookinfo = "bookinfo.json"
-    const val statistics = "statistics.json"
-    const val sasayakiMatches = "sasayaki_matches.json"
-    const val sasayakiPlayback = "sasayaki_playback.json"
-    const val ankiStats = "anki_stats.json"
-    const val mangaStats = "manga_stats.json"
+    const val METADATA = "metadata.json"
+    const val BOOKMARK = "bookmark.json"
+    const val BOOK_INFO = "bookinfo.json"
+    const val STATISTICS = "statistics.json"
+    const val SASAYAKI_MATCHES = "sasayaki_matches.json"
+    const val SASAYAKI_PLAYBACK = "sasayaki_playback.json"
+    const val ANKI_STATS = "anki_stats.json"
+    const val MANGA_STATS = "manga_stats.json"
 }

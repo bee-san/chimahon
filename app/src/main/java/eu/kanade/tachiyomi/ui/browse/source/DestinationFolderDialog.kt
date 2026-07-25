@@ -35,7 +35,7 @@ sealed class PendingImportData {
 fun DestinationFolderDialog(
     pendingImportData: PendingImportData,
     onDismissRequest: () -> Unit,
-    onImport: (String) -> Unit
+    onImport: (String) -> Unit,
 ) {
     var folderName by remember { mutableStateOf("") }
     var existingFolders by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -64,7 +64,7 @@ fun DestinationFolderDialog(
                     singleLine = true,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 8.dp)
+                        .padding(bottom = 8.dp),
                 )
                 if (existingFolders.isNotEmpty()) {
                     Text("Or select existing:", modifier = Modifier.padding(bottom = 4.dp))
@@ -75,7 +75,7 @@ fun DestinationFolderDialog(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable { folderName = folder }
-                                    .padding(8.dp)
+                                    .padding(8.dp),
                             )
                         }
                     }
@@ -85,7 +85,7 @@ fun DestinationFolderDialog(
         confirmButton = {
             TextButton(
                 onClick = { onImport(folderName) },
-                enabled = folderName.isNotBlank()
+                enabled = folderName.isNotBlank(),
             ) {
                 Text("Import")
             }
@@ -94,6 +94,6 @@ fun DestinationFolderDialog(
             TextButton(onClick = onDismissRequest) {
                 Text("Cancel")
             }
-        }
+        },
     )
 }

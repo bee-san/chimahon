@@ -2,10 +2,10 @@ package eu.kanade.domain.entries.anime.interactor
 
 import eu.kanade.domain.entries.anime.model.hasCustomBackground
 import eu.kanade.domain.entries.anime.model.hasCustomCover
-import eu.kanade.tachiyomi.data.cache.AnimeBackgroundCache
-import eu.kanade.tachiyomi.data.cache.CoverCache
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.toUpdateStrategy
+import eu.kanade.tachiyomi.data.cache.AnimeBackgroundCache
+import eu.kanade.tachiyomi.data.cache.CoverCache
 import tachiyomi.domain.entries.anime.interactor.FetchInterval
 import tachiyomi.domain.entries.anime.model.Anime
 import tachiyomi.domain.entries.anime.model.AnimeUpdate

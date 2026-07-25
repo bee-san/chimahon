@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 2,
+  "releaseGate": "blocked",
+  "reason": "The historical builds cloned dav1d, libass, and libplacebo without immutable revisions, so the exact Corresponding Source for the shipped native artifacts has not been recovered.",
+  "applicationSourceUrl": "",
+  "applicationSourceCommit": "",
+  "artifacts": [
+    {
+      "coordinate": "com.github.jmir1:ffmpeg-kit:1.17",
+      "binarySha256": "4570a5cb8fa2c87808e81ebf4b7f3747cb5aa52b1662dc8a1c03831c37b26b89",
+      "sourceTag": "1.17",
+      "sourceTagObject": "9100744a0838c1fea786203c07cb850dc6260243",
+      "sourceCommit": "8bcf912e2b008d18637bb3fb18343d62297d5253",
+      "sourceRevisionUrl": "https://github.com/jmir1/ffmpeg-kit/tree/8bcf912e2b008d18637bb3fb18343d62297d5253",
+      "sourceArchiveUrl": "",
+      "sourceArchiveSha256": "",
+      "toolchain": {
+        "androidNdk": "27.2.12479018",
+        "androidSdkPlatform": "34",
+        "androidBuildTools": "34.0.0",
+        "ffmpeg": "n7.1",
+        "mpv": "d82701962f99051a18d65c215b70d41ebadd9a22",
+        "archiveUrl": "",
+        "archiveSha256": ""
+      }
+    },
+    {
+      "coordinate": "com.github.aniyomiorg:aniyomi-mpv-lib:1.17.n",
+      "binarySha256": "a08c2d3345fb1f46f7ffe2f68999f244666de4a1ed1f90a0cef6c1c761a6d793",
+      "sourceTag": "1.17.n",
+      "sourceTagObject": "4ad07ea2d7f08781e8d870d1f174588e7a3af113",
+      "sourceCommit": "484373b7cb772d43405c4312af1ad4f508f6dbd0",
+      "sourceRevisionUrl": "https://github.com/aniyomiorg/aniyomi-mpv-lib/tree/484373b7cb772d43405c4312af1ad4f508f6dbd0",
+      "sourceArchiveUrl": "",
+      "sourceArchiveSha256": "",
+      "toolchain": {
+        "androidNdk": "27.2.12479018",
+        "androidSdkPlatform": "34",
+        "androidBuildTools": "34.0.0",
+        "ffmpeg": "n7.1",
+        "mpv": "d82701962f99051a18d65c215b70d41ebadd9a22",
+        "archiveUrl": "",
+        "archiveSha256": ""
+      }
+    }
+  ]
+}

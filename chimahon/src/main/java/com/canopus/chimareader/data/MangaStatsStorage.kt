@@ -7,17 +7,17 @@ import java.time.LocalDate
 object MangaStatsStorage {
 
     private fun getMangaStatsFile(context: Context): File {
-        return File(context.filesDir, FileNames.mangaStats)
+        return File(context.filesDir, FileNames.MANGA_STATS)
     }
 
     fun loadAll(context: Context): List<MangaStats> {
         val file = getMangaStatsFile(context)
         if (!file.exists()) return emptyList()
-        return BookStorage.load<List<MangaStats>>(context.filesDir, FileNames.mangaStats) ?: emptyList()
+        return BookStorage.load<List<MangaStats>>(context.filesDir, FileNames.MANGA_STATS) ?: emptyList()
     }
 
     fun saveAll(context: Context, stats: List<MangaStats>) {
-        BookStorage.save(stats, context.filesDir, FileNames.mangaStats)
+        BookStorage.save(stats, context.filesDir, FileNames.MANGA_STATS)
         chimahon.widget.ImmersionWidgetSignals.notifyStatsChanged()
     }
 

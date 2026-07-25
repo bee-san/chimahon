@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-/**
+/*
  * Code is a mix between PlayerViewModel from mpvKt and the former
  * PlayerViewModel from Aniyomi.
  */
@@ -33,9 +33,6 @@ import android.provider.Settings
 import android.util.DisplayMetrics
 import android.view.inputmethod.InputMethodManager
 import androidx.compose.runtime.Immutable
-import com.arthenica.ffmpegkit.FFmpegKitConfig
-import com.arthenica.ffmpegkit.FFmpegSession
-import com.arthenica.ffmpegkit.ReturnCode
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -43,13 +40,18 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
+import chimahon.anki.AnkiMediaRequest
+import chimahon.anki.AnkiScreenshotMode
+import chimahon.anki.AnkiScreenshotPreparation
+import chimahon.anki.LazyAnkiMediaProvider
+import chimahon.anki.LazyAnkiScreenshotProvider
 import dev.icerock.moko.resources.StringResource
-import eu.kanade.domain.entries.anime.interactor.SetAnimeViewerFlags
 import eu.kanade.domain.base.BasePreferences
+import eu.kanade.domain.entries.anime.interactor.SetAnimeViewerFlags
 import eu.kanade.domain.episode.model.toDbEpisode
+import eu.kanade.domain.sync.SyncPreferences
 import eu.kanade.domain.track.interactor.TrackEpisode
 import eu.kanade.domain.track.service.TrackPreferences
-import eu.kanade.domain.sync.SyncPreferences
 import eu.kanade.domain.ui.UiPreferences
 import eu.kanade.presentation.more.settings.screen.player.custombutton.CustomButtonFetchState
 import eu.kanade.presentation.more.settings.screen.player.custombutton.getButtons
@@ -59,6 +61,7 @@ import eu.kanade.tachiyomi.animesource.model.Hoster
 import eu.kanade.tachiyomi.animesource.model.SerializableHoster.Companion.toHosterList
 import eu.kanade.tachiyomi.animesource.model.TimeStamp
 import eu.kanade.tachiyomi.animesource.model.Video
+import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.data.database.models.Episode
 import eu.kanade.tachiyomi.data.database.models.toDomainEpisode
 import eu.kanade.tachiyomi.data.download.DownloadManager
@@ -70,19 +73,31 @@ import eu.kanade.tachiyomi.data.sync.SyncDataJob
 import eu.kanade.tachiyomi.data.track.TrackerManager
 import eu.kanade.tachiyomi.data.track.anilist.Anilist
 import eu.kanade.tachiyomi.data.track.myanimelist.MyAnimeList
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.ui.dictionary.DictionaryPreferences
 import eu.kanade.tachiyomi.ui.player.controls.components.IndexedSegment
 import eu.kanade.tachiyomi.ui.player.controls.components.sheets.HosterState
 import eu.kanade.tachiyomi.ui.player.controls.components.sheets.getChangedAt
 import eu.kanade.tachiyomi.ui.player.loader.EpisodeLoader
 import eu.kanade.tachiyomi.ui.player.loader.HosterLoader
+import eu.kanade.tachiyomi.ui.player.scene.AndroidSceneCaptureService
+import eu.kanade.tachiyomi.ui.player.scene.CapturedOcrFrame
+import eu.kanade.tachiyomi.ui.player.scene.FrozenSceneSentenceAudioService
+import eu.kanade.tachiyomi.ui.player.scene.PlayerSceneMiningCoordinator
+import eu.kanade.tachiyomi.ui.player.scene.PlayerSceneMiningProgress
+import eu.kanade.tachiyomi.ui.player.scene.SceneCaptureRequest
+import eu.kanade.tachiyomi.ui.player.scene.SceneCaptureRequestFactory
+import eu.kanade.tachiyomi.ui.player.scene.SceneCaptureService
+import eu.kanade.tachiyomi.ui.player.scene.SceneClockDomain
+import eu.kanade.tachiyomi.ui.player.scene.SceneMpvSnapshot
+import eu.kanade.tachiyomi.ui.player.scene.SceneRangeCandidate
+import eu.kanade.tachiyomi.ui.player.scene.SceneRangeProvenance
+import eu.kanade.tachiyomi.ui.player.scene.SceneScreenshotFileReader
+import eu.kanade.tachiyomi.ui.player.scene.SceneSentenceAudioService
+import eu.kanade.tachiyomi.ui.player.scene.SceneVideoInputSnapshot
+import eu.kanade.tachiyomi.ui.player.scene.mergeSceneHeaders
 import eu.kanade.tachiyomi.ui.player.settings.GesturePreferences
 import eu.kanade.tachiyomi.ui.player.settings.PlayerPreferences
 import eu.kanade.tachiyomi.ui.player.settings.SubtitlePreferences
-import eu.kanade.tachiyomi.ui.youtube.YouTubePreferences
-import eu.kanade.tachiyomi.ui.youtube.YoutubeResolver
-import eu.kanade.tachiyomi.ui.youtube.allowsExternalSubtitleLookup
 import eu.kanade.tachiyomi.ui.player.utils.AniSkipApi
 import eu.kanade.tachiyomi.ui.player.utils.ChapterUtils.Companion.getStringRes
 import eu.kanade.tachiyomi.ui.player.utils.JimakuApi
@@ -91,25 +106,29 @@ import eu.kanade.tachiyomi.ui.player.utils.JimakuFile
 import eu.kanade.tachiyomi.ui.player.utils.JimakuMediaGuess
 import eu.kanade.tachiyomi.ui.player.utils.TrackSelect
 import eu.kanade.tachiyomi.ui.player.utils.applySubtitleRegexFilters
-import eu.kanade.tachiyomi.ui.player.utils.subtitleRegexFilterOptions
 import eu.kanade.tachiyomi.ui.player.utils.displayName
 import eu.kanade.tachiyomi.ui.player.utils.guessJimakuMedia
 import eu.kanade.tachiyomi.ui.player.utils.matchedSrtFiles
 import eu.kanade.tachiyomi.ui.player.utils.selectBestJimakuEntry
+import eu.kanade.tachiyomi.ui.player.utils.subtitleRegexFilterOptions
 import eu.kanade.tachiyomi.ui.reader.SaveImageNotifier
+import eu.kanade.tachiyomi.ui.youtube.YouTubePreferences
+import eu.kanade.tachiyomi.ui.youtube.YoutubeResolver
+import eu.kanade.tachiyomi.ui.youtube.allowsExternalSubtitleLookup
 import eu.kanade.tachiyomi.util.editCover
 import eu.kanade.tachiyomi.util.episode.filterDownloadedEpisodes
 import eu.kanade.tachiyomi.util.lang.byteSize
 import eu.kanade.tachiyomi.util.lang.takeBytes
 import eu.kanade.tachiyomi.util.storage.DiskUtil
 import eu.kanade.tachiyomi.util.storage.cacheImageDir
-import eu.kanade.tachiyomi.util.storage.toFFmpegString
 import eu.kanade.tachiyomi.util.system.toast
 import `is`.xyz.mpv.MPVLib
 import `is`.xyz.mpv.Utils
 import kotlinx.collections.immutable.toImmutableList
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
@@ -133,12 +152,12 @@ import tachiyomi.core.common.util.lang.toLong
 import tachiyomi.core.common.util.lang.withIOContext
 import tachiyomi.core.common.util.lang.withUIContext
 import tachiyomi.core.common.util.system.logcat
-import tachiyomi.domain.entries.anime.interactor.GetAnime
-import tachiyomi.domain.entries.anime.model.Anime
 import tachiyomi.domain.category.interactor.GetCategories
 import tachiyomi.domain.custombuttons.interactor.GetCustomButtons
 import tachiyomi.domain.custombuttons.model.CustomButton
 import tachiyomi.domain.download.service.DownloadPreferences
+import tachiyomi.domain.entries.anime.interactor.GetAnime
+import tachiyomi.domain.entries.anime.model.Anime
 import tachiyomi.domain.episode.interactor.GetEpisodesByAnimeId
 import tachiyomi.domain.episode.interactor.UpdateEpisode
 import tachiyomi.domain.episode.model.EpisodeUpdate
@@ -152,15 +171,19 @@ import tachiyomi.i18n.MR
 import tachiyomi.source.local.entries.anime.isLocal
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
+import java.io.Closeable
 import java.io.File
 import java.io.InputStream
-import java.util.Locale
+import java.util.Collections
 import java.util.Date
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.cancellation.CancellationException
 
 private const val MAX_SUBTITLE_HISTORY = 120
 private const val VIDEO_SELECTION_DELIMITER = "\u001e"
+
 class PlayerViewModelProviderFactory(
     private val activity: PlayerActivity,
 ) : ViewModelProvider.Factory {
@@ -169,7 +192,7 @@ class PlayerViewModelProviderFactory(
     }
 }
 
-class PlayerViewModel @JvmOverloads constructor(
+class PlayerViewModel @JvmOverloads internal constructor(
     private val activity: PlayerActivity,
     private val savedState: SavedStateHandle,
     private val sourceManager: AnimeSourceManager = Injekt.get(),
@@ -195,6 +218,9 @@ class PlayerViewModel @JvmOverloads constructor(
     private val getCustomButtons: GetCustomButtons = Injekt.get(),
     private val trackSelect: TrackSelect = Injekt.get(),
     private val jimakuApi: JimakuApi = JimakuApi(),
+    private val sceneCaptureRequestFactory: SceneCaptureRequestFactory = SceneCaptureRequestFactory(),
+    private val sceneCaptureService: () -> SceneCaptureService = { AndroidSceneCaptureService(activity) },
+    private val sceneSentenceAudioService: SceneSentenceAudioService = FrozenSceneSentenceAudioService(activity),
     uiPreferences: UiPreferences = Injekt.get(),
 ) : ViewModel() {
 
@@ -241,8 +267,8 @@ class PlayerViewModel @JvmOverloads constructor(
     val currentSubtitleText = _currentSubtitleText.asStateFlow()
     private val _subtitlesVisible = MutableStateFlow(true)
     val subtitlesVisible = _subtitlesVisible.asStateFlow()
-    private val _subtitleHistory = MutableStateFlow<List<SubtitleCue>>(emptyList())
-    val subtitleHistory = _subtitleHistory.asStateFlow()
+    private val subtitleHistoryState = MutableStateFlow<List<SubtitleCue>>(emptyList())
+    internal val subtitleHistory = subtitleHistoryState.asStateFlow()
     private val _activeSubtitleCueIndex = MutableStateFlow<Int?>(null)
     val activeSubtitleCueIndex = _activeSubtitleCueIndex.asStateFlow()
     private val _primarySubtitleDelaySeconds = MutableStateFlow(0.0)
@@ -351,13 +377,22 @@ class PlayerViewModel @JvmOverloads constructor(
 
     private val _customButtons = MutableStateFlow<CustomButtonFetchState>(CustomButtonFetchState.Loading)
 
-    private val _ocrScreenshot = MutableStateFlow<Bitmap?>(null)
-    val ocrScreenshot: StateFlow<Bitmap?> = _ocrScreenshot.asStateFlow()
+    private val ocrFrameLock = Any()
+    private val ocrFrameState = MutableStateFlow<CapturedOcrFrame?>(null)
+    internal val ocrFrame: StateFlow<CapturedOcrFrame?> = ocrFrameState.asStateFlow()
     private val _isCapturingOcr = MutableStateFlow(false)
     val isCapturingOcr: StateFlow<Boolean> = _isCapturingOcr.asStateFlow()
     private val _suppressTap = MutableStateFlow(false)
     val suppressTap: StateFlow<Boolean> = _suppressTap.asStateFlow()
     val customButtons = _customButtons.asStateFlow()
+
+    private val sceneRequests = Collections.synchronizedSet(mutableSetOf<SceneCaptureRequest>())
+    private val sceneUiGeneration = AtomicLong()
+    private val sceneMiningCoordinator = PlayerSceneMiningCoordinator(
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+        sceneCaptureService = sceneCaptureService,
+    )
+    internal val sceneMiningProgress: StateFlow<PlayerSceneMiningProgress> = sceneMiningCoordinator.progress
 
     private val _primaryButtonTitle = MutableStateFlow("")
     val primaryButtonTitle = _primaryButtonTitle.asStateFlow()
@@ -488,7 +523,14 @@ class PlayerViewModel @JvmOverloads constructor(
                             subTracks.add(track)
                             rememberParsedSubtitleTrack(track)
                         }
-                        "audio" -> audioTracks.add(VideoTrack(getTrackMPVId(i), getTrackTitle(i), getTrackLanguage(i)))
+                        "audio" -> audioTracks.add(
+                            VideoTrack(
+                                id = getTrackMPVId(i),
+                                name = getTrackTitle(i),
+                                language = getTrackLanguage(i),
+                                externalFilename = getTrackExternalFilename(i),
+                            ),
+                        )
                         else -> error("Unrecognized track type")
                     }
                 }
@@ -539,12 +581,13 @@ class PlayerViewModel @JvmOverloads constructor(
     )
 
     @Immutable
-    data class SubtitleCue(
+    internal data class SubtitleCue(
         val index: Int,
         val text: String,
         val positionSeconds: Double,
         val endPositionSeconds: Double = positionSeconds + 5.0,
         val rawText: String = text,
+        val sceneTimingCandidate: SceneRangeCandidate? = null,
     )
 
     sealed interface JimakuState {
@@ -944,7 +987,7 @@ class PlayerViewModel @JvmOverloads constructor(
             return
         }
 
-        _subtitleHistory.update { cues -> cues.toEffectiveSubtitleCues() }
+        subtitleHistoryState.update { cues -> cues.toEffectiveSubtitleCues() }
         updateActiveSubtitleCueFromPosition(pos.value.toDouble())
     }
 
@@ -1021,7 +1064,7 @@ class PlayerViewModel @JvmOverloads constructor(
             lastSubtitleHistoryText = ""
             currentRawSubtitleText = ""
             _currentSubtitleText.update { "" }
-            _subtitleHistory.update { emptyList() }
+            subtitleHistoryState.update { emptyList() }
             _activeSubtitleCueIndex.update { null }
             return
         }
@@ -1041,13 +1084,13 @@ class PlayerViewModel @JvmOverloads constructor(
                 showingParsedSubtitleTrackId = trackId
                 lastSubtitleHistoryText = ""
                 nextSubtitleCueIndex = rawCues.maxOfOrNull { it.index + 1 } ?: 0
-                _subtitleHistory.update { emptyList() }
+                subtitleHistoryState.update { emptyList() }
                 _activeSubtitleCueIndex.update { null }
                 return
             }
             if (showingParsedSubtitleTrackId != null) {
                 showingParsedSubtitleTrackId = null
-                _subtitleHistory.update { emptyList() }
+                subtitleHistoryState.update { emptyList() }
                 _activeSubtitleCueIndex.update { null }
                 lastSubtitleHistoryText = ""
                 nextSubtitleCueIndex = 0
@@ -1058,7 +1101,7 @@ class PlayerViewModel @JvmOverloads constructor(
         showingParsedSubtitleTrackId = trackId
         lastSubtitleHistoryText = ""
         nextSubtitleCueIndex = cues.maxOfOrNull { it.index + 1 } ?: 0
-        _subtitleHistory.update { cues }
+        subtitleHistoryState.update { cues }
         updateActiveSubtitleCueFromPosition(pos.value.toDouble())
     }
 
@@ -1132,10 +1175,11 @@ class PlayerViewModel @JvmOverloads constructor(
                         parseSubtitleContent(title, input.bufferedReader().readText())
                     }.orEmpty()
                 }
-                uri.scheme == "file" -> uri.path
-                    ?.let { File(it) }
-                    ?.let { parseSubtitleFile(it) }
-                    .orEmpty()
+                uri.scheme == "file" ->
+                    uri.path
+                        ?.let { File(it) }
+                        ?.let { parseSubtitleFile(it) }
+                        .orEmpty()
                 path.startsWith("file://") -> Uri.parse(path).path
                     ?.let { File(it) }
                     ?.let { parseSubtitleFile(it) }
@@ -1193,7 +1237,8 @@ class PlayerViewModel @JvmOverloads constructor(
 
                 val timeParts = lines[timeIndex].split("-->", limit = 2)
                 val start = timeParts.getOrNull(0)?.let { parseSubtitleTimestampSeconds(it) } ?: return@forEach
-                val end = timeParts.getOrNull(1)?.let { parseSubtitleTimestampSeconds(it) } ?: (start + 5.0)
+                val parsedEnd = timeParts.getOrNull(1)?.let { parseSubtitleTimestampSeconds(it) }
+                val end = parsedEnd ?: (start + 5.0)
                 val text = lines.drop(timeIndex + 1)
                     .joinToString("\n")
                     .cleanMpvSubtitleText()
@@ -1204,6 +1249,14 @@ class PlayerViewModel @JvmOverloads constructor(
                         text = text,
                         positionSeconds = start,
                         endPositionSeconds = end.coerceAtLeast(start + 1.0),
+                        sceneTimingCandidate = parsedEnd?.let {
+                            SceneRangeCandidate(
+                                startSeconds = start,
+                                endSeconds = it,
+                                clockDomain = SceneClockDomain.SUBTITLE,
+                                provenance = SceneRangeProvenance.PARSED_SUBTITLE_CUE,
+                            )
+                        },
                     )
                 }
             }
@@ -1247,7 +1300,8 @@ class PlayerViewModel @JvmOverloads constructor(
             if (values.size <= maxOf(startIndex, endIndex, textIndex)) return@forEach
 
             val start = parseSubtitleTimestampSeconds(values[startIndex]) ?: return@forEach
-            val end = parseSubtitleTimestampSeconds(values[endIndex]) ?: (start + 5.0)
+            val parsedEnd = parseSubtitleTimestampSeconds(values[endIndex])
+            val end = parsedEnd ?: (start + 5.0)
             val text = values[textIndex].cleanMpvSubtitleText()
             if (text.isBlank()) return@forEach
 
@@ -1256,6 +1310,14 @@ class PlayerViewModel @JvmOverloads constructor(
                 text = text,
                 positionSeconds = start,
                 endPositionSeconds = end.coerceAtLeast(start + 1.0),
+                sceneTimingCandidate = parsedEnd?.let {
+                    SceneRangeCandidate(
+                        startSeconds = start,
+                        endSeconds = it,
+                        clockDomain = SceneClockDomain.SUBTITLE,
+                        provenance = SceneRangeProvenance.PARSED_SUBTITLE_CUE,
+                    )
+                },
             )
         }
         return cues
@@ -1341,7 +1403,7 @@ class PlayerViewModel @JvmOverloads constructor(
             rawText = rawText,
             positionSeconds = pos.value.toDouble(),
         )
-        _subtitleHistory.update { cues -> (cues + cue).takeLast(MAX_SUBTITLE_HISTORY) }
+        subtitleHistoryState.update { cues -> (cues + cue).takeLast(MAX_SUBTITLE_HISTORY) }
         _activeSubtitleCueIndex.update { cue.index }
     }
 
@@ -1474,19 +1536,28 @@ class PlayerViewModel @JvmOverloads constructor(
         }
         pause()
         viewModelScope.launch {
-            val screenshot = captureVideoFrameForOcr()
-            _isCapturingOcr.value = false
-            _suppressTap.value = false
-            if (screenshot == null) {
-                eventChannel.send(Event.OcrFailed)
-            } else {
-                _ocrScreenshot.value = screenshot
+            try {
+                val paddingSeconds = dictionaryPreferences.videoOcrSentenceAudioPaddingSeconds().get().toDouble()
+                val frame = sceneCaptureRequestFactory.captureOcr(
+                    videoSnapshot = ::sceneVideoInputSnapshot,
+                    paddingSeconds = paddingSeconds,
+                    captureFallback = ::captureVideoFrameForOcr,
+                )
+                if (frame == null) {
+                    eventChannel.send(Event.OcrFailed)
+                } else {
+                    sceneRequests += frame.request
+                    replaceOcrFrame(frame)?.let { releaseSceneRequest(it.request) }
+                }
+            } finally {
+                _isCapturingOcr.value = false
+                _suppressTap.value = false
             }
         }
     }
 
     fun dismissOcrScreenshot() {
-        _ocrScreenshot.value = null
+        replaceOcrFrame(null)?.let { releaseSceneRequest(it.request) }
     }
 
     fun hideSeekBar() {
@@ -1820,7 +1891,7 @@ class PlayerViewModel @JvmOverloads constructor(
     }
 
     private fun seekByWithText(value: Int, text: String?) {
-        _doubleTapSeekAmount.update { if (value < 0 && it < 0 || pos.value + value > duration.value) 0 else it + value }
+        _doubleTapSeekAmount.update { if ((value < 0 && it < 0) || pos.value + value > duration.value) 0 else it + value }
         _seekText.update { text }
         _isSeekingForwards.value = value > 0
         seekBy(value, preciseSeek)
@@ -1926,12 +1997,20 @@ class PlayerViewModel @JvmOverloads constructor(
     }
 
     override fun onCleared() {
+        sceneUiGeneration.incrementAndGet()
+        sceneMiningCoordinator.shutdown()
+        replaceOcrFrame(null)?.let { releaseSceneRequest(it.request) }
+        synchronized(sceneRequests) {
+            sceneRequests.toList().forEach { it.close() }
+            sceneRequests.clear()
+        }
         if (currentEpisode.value != null) {
             saveWatchingProgress(currentEpisode.value!!)
             episodeToDownload?.let {
                 downloadManager.addDownloadsToStartOfQueue(listOf(it))
             }
         }
+        super.onCleared()
     }
 
     fun updateCastProgress(position: Float) {
@@ -2030,33 +2109,49 @@ class PlayerViewModel @JvmOverloads constructor(
             ?: error("Requested episode of id $episodeId not found in episode list")
 
         val episodesForPlayer = episodes.filterNot {
-            anime.unseenFilterRaw == Anime.EPISODE_SHOW_SEEN &&
-                !it.seen ||
-                anime.unseenFilterRaw == Anime.EPISODE_SHOW_UNSEEN &&
-                it.seen ||
-                anime.downloadedFilterRaw == Anime.EPISODE_SHOW_DOWNLOADED &&
-                !downloadManager.isEpisodeDownloaded(
-                    it.name,
-                    it.scanlator,
-                    anime.title,
-                    anime.source,
+            (
+                anime.unseenFilterRaw == Anime.EPISODE_SHOW_SEEN &&
+                    !it.seen
                 ) ||
-                anime.downloadedFilterRaw == Anime.EPISODE_SHOW_NOT_DOWNLOADED &&
-                downloadManager.isEpisodeDownloaded(
-                    it.name,
-                    it.scanlator,
-                    anime.title,
-                    anime.source,
-                ) ||
-                anime.bookmarkedFilterRaw == Anime.EPISODE_SHOW_BOOKMARKED &&
-                !it.bookmark ||
-                anime.bookmarkedFilterRaw == Anime.EPISODE_SHOW_NOT_BOOKMARKED &&
-                it.bookmark ||
+                (
+                    anime.unseenFilterRaw == Anime.EPISODE_SHOW_UNSEEN &&
+                        it.seen
+                    ) ||
+                (
+                    anime.downloadedFilterRaw == Anime.EPISODE_SHOW_DOWNLOADED &&
+                        !downloadManager.isEpisodeDownloaded(
+                            it.name,
+                            it.scanlator,
+                            anime.title,
+                            anime.source,
+                        )
+                    ) ||
+                (
+                    anime.downloadedFilterRaw == Anime.EPISODE_SHOW_NOT_DOWNLOADED &&
+                        downloadManager.isEpisodeDownloaded(
+                            it.name,
+                            it.scanlator,
+                            anime.title,
+                            anime.source,
+                        )
+                    ) ||
+                (
+                    anime.bookmarkedFilterRaw == Anime.EPISODE_SHOW_BOOKMARKED &&
+                        !it.bookmark
+                    ) ||
+                (
+                    anime.bookmarkedFilterRaw == Anime.EPISODE_SHOW_NOT_BOOKMARKED &&
+                        it.bookmark
+                    ) ||
                 // AM (FILLERMARK) -->
-                anime.fillermarkedFilterRaw == Anime.EPISODE_SHOW_FILLERMARKED &&
-                !it.fillermark ||
-                anime.fillermarkedFilterRaw == Anime.EPISODE_SHOW_NOT_FILLERMARKED &&
-                it.fillermark
+                (
+                    anime.fillermarkedFilterRaw == Anime.EPISODE_SHOW_FILLERMARKED &&
+                        !it.fillermark
+                    ) ||
+                (
+                    anime.fillermarkedFilterRaw == Anime.EPISODE_SHOW_NOT_FILLERMARKED &&
+                        it.fillermark
+                    )
             // <-- AM (FILLERMARK)
         }.toMutableList()
 
@@ -3062,98 +3157,181 @@ class PlayerViewModel @JvmOverloads constructor(
     }
 
     suspend fun captureVideoFrameForOcr(): Bitmap? {
-        val file = File(cachePath, "${System.currentTimeMillis()}_mpv_ocr_frame.png")
-        return runCatching {
+        val file = File(cachePath, "${UUID.randomUUID()}_mpv_ocr_frame.png")
+        return try {
             withUIContext {
                 file.delete()
                 MPVLib.command(arrayOf("screenshot-to-file", file.absolutePath, "video"))
             }
             withIOContext {
-                repeat(20) {
-                    if (file.exists() && file.length() > 0L) {
-                        return@withIOContext BitmapFactory.decodeFile(file.absolutePath)
-                    }
-                    Thread.sleep(25L)
+                SceneScreenshotFileReader.await(file) { screenshot ->
+                    BitmapFactory.decodeFile(screenshot.absolutePath)
                 }
-                file.takeIf { it.exists() && it.length() > 0L }
-                    ?.let { BitmapFactory.decodeFile(it.absolutePath) }
             }
-        }.onFailure {
-            logcat(LogPriority.ERROR, it)
-        }.getOrNull().also {
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logcat(LogPriority.ERROR, e)
+            null
+        } finally {
             file.delete()
         }
     }
 
-    suspend fun captureSubtitleAudioForAnki(startSeconds: Double?, endSeconds: Double?): ByteArray? {
-        val start = startSeconds ?: return null
-        val end = endSeconds ?: return null
-        if (end <= start) return null
+    internal suspend fun captureSubtitleSceneRequest(
+        parsedSubtitleCandidate: SceneRangeCandidate?,
+        playbackFallback: SceneRangeCandidate?,
+    ): SceneCaptureRequest? {
+        val request = sceneCaptureRequestFactory.captureSubtitle(
+            videoSnapshot = ::sceneVideoInputSnapshot,
+            parsedSubtitleCandidates = listOfNotNull(parsedSubtitleCandidate),
+            playbackFallback = playbackFallback,
+            captureFallback = ::captureVideoFrameForOcr,
+        ) ?: return null
+        sceneRequests += request
+        return request
+    }
 
-        val video = currentVideo.value ?: return null
-        val output = File(activity.cacheDir, "chimahon_sentence_audio_${System.currentTimeMillis()}.m4a")
-        return runCatching {
-            withIOContext {
-                output.delete()
-
-                // For video-only streams (e.g. YouTube DASH), use the separate audio track URL
-                val audioSource = video.audioTracks.firstOrNull()?.url
-                val rawInput = audioSource
-                    ?: MPVLib.getPropertyString("path")
-                        ?.takeIf { it.isNotBlank() }
-                        ?: video.videoUrl
-                val input = when {
-                    video.videoUrl.startsWith("content://") -> Uri.parse(video.videoUrl).toFFmpegString(activity)
-                    rawInput.startsWith("file://") -> Uri.parse(rawInput).path ?: rawInput
-                    else -> rawInput
-                }.replace("\"", "\\\"")
-
-                val source = currentSource.value as? AnimeHttpSource
-                val headers = video.headers ?: source?.headers
-                val headerOptions = if (rawInput.startsWith("http") && headers != null) {
-                    headers.joinToString("", "-headers '", "'") {
-                        "${it.first}: ${it.second.replace("'", "'\\''")}\r\n"
+    internal fun createSceneMediaRequest(
+        request: SceneCaptureRequest?,
+        screenshotMode: String,
+        onFinished: () -> Unit,
+    ): AnkiMediaRequest {
+        val mode = AnkiScreenshotMode.fromStorageValue(screenshotMode)
+        val uiGeneration = sceneUiGeneration.get()
+        return AnkiMediaRequest(
+            screenshotMode = mode,
+            screenshotProvider = when {
+                request != null -> LazyAnkiScreenshotProvider {
+                    sceneMiningCoordinator.prepareScreenshot(
+                        request = request,
+                        mode = mode,
+                    )
+                }
+                mode == AnkiScreenshotMode.ANIMATED_SCENE -> LazyAnkiScreenshotProvider {
+                    AnkiScreenshotPreparation.GenerationFailed(stillFallback = null)
+                }
+                else -> null
+            },
+            sentenceAudioProvider = request?.let { frozenRequest ->
+                LazyAnkiMediaProvider {
+                    sceneMiningCoordinator.markPreparingSentenceAudio()
+                    try {
+                        sceneSentenceAudioService.prepare(frozenRequest)
+                    } finally {
+                        sceneMiningCoordinator.markWaitingForCommit()
                     }
-                } else {
-                    ""
                 }
-                val duration = (end - start).coerceIn(0.25, 30.0)
-                val command = listOf(
-                    headerOptions,
-                    "-ss ${start.coerceAtLeast(0.0).formatSeconds()}",
-                    "-t ${duration.formatSeconds()}",
-                    "-i \"$input\"",
-                    "-vn",
-                    "-map 0:a:0",
-                    "-c:a copy",
-                    "\"${output.absolutePath.replace("\"", "\\\"")}\"",
-                    "-y",
-                )
-                    .filter { it.isNotBlank() }
-                    .joinToString(" ")
-                val session = FFmpegSession.create(FFmpegKitConfig.parseArguments(command))
-                FFmpegKitConfig.ffmpegExecute(session)
-                if (ReturnCode.isSuccess(session.returnCode) && output.exists() && output.length() > 0L) {
-                    output.readBytes()
-                } else {
-                    session.failStackTrace?.let { logcat(LogPriority.WARN) { it } }
-                    null
+            },
+            onCommitStarted = sceneMiningCoordinator::markCommitStarted,
+            onFinished = {
+                request?.let(::releaseSceneRequest)
+                if (sceneUiGeneration.get() == uiGeneration) {
+                    onFinished()
                 }
-            }
-        }.onFailure {
-            logcat(LogPriority.WARN, it) { "Failed to capture subtitle sentence audio" }
-        }.getOrNull().also {
-            output.delete()
+            },
+        )
+    }
+
+    internal fun launchSceneMining(
+        request: SceneCaptureRequest?,
+        block: suspend () -> Unit,
+    ): Boolean {
+        return if (request != null) {
+            sceneMiningCoordinator.launch(request, block)
+        } else {
+            sceneMiningCoordinator.launchWithLease(
+                acquireLease = { Closeable {} },
+                block = block,
+            )
         }
     }
 
-    suspend fun captureVideoOcrAudioForAnki(): ByteArray? {
-        val centerSeconds = activity.player.timePos?.toDouble() ?: pos.value.toDouble()
-        val paddingSeconds = dictionaryPreferences.videoOcrSentenceAudioPaddingSeconds().get().toDouble()
-        return captureSubtitleAudioForAnki(
-            startSeconds = centerSeconds - paddingSeconds,
-            endSeconds = centerSeconds + paddingSeconds,
+    internal fun cancelSceneMiningPreCommit() {
+        sceneMiningCoordinator.cancelPreCommit()
+    }
+
+    internal fun onPlayerActivityDestroyed() {
+        sceneUiGeneration.incrementAndGet()
+        sceneMiningCoordinator.cancelPreCommit()
+    }
+
+    internal fun releaseSceneRequest(request: SceneCaptureRequest) {
+        sceneRequests -= request
+        request.close()
+    }
+
+    private fun replaceOcrFrame(frame: CapturedOcrFrame?): CapturedOcrFrame? {
+        return synchronized(ocrFrameLock) {
+            val previous = ocrFrameState.value
+            ocrFrameState.value = frame
+            previous
+        }
+    }
+
+    private fun sceneVideoInputSnapshot(mpv: SceneMpvSnapshot): SceneVideoInputSnapshot? {
+        val video = currentVideo.value ?: return null
+        val source = currentSource.value
+        val videoHeaders = video.headers?.toList().orEmpty()
+        val sourceHeaders = (source as? AnimeHttpSource)?.headers?.toList().orEmpty()
+        val mergedHeaders = mergeSceneHeaders(sourceHeaders, videoHeaders)
+        val originalValue = video.videoUrl
+        val stableLocalFile = when {
+            originalValue.startsWith("/") -> File(originalValue).isFile
+            originalValue.startsWith("file://", ignoreCase = true) -> {
+                Uri.parse(originalValue).path?.let(::File)?.isFile == true
+            }
+            else -> false
+        }
+
+        return SceneVideoInputSnapshot(
+            originalVideoValue = originalValue,
+            playableValue = mpv.playableValue,
+            externalAudioValue = selectedExternalAudioValue(
+                mpvValue = mpv.selectedExternalAudioValue,
+                selectedAudioId = mpv.selectedAudioId,
+                selectedAudioIsExternal = mpv.selectedAudioIsExternal,
+            ),
+            headers = mergedHeaders,
+            ffmpegStreamArgs = video.ffmpegStreamArgs.toList(),
+            ffmpegVideoArgs = video.ffmpegVideoArgs.toList(),
+            episodeId = currentEpisode.value?.id,
+            sourceId = source?.id,
+            quality = video.videoTitle,
+            seekable = mpv.seekable ?: stableLocalFile,
+            // The source model exposes no trustworthy protection flag. The frozen input is
+            // fail-closed inspected before either FFmpeg scene or sentence-audio access.
+            torrent = originalValue.startsWith("magnet:", ignoreCase = true) ||
+                originalValue.substringBefore('?').endsWith(".torrent", ignoreCase = true),
         )
+    }
+
+    private fun selectedExternalAudioValue(
+        mpvValue: String?,
+        selectedAudioId: Int?,
+        selectedAudioIsExternal: Boolean,
+    ): String? {
+        if (!selectedAudioIsExternal) return null
+        val selectedTrack = audioTracks.value.firstOrNull { it.id == selectedAudioId }
+        val selectedValue = mpvValue ?: selectedTrack?.externalFilename
+        if (selectedValue != null) {
+            val restored = currentEpisode.value?.id
+                ?.let(addedAudioTracksByEpisodeId::get)
+                ?.firstOrNull { it.path == selectedValue }
+            if (restored != null) {
+                return if (restored.isContentUri) restored.uriString else restored.path
+            }
+            if (
+                selectedValue.startsWith("http://", ignoreCase = true) ||
+                selectedValue.startsWith("https://", ignoreCase = true) ||
+                selectedValue.startsWith("content://", ignoreCase = true) ||
+                selectedValue.startsWith("file://", ignoreCase = true) ||
+                selectedValue.startsWith("/")
+            ) {
+                return selectedValue
+            }
+        }
+        return null
     }
 
     /**
@@ -3481,7 +3659,6 @@ class PlayerViewModel @JvmOverloads constructor(
         data class ShareImage(val uri: Uri, val seconds: String) : Event()
         data object OcrFailed : Event()
     }
-
 }
 
 fun isTorrentUrl(videoUrl: String): Boolean = videoUrl.endsWith(".torrent") || videoUrl.startsWith("magnet:")
@@ -3496,8 +3673,4 @@ fun CustomButton.executeLongPress() {
 
 fun Float.normalize(inMin: Float, inMax: Float, outMin: Float, outMax: Float): Float {
     return (this - inMin) * (outMax - outMin) / (inMax - inMin) + outMin
-}
-
-private fun Double.formatSeconds(): String {
-    return String.format(Locale.US, "%.3f", this)
 }
