@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package tachiyomi.domain.immersion.repository
 
 import tachiyomi.domain.immersion.model.ExposureEvent
@@ -23,6 +25,15 @@ class FeatureFlaggedImmersionRecorderRepository(
     private val isEnabled: () -> Boolean,
     private val diagnostics: ImmersionStatsDiagnosticsStore,
 ) : ImmersionRecorderRepository {
+
+    override suspend fun isTitleCaptureExcluded(titleId: tachiyomi.domain.immersion.model.TitleId): Boolean {
+        if (!isEnabled()) return false
+        return runCatching { delegate.isTitleCaptureExcluded(titleId) }
+            .getOrElse { error ->
+                diagnostics.recordError(ImmersionDiagnosticStage.WRITE, error.toDiagnosticCode())
+                true
+            }
+    }
 
     override suspend fun upsertTitle(title: ImmersionTitle): PersistenceResult =
         guarded({ disabledDelegate.upsertTitle(title) }) { delegate.upsertTitle(title) }
@@ -108,6 +119,8 @@ class FeatureFlaggedImmersionRecorderRepository(
 }
 
 class NoOpImmersionRecorderRepository : ImmersionRecorderRepository {
+    override suspend fun isTitleCaptureExcluded(titleId: tachiyomi.domain.immersion.model.TitleId) = false
+
     override suspend fun upsertTitle(title: ImmersionTitle) = PersistenceResult.Disabled
 
     override suspend fun createSession(session: ImmersionSessionStart) = PersistenceResult.Disabled

@@ -37,6 +37,7 @@ import tachiyomi.domain.immersion.service.DefaultSourceTextNormalizer
 import tachiyomi.domain.immersion.service.ImmersionAnalyticsService
 import tachiyomi.domain.immersion.service.ImmersionDeviceIdProvider
 import tachiyomi.domain.immersion.service.ImmersionEventPersistenceObserver
+import tachiyomi.domain.immersion.service.ImmersionExportService
 import tachiyomi.domain.immersion.service.ImmersionIndexExclusionPolicy
 import tachiyomi.domain.immersion.service.ImmersionIndexingEngine
 import tachiyomi.domain.immersion.service.ImmersionRecorder
@@ -89,6 +90,7 @@ class KMKDomainModule : InjektModule {
         addSingletonFactory<ImmersionGoalRepository> { get<SqlDelightImmersionRepository>() }
         addSingletonFactory<ImmersionAnkiRepository> { get<SqlDelightImmersionRepository>() }
         addSingletonFactory { ImmersionAnalyticsService(get(), get()) }
+        addSingletonFactory { ImmersionExportService(get(), get()) }
         addSingletonFactory<AnkiInventoryProvider> { AnkiDroidInventoryProvider(get()) }
         addSingletonFactory { AnkiInventorySynchronizer(get(), get()) }
         addSingletonFactory { AnkiKnownnessResolver(get()) }

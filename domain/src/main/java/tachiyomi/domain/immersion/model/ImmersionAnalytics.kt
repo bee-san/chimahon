@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package tachiyomi.domain.immersion.model
 
 import kotlinx.serialization.Serializable

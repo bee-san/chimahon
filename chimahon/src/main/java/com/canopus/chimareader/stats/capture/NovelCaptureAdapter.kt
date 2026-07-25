@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package com.canopus.chimareader.stats.capture
 
 import com.canopus.chimareader.data.BookMetadata

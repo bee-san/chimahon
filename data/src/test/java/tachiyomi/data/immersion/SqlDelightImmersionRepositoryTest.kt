@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package tachiyomi.data.immersion
 
 import app.cash.sqldelight.db.QueryResult
@@ -135,6 +137,7 @@ class SqlDelightImmersionRepositoryTest {
             "immersion_rollup_dirty",
             "immersion_sync_peer",
             "immersion_tombstone",
+            "immersion_merge_conflict",
             "immersion_exclusion",
             "immersion_retention_state",
         )
@@ -424,7 +427,7 @@ class SqlDelightImmersionRepositoryTest {
     }
 
     @Test
-    fun `session deletion cascades events and exposures but retains reusable source`() = runTest {
+    fun `session deletion cascades events exposures and unreferenced private source`() = runTest {
         prepareSession()
         repository.appendExposure(exposure(sequence = 1, eventNumber = 1))
 
@@ -433,7 +436,9 @@ class SqlDelightImmersionRepositoryTest {
         queryLong("SELECT count(*) FROM immersion_session") shouldBe 0
         queryLong("SELECT count(*) FROM immersion_event") shouldBe 0
         queryLong("SELECT count(*) FROM immersion_source_exposure") shouldBe 0
-        queryLong("SELECT count(*) FROM immersion_source_unit") shouldBe 1
+        queryLong("SELECT count(*) FROM immersion_source_unit") shouldBe 0
+        queryLong("SELECT count(*) FROM immersion_tombstone WHERE entity_type = 'SESSION'") shouldBe 1
+        queryLong("SELECT count(*) FROM immersion_tombstone WHERE entity_type = 'SOURCE_UNIT'") shouldBe 1
     }
 
     @Test
@@ -1011,6 +1016,205 @@ class SqlDelightImmersionRepositoryTest {
         repository.dirtyRollupRanges(1) shouldBe emptyList()
         queryLong("SELECT count(*) FROM immersion_lifetime_rollup") shouldBe 2
         queryLong("SELECT count(*) FROM immersion_applied_event") shouldBe 2
+    }
+
+    @Test
+    fun `portable archive omits private text and merges idempotently`() = runTest {
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        repository.createSession(sessionStart()) shouldBe PersistenceResult.Applied
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = 600).copy(
+                source = source(lastExposedAt = 1_100).copy(rawText = "猫を読む"),
+            ),
+        ) shouldBe PersistenceResult.Applied
+        repository.finalizeSession(
+            SESSION_ID,
+            SessionStatus.COMPLETED,
+            2_000,
+            MillisecondDuration(1_000),
+        ) shouldBe PersistenceResult.Applied
+
+        val privateArchive = repository.exportPortableArchive(
+            includeRawText = false,
+            createdAtEpochMillis = 3_000,
+        )
+        privateArchive.includesRawText shouldBe false
+        privateArchive.tables.single { it.name == "immersion_source_unit" }.let { table ->
+            val rawTextIndex = table.columns.indexOfFirst { it.name == "raw_text" }
+            table.rows.single().cells[rawTextIndex].kind.name shouldBe "NULL"
+        }
+        val fullArchive = repository.exportPortableArchive(
+            includeRawText = true,
+            createdAtEpochMillis = 3_001,
+        )
+        fullArchive.tables.single { it.name == "immersion_source_unit" }.let { table ->
+            val rawTextIndex = table.columns.indexOfFirst { it.name == "raw_text" }
+            table.rows.single().cells[rawTextIndex].blobValue shouldNotBe null
+        }
+
+        val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        try {
+            Database.Schema.create(targetDriver).value
+            targetDriver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+            val target = SqlDelightImmersionRepository(
+                AndroidDatabaseHandler(
+                    createDatabase(targetDriver),
+                    targetDriver,
+                    Dispatchers.IO,
+                    Dispatchers.IO,
+                ),
+            )
+
+            target.mergePortableArchive(privateArchive, 4_000).let {
+                it.insertedRows shouldNotBe 0
+                it.quarantinedConflicts shouldBe 0
+            }
+            target.overview().let {
+                it.sessions shouldBe NonNegativeCounter(1)
+                it.grossCharacters shouldBe NonNegativeCounter(100)
+            }
+            target.mergePortableArchive(privateArchive, 4_001).let {
+                it.insertedRows shouldBe 0
+                it.quarantinedConflicts shouldBe 0
+                it.unchangedRows shouldNotBe 0
+            }
+            target.mergePortableArchive(fullArchive, 4_002).quarantinedConflicts shouldBe 0
+            target.exportPortableArchive(true, 4_003)
+                .tables
+                .single { it.name == "immersion_source_unit" }
+                .let { table ->
+                    val rawTextIndex = table.columns.indexOfFirst { it.name == "raw_text" }
+                    table.rows.single().cells[rawTextIndex].blobValue shouldNotBe null
+                }
+        } finally {
+            targetDriver.close()
+        }
+    }
+
+    @Test
+    fun `portable merge quarantines same identity with a different payload`() = runTest {
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        val archive = repository.exportPortableArchive(false, 3_000)
+        repository.upsertTitle(
+            title().copy(
+                displayTitle = "Conflicting title",
+                updatedAtEpochMillis = 3_500,
+            ),
+        ) shouldBe PersistenceResult.Applied
+
+        repository.mergePortableArchive(archive, 4_000).quarantinedConflicts shouldBe 1
+        queryLong("SELECT count(*) FROM immersion_merge_conflict") shouldBe 1
+        queryStrings("SELECT display_title FROM immersion_title").single() shouldBe "Conflicting title"
+        repository.resolveMergeConflictsKeepingLocal() shouldBe 1
+        repository.maintenanceSummary().quarantinedConflicts shouldBe 0
+        queryStrings("SELECT resolution_state FROM immersion_merge_conflict").single() shouldBe
+            "RESOLVED_KEEP_LOCAL"
+    }
+
+    @Test
+    fun `portable merge rejects a future immersion schema`() = runTest {
+        val archive = repository.exportPortableArchive(false, 3_000)
+        runCatching {
+            repository.mergePortableArchive(
+                archive.copy(sourceSchemaVersion = Int.MAX_VALUE),
+                4_000,
+            )
+        }.exceptionOrNull() shouldNotBe null
+    }
+
+    @Test
+    fun `session tombstone prevents an older archive from resurrecting deleted activity`() = runTest {
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        repository.createSession(sessionStart()) shouldBe PersistenceResult.Applied
+        repository.appendExposure(exposure(sequence = 1, eventNumber = 601)) shouldBe PersistenceResult.Applied
+        repository.finalizeSession(
+            SESSION_ID,
+            SessionStatus.COMPLETED,
+            2_000,
+            MillisecondDuration(1_000),
+        ) shouldBe PersistenceResult.Applied
+        val oldArchive = repository.exportPortableArchive(false, 3_000)
+
+        repository.deleteSession(SESSION_ID) shouldBe true
+        queryLong("SELECT count(*) FROM immersion_tombstone WHERE entity_type = 'SESSION'") shouldBe 1
+        queryLong("SELECT count(*) FROM immersion_tombstone WHERE entity_type = 'SOURCE_UNIT'") shouldBe 1
+        queryLong("SELECT count(*) FROM immersion_event") shouldBe 0
+        queryLong("SELECT count(*) FROM immersion_source_unit") shouldBe 0
+
+        repository.mergePortableArchive(oldArchive, 4_000).let {
+            it.skippedByTombstoneRows shouldNotBe 0
+            it.quarantinedConflicts shouldBe 0
+        }
+        repository.overview().sessions shouldBe NonNegativeCounter.ZERO
+        queryLong("SELECT count(*) FROM immersion_event") shouldBe 0
+        queryLong("SELECT count(*) FROM immersion_source_unit") shouldBe 0
+    }
+
+    @Test
+    fun `raw text deletion clears search without changing aggregate totals`() = runTest {
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        repository.createSession(sessionStart()) shouldBe PersistenceResult.Applied
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = 602).copy(
+                source = source(lastExposedAt = 1_100).copy(rawText = "猫を読む"),
+            ),
+        ) shouldBe PersistenceResult.Applied
+        repository.finalizeSession(
+            SESSION_ID,
+            SessionStatus.COMPLETED,
+            2_000,
+            MillisecondDuration(1_000),
+        ) shouldBe PersistenceResult.Applied
+        repository.sourceSearch(StatsFilter(), "猫", 0, 10).items.size shouldBe 1
+        val before = repository.overview()
+
+        repository.deleteRawText(updatedAtEpochMillis = 3_000) shouldBe 1
+
+        repository.sourceSearch(StatsFilter(), "猫", 0, 10).items shouldBe emptyList()
+        queryLong("SELECT count(*) FROM immersion_source_unit WHERE raw_text IS NOT NULL") shouldBe 0
+        repository.overview() shouldBe before
+    }
+
+    @Test
+    fun `title capture exclusion can be enabled and removed`() = runTest {
+        repository.isTitleCaptureExcluded(TITLE_ID) shouldBe false
+
+        repository.setTitleCaptureExcluded(TITLE_ID, excluded = true, updatedAtEpochMillis = 1_000)
+        repository.isTitleCaptureExcluded(TITLE_ID) shouldBe true
+
+        repository.setTitleCaptureExcluded(TITLE_ID, excluded = false, updatedAtEpochMillis = 2_000)
+        repository.isTitleCaptureExcluded(TITLE_ID) shouldBe false
+    }
+
+    @Test
+    fun `full reset previews impact and tombstones prevent archive resurrection`() = runTest {
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        repository.createSession(sessionStart()) shouldBe PersistenceResult.Applied
+        repository.appendExposure(exposure(sequence = 1, eventNumber = 603)) shouldBe PersistenceResult.Applied
+        repository.finalizeSession(
+            SESSION_ID,
+            SessionStatus.COMPLETED,
+            2_000,
+            MillisecondDuration(1_000),
+        ) shouldBe PersistenceResult.Applied
+        val archive = repository.exportPortableArchive(false, 3_000)
+        repository.previewAllStatsDeletion().let {
+            it.sessions shouldBe 1
+            it.grossCharacters shouldBe 100
+            it.sourceUnits shouldBe 1
+        }
+
+        repository.resetAllStats("device-reset", 4_000).sessions shouldBe 1
+        repository.overview().sessions shouldBe NonNegativeCounter.ZERO
+        queryLong("SELECT count(*) FROM immersion_title") shouldBe 0
+        queryLong("SELECT count(*) FROM immersion_tombstone") shouldNotBe 0
+
+        repository.mergePortableArchive(archive, 5_000).let {
+            it.skippedByTombstoneRows shouldNotBe 0
+            it.quarantinedConflicts shouldBe 0
+        }
+        repository.overview().sessions shouldBe NonNegativeCounter.ZERO
+        queryLong("SELECT count(*) FROM immersion_title") shouldBe 0
     }
 
     @Test

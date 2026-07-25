@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package tachiyomi.domain.immersion.interactor
 
 import io.kotest.matchers.shouldBe

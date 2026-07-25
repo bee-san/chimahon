@@ -481,7 +481,18 @@ object AnkiCardCreator {
                                     "open" -> return@withLock AnkiResult.OpenCard(existing.first())
                                     "overwrite" -> {
                                         bridge.updateNoteFields(existing.first(), fields)
-                                        com.canopus.chimareader.data.AnkiStatsStorage.addCard(context, type, profileId = profileId, titleId = titleId)
+                                        if (
+                                            Injekt.get<tachiyomi.domain.immersion.service.ImmersionStatsPreferences>()
+                                                .legacyWritesEnabled()
+                                                .get()
+                                        ) {
+                                            com.canopus.chimareader.data.AnkiStatsStorage.addCard(
+                                                context,
+                                                type,
+                                                profileId = profileId,
+                                                titleId = titleId,
+                                            )
+                                        }
                                         if (syncOnCreate) bridge.triggerSync()
                                         return@withLock AnkiResult.Success(existing.first(), updated = true)
                                     }
@@ -490,7 +501,18 @@ object AnkiCardCreator {
                         }
 
                         val noteId = bridge.addNote(deckName = effectiveDeck, modelName = effectiveModel, fields = fields, tags = tagList)
-                        com.canopus.chimareader.data.AnkiStatsStorage.addCard(context, type, profileId = profileId, titleId = titleId)
+                        if (
+                            Injekt.get<tachiyomi.domain.immersion.service.ImmersionStatsPreferences>()
+                                .legacyWritesEnabled()
+                                .get()
+                        ) {
+                            com.canopus.chimareader.data.AnkiStatsStorage.addCard(
+                                context,
+                                type,
+                                profileId = profileId,
+                                titleId = titleId,
+                            )
+                        }
                         if (syncOnCreate) bridge.triggerSync()
                         AnkiResult.Success(noteId)
                     },

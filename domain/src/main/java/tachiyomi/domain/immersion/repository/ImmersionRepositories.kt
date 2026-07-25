@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package tachiyomi.domain.immersion.repository
 
 import kotlinx.coroutines.flow.Flow
@@ -15,11 +17,15 @@ import tachiyomi.domain.immersion.model.ExposureEvent
 import tachiyomi.domain.immersion.model.ImmersionAnkiItem
 import tachiyomi.domain.immersion.model.ImmersionAnkiSnapshot
 import tachiyomi.domain.immersion.model.ImmersionDailyRollup
+import tachiyomi.domain.immersion.model.ImmersionDeletionPreview
 import tachiyomi.domain.immersion.model.ImmersionGoal
 import tachiyomi.domain.immersion.model.ImmersionGoalAchievement
 import tachiyomi.domain.immersion.model.ImmersionGoalCheckIn
 import tachiyomi.domain.immersion.model.ImmersionIntegrityReport
+import tachiyomi.domain.immersion.model.ImmersionMaintenanceSummary
+import tachiyomi.domain.immersion.model.ImmersionMergeReport
 import tachiyomi.domain.immersion.model.ImmersionOverview
+import tachiyomi.domain.immersion.model.ImmersionPortableArchive
 import tachiyomi.domain.immersion.model.ImmersionReindexRequest
 import tachiyomi.domain.immersion.model.ImmersionRollupDirtyRange
 import tachiyomi.domain.immersion.model.ImmersionRollupRebuildResult
@@ -46,6 +52,8 @@ import tachiyomi.domain.immersion.model.UnicodeCodePoint
 import tachiyomi.domain.immersion.service.AnkiCoverage
 
 interface ImmersionRecorderRepository {
+    suspend fun isTitleCaptureExcluded(titleId: TitleId): Boolean = false
+
     suspend fun upsertTitle(title: ImmersionTitle): PersistenceResult
 
     suspend fun createSession(session: ImmersionSessionStart): PersistenceResult
@@ -197,6 +205,15 @@ interface ImmersionAnalyticsRepository {
 interface ImmersionMaintenanceRepository {
     suspend fun validateInvariants(expectedRollupVersion: Int): ImmersionIntegrityReport
 
+    suspend fun maintenanceSummary(): ImmersionMaintenanceSummary
+
+    suspend fun previewAllStatsDeletion(): ImmersionDeletionPreview
+
+    suspend fun resetAllStats(
+        deviceId: String,
+        deletedAtEpochMillis: Long,
+    ): ImmersionDeletionPreview
+
     suspend fun deleteSession(sessionId: SessionId): Boolean
 
     suspend fun beginRollupRebuild(
@@ -204,6 +221,35 @@ interface ImmersionMaintenanceRepository {
         repairCursor: String?,
         updatedAtEpochMillis: Long,
     )
+
+    suspend fun exportPortableArchive(
+        includeRawText: Boolean,
+        createdAtEpochMillis: Long,
+    ): ImmersionPortableArchive
+
+    suspend fun mergePortableArchive(
+        archive: ImmersionPortableArchive,
+        mergedAtEpochMillis: Long,
+    ): ImmersionMergeReport
+
+    suspend fun deleteRawText(
+        titleId: TitleId? = null,
+        beforeEpochMillis: Long? = null,
+        updatedAtEpochMillis: Long,
+    ): Long
+
+    suspend fun previewRawTextDeletion(
+        titleId: TitleId? = null,
+        beforeEpochMillis: Long? = null,
+    ): Long
+
+    suspend fun setTitleCaptureExcluded(
+        titleId: TitleId,
+        excluded: Boolean,
+        updatedAtEpochMillis: Long,
+    )
+
+    suspend fun resolveMergeConflictsKeepingLocal(): Long
 }
 
 interface ImmersionGoalRepository {

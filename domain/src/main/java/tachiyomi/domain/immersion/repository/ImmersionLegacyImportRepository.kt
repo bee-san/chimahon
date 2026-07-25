@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package tachiyomi.domain.immersion.repository
 
 import tachiyomi.domain.immersion.model.LegacyAggregateRow

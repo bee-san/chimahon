@@ -26,6 +26,7 @@ import eu.kanade.tachiyomi.data.backup.models.BackupFeed
 import eu.kanade.tachiyomi.data.backup.models.BackupManga
 import eu.kanade.tachiyomi.data.backup.models.BackupPreference
 import eu.kanade.tachiyomi.data.backup.models.BackupSavedSearch
+import eu.kanade.tachiyomi.data.backup.models.BackupSearchHistory
 import eu.kanade.tachiyomi.data.backup.models.BackupSource
 import eu.kanade.tachiyomi.data.backup.models.BackupSourcePreferences
 import kotlinx.serialization.protobuf.ProtoBuf
@@ -40,6 +41,8 @@ import tachiyomi.domain.entries.anime.interactor.GetAnimeSeasonsByParentId
 import tachiyomi.domain.entries.anime.interactor.GetFavoriteAnime
 import tachiyomi.domain.entries.anime.model.Anime
 import tachiyomi.domain.entries.anime.repository.AnimeRepository
+import tachiyomi.domain.history.interactor.GetSearchHistory
+import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
 import tachiyomi.domain.manga.interactor.GetFavorites
 import tachiyomi.domain.manga.interactor.GetMergedManga
 import tachiyomi.domain.manga.model.Manga
@@ -52,9 +55,6 @@ import java.text.SimpleDateFormat
 import java.time.Instant
 import java.util.Date
 import java.util.Locale
-import eu.kanade.tachiyomi.data.backup.models.BackupSearchHistory
-import tachiyomi.domain.history.interactor.GetSearchHistory
-import tachiyomi.domain.history.model.SearchHistory
 
 class BackupCreator(
     private val context: Context,
@@ -66,6 +66,7 @@ class BackupCreator(
     private val backupPreferences: BackupPreferences = Injekt.get(),
     private val mangaRepository: MangaRepository = Injekt.get(),
     private val animeRepository: AnimeRepository = Injekt.get(),
+    private val immersionMaintenanceRepository: ImmersionMaintenanceRepository = Injekt.get(),
     private val getAnimeSeasonsByParentId: GetAnimeSeasonsByParentId = Injekt.get(),
 
     private val categoriesBackupCreator: CategoriesBackupCreator = CategoriesBackupCreator(),
@@ -147,6 +148,7 @@ class BackupCreator(
                 backupNovelCategories = backupNovelCategories(options),
                 backupMangaStats = backupMangaStats(options),
                 backupAnkiStats = backupAnkiStats(options),
+                backupImmersionStats = backupImmersionStats(options),
                 backupSearchHistory = backupSearchHistory(options),
                 // Chimahon <--
             )
@@ -169,9 +171,15 @@ class BackupCreator(
             // Make sure it's a valid backup file
             BackupFileValidator(context).validate(fileUri)
 
+            val completedAt = Instant.now().toEpochMilli()
             if (isAutoBackup) {
-                backupPreferences.lastAutoBackupTimestamp().set(Instant.now().toEpochMilli())
+                backupPreferences.lastAutoBackupTimestamp().set(completedAt)
             }
+            // Chimahon -->
+            if (options.immersionStats) {
+                backupPreferences.lastImmersionBackupTimestamp().set(completedAt)
+            }
+            // Chimahon <--
 
             return fileUri.toString()
         } catch (e: Exception) {
@@ -281,6 +289,16 @@ class BackupCreator(
     fun backupAnkiStats(options: BackupOptions): List<com.canopus.chimareader.data.AnkiStats> {
         if (!options.appSettings) return emptyList()
         return com.canopus.chimareader.data.AnkiStatsStorage.loadAll(context)
+    }
+
+    suspend fun backupImmersionStats(
+        options: BackupOptions,
+    ): tachiyomi.domain.immersion.model.ImmersionPortableArchive? {
+        if (!options.immersionStats) return null
+        return immersionMaintenanceRepository.exportPortableArchive(
+            includeRawText = options.immersionRawText,
+            createdAtEpochMillis = System.currentTimeMillis(),
+        )
     }
 
     suspend fun backupSearchHistory(options: BackupOptions): List<BackupSearchHistory> {

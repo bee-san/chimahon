@@ -1,0 +1,15 @@
+-- SPDX-License-Identifier: MIT
+
+CREATE TABLE immersion_merge_conflict(
+    id TEXT NOT NULL PRIMARY KEY,
+    table_name TEXT NOT NULL,
+    identity_key TEXT NOT NULL,
+    existing_payload_hash TEXT,
+    incoming_payload_hash TEXT NOT NULL,
+    detected_at INTEGER NOT NULL,
+    resolution_state TEXT NOT NULL DEFAULT 'QUARANTINED',
+    UNIQUE(table_name, identity_key, incoming_payload_hash)
+);
+
+CREATE INDEX immersion_merge_conflict_time_index
+ON immersion_merge_conflict(detected_at DESC, table_name, identity_key);

@@ -250,14 +250,18 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
         // Chimahon -->
         com.canopus.chimareader.data.NovelMigration.migrateOldBooks(this)
         chimahon.DictionaryRepository.migrateFlatDictionaries(File(getExternalFilesDir(null), "dictionaries"))
-        if (Injekt.get<tachiyomi.domain.immersion.service.ImmersionStatsPreferences>().uiEnabled().get()) {
+        val immersionStatsPreferences =
+            Injekt.get<tachiyomi.domain.immersion.service.ImmersionStatsPreferences>()
+        immersionStatsPreferences.applyReleaseRolloutDefaults()
+        if (immersionStatsPreferences.uiEnabled().get()) {
             mihon.feature.stats.legacy.LegacyStatsImportJob.start(this)
         }
-        if (Injekt.get<tachiyomi.domain.immersion.service.ImmersionStatsPreferences>().indexingEnabled().get()) {
+        if (immersionStatsPreferences.indexingEnabled().get()) {
             mihon.feature.stats.indexing.ImmersionIndexJob.start(this)
         }
         AnkiInventorySyncJob.setupTask(this)
         ImmersionRollupJob.setupTask(this)
+        mihon.feature.stats.retention.ImmersionRetentionJob.setupTask(this)
         // Chimahon <--
     }
 

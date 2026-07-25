@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package mihon.feature.stats.indexing
 
 import tachiyomi.data.immersion.SqlDelightImmersionRepository

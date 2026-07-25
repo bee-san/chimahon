@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package tachiyomi.domain.immersion.service
 
 import tachiyomi.domain.immersion.model.ImmersionReindexRequest

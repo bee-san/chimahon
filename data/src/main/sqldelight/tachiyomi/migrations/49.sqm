@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: MIT
+
 ALTER TABLE immersion_source_unit
 ADD COLUMN ocr_quality TEXT
 CHECK(ocr_quality IS NULL OR ocr_quality IN ('AVAILABLE', 'PARTIAL', 'UNAVAILABLE', 'STALE'));

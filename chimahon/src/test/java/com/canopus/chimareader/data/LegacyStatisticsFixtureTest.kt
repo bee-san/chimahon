@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package com.canopus.chimareader.data
 
 import io.kotest.assertions.throwables.shouldThrow

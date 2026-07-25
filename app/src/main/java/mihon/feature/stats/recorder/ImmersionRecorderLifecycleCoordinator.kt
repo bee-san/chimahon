@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package mihon.feature.stats.recorder
 
 import eu.kanade.domain.base.BasePreferences
