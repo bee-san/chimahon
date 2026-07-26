@@ -166,6 +166,7 @@ import tachiyomi.domain.immersion.model.CapabilityState
 import tachiyomi.domain.immersion.model.LanguageTag
 import tachiyomi.domain.immersion.service.FinalizeReason
 import tachiyomi.domain.immersion.service.ImmersionRecorder
+import tachiyomi.domain.immersion.service.ImmersionStatsDiagnosticsStore
 import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
 import tachiyomi.domain.immersion.service.InteractionProvenance
 import tachiyomi.domain.source.anime.service.AnimeSourceManager
@@ -219,6 +220,7 @@ class PlayerViewModel @JvmOverloads constructor(
     private val basePreferences: BasePreferences = Injekt.get(),
     private val immersionRecorder: ImmersionRecorder = Injekt.get(),
     private val immersionStatsPreferences: ImmersionStatsPreferences = Injekt.get(),
+    private val immersionStatsDiagnostics: ImmersionStatsDiagnosticsStore = Injekt.get(),
     private val syncPreferences: SyncPreferences = Injekt.get(),
     private val getCustomButtons: GetCustomButtons = Injekt.get(),
     private val trackSelect: TrackSelect = Injekt.get(),
@@ -2846,6 +2848,7 @@ class PlayerViewModel @JvmOverloads constructor(
                 rawTextRetention = immersionStatsPreferences::effectiveRawTextRetention,
                 bufferingGraceMillis = immersionStatsPreferences.videoBufferingGraceSeconds().get() * 1_000L,
                 incognito = incognitoMode,
+                diagnostics = immersionStatsDiagnostics,
             )
         } ?: return
         val collectorsInstalled = videoCaptureLifecycle.withCurrentAdapter(adapter) {

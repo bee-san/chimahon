@@ -34,11 +34,14 @@ import tachiyomi.domain.immersion.service.ActiveTimePolicyDifference
 import tachiyomi.domain.immersion.service.CaptureCommand
 import tachiyomi.domain.immersion.service.DefaultUnicodeCountPolicy
 import tachiyomi.domain.immersion.service.FinalizeReason
+import tachiyomi.domain.immersion.service.ImmersionAdapterDiagnosticKind
+import tachiyomi.domain.immersion.service.ImmersionCaptureAdapter
 import tachiyomi.domain.immersion.service.ImmersionRecorder
 import tachiyomi.domain.immersion.service.ImmersionShadowIdentity
 import tachiyomi.domain.immersion.service.ImmersionShadowReconciler
 import tachiyomi.domain.immersion.service.ImmersionShadowResult
 import tachiyomi.domain.immersion.service.ImmersionShadowTotals
+import tachiyomi.domain.immersion.service.ImmersionStatsDiagnosticsStore
 import tachiyomi.domain.immersion.service.InteractionProvenance
 import tachiyomi.domain.immersion.service.PauseReason
 import tachiyomi.domain.immersion.service.ReadingTimeTolerance
@@ -277,6 +280,7 @@ class MangaCaptureAdapter(
     private val clock: () -> Long = System::currentTimeMillis,
     private val zoneId: () -> ZoneId = ZoneId::systemDefault,
     workerScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    diagnostics: ImmersionStatsDiagnosticsStore? = null,
 ) {
     private val sourceKey = "manga:${captureTitle.mangaId}"
     private val titleId = TitleId(stableUuid(TITLE_NAMESPACE, "$sourceKey|${captureTitle.profileId}"))
@@ -293,7 +297,9 @@ class MangaCaptureAdapter(
         updatedAtEpochMillis = maxOf(captureTitle.createdAtEpochMillis, clock()),
     )
     private val mangaId = captureTitle.mangaId
-    private val commands = BoundedCaptureCommandQueue<AdapterCommand>()
+    private val commands = BoundedCaptureCommandQueue<AdapterCommand> { kind ->
+        diagnostics?.recordAdapterDiagnostic(ImmersionCaptureAdapter.MANGA, kind)
+    }
     private val mutableCoverage = MutableStateFlow(MangaOcrCoverageSnapshot())
     private val activeLookupSources = AtomicReference(ActiveLookupSources())
     val coverage: StateFlow<MangaOcrCoverageSnapshot> = mutableCoverage.asStateFlow()
@@ -797,6 +803,7 @@ class MangaCaptureAdapter(
 internal class BoundedCaptureCommandQueue<T : Any>(
     private val capacity: Int = CAPTURE_COMMAND_QUEUE_CAPACITY,
     private val overflowCapacity: Int = CAPTURE_COMMAND_OVERFLOW_CAPACITY,
+    private val onDiagnostic: (ImmersionAdapterDiagnosticKind) -> Unit = {},
 ) {
     private val lock = ReentrantLock()
     private val pending = ArrayDeque<QueueEntry<T>>(capacity)
@@ -843,6 +850,7 @@ internal class BoundedCaptureCommandQueue<T : Any>(
             if (pending.size >= capacity && policy is CaptureCommandQueuePolicy.LatestSnapshot) {
                 if (!evictOldestSnapshot()) {
                     droppedSnapshots += 1
+                    onDiagnostic(ImmersionAdapterDiagnosticKind.SNAPSHOT_DROPPED)
                     publishDiagnostics()
                     return CaptureCommandOfferResult.SNAPSHOT_DROPPED
                 }
@@ -859,11 +867,13 @@ internal class BoundedCaptureCommandQueue<T : Any>(
             if (pending.size >= capacity || overflow.isNotEmpty()) {
                 if (policy is CaptureCommandQueuePolicy.LatestSnapshot) {
                     droppedSnapshots += 1
+                    onDiagnostic(ImmersionAdapterDiagnosticKind.SNAPSHOT_DROPPED)
                     publishDiagnostics()
                     return CaptureCommandOfferResult.SNAPSHOT_DROPPED
                 }
                 if (overflow.size >= overflowCapacity) {
                     droppedSemanticCommands += 1
+                    onDiagnostic(ImmersionAdapterDiagnosticKind.SEMANTIC_COMMAND_DROPPED)
                     publishDiagnostics()
                     return CaptureCommandOfferResult.SEMANTIC_DROPPED
                 }
@@ -936,6 +946,7 @@ internal class BoundedCaptureCommandQueue<T : Any>(
     fun recordWorkerFailure() {
         lock.withLock {
             workerFailures += 1
+            onDiagnostic(ImmersionAdapterDiagnosticKind.WORKER_FAILURE)
             publishDiagnostics()
         }
     }

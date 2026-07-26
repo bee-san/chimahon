@@ -326,6 +326,7 @@ class ReaderViewModel(
                 recorder = Injekt.get<ImmersionRecorder>(),
                 rawTextRetention = preferences::effectiveRawTextRetention,
                 idleTimeoutMillis = preferences.readerIdleTimeoutSeconds().get() * 1_000L,
+                diagnostics = Injekt.get(),
             )
         }.getOrNull()
         immersionCapture?.start(

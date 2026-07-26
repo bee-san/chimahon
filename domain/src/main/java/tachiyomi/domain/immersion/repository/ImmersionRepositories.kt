@@ -259,6 +259,8 @@ interface ImmersionMaintenanceRepository {
 
     suspend fun maintenanceSummary(): ImmersionMaintenanceSummary
 
+    suspend fun rollupBacklogCount(): Long
+
     suspend fun previewAllStatsDeletion(): ImmersionDeletionPreview
 
     suspend fun resetAllStats(

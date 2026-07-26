@@ -18,6 +18,8 @@ import org.junit.jupiter.api.Test
 import tachiyomi.domain.immersion.model.EventId
 import tachiyomi.domain.immersion.model.NonNegativeCounter
 import tachiyomi.domain.immersion.model.SessionId
+import tachiyomi.domain.immersion.service.ImmersionAdapterDiagnostics
+import tachiyomi.domain.immersion.service.ImmersionCaptureAdapter
 import tachiyomi.domain.immersion.service.ImmersionDiagnosticErrorCode
 import tachiyomi.domain.immersion.service.ImmersionShadowResult
 import tachiyomi.domain.immersion.service.ImmersionStatsDiagnostics
@@ -28,6 +30,7 @@ class StatsHealthParityExportTest {
     fun `parity entries aggregate deterministically by media and scope`() {
         val export = statsHealthParityExport(
             diagnostics = diagnostics(),
+            rollupBacklogRangeCount = 7,
             novelReport = novelReport(),
             mangaReport = mangaReport(),
             createdAtEpochMillis = 123,
@@ -65,6 +68,27 @@ class StatsHealthParityExportTest {
         )
         export.diagnostics.droppedCommandCount shouldBe 2
         export.diagnostics.lastWriteErrorCode shouldBe "DATABASE_BUSY"
+        export.diagnostics.rollupBacklogRangeCount shouldBe 7
+        export.diagnostics.adapters shouldContainExactly listOf(
+            StatsAdapterDiagnosticsExport(
+                adapter = StatsCaptureAdapter.NOVEL,
+                droppedSnapshotCount = 3,
+                droppedSemanticCommandCount = 0,
+                workerFailureCount = 0,
+            ),
+            StatsAdapterDiagnosticsExport(
+                adapter = StatsCaptureAdapter.MANGA,
+                droppedSnapshotCount = 0,
+                droppedSemanticCommandCount = 4,
+                workerFailureCount = 0,
+            ),
+            StatsAdapterDiagnosticsExport(
+                adapter = StatsCaptureAdapter.VIDEO,
+                droppedSnapshotCount = 0,
+                droppedSemanticCommandCount = 0,
+                workerFailureCount = 5,
+            ),
+        )
     }
 
     @Test
@@ -85,6 +109,7 @@ class StatsHealthParityExportTest {
 
     private fun healthDocument() = statsHealthParityDocument(
         diagnostics = diagnostics(),
+        rollupBacklogRangeCount = 7,
         novelReport = novelReport(),
         mangaReport = mangaReport(),
         createdAtEpochMillis = 123,
@@ -99,6 +124,19 @@ class StatsHealthParityExportTest {
         droppedCommandCount = NonNegativeCounter(2),
         abandonedRecoveryCount = NonNegativeCounter(1),
         rollupLagEventCount = NonNegativeCounter(4),
+        adapterDiagnostics = ImmersionCaptureAdapter.entries.associateWith { adapter ->
+            when (adapter) {
+                ImmersionCaptureAdapter.NOVEL -> ImmersionAdapterDiagnostics(
+                    droppedSnapshotCount = NonNegativeCounter(3),
+                )
+                ImmersionCaptureAdapter.MANGA -> ImmersionAdapterDiagnostics(
+                    droppedSemanticCommandCount = NonNegativeCounter(4),
+                )
+                ImmersionCaptureAdapter.VIDEO -> ImmersionAdapterDiagnostics(
+                    workerFailureCount = NonNegativeCounter(5),
+                )
+            }
+        },
     )
 
     private fun novelReport() = NovelReconciliationReport(

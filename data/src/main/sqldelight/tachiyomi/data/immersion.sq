@@ -2998,6 +2998,10 @@ FROM immersion_rollup_dirty
 ORDER BY local_date, title_id, reason
 LIMIT :limit;
 
+countImmersionDirtyRollupRanges:
+SELECT count(*)
+FROM immersion_rollup_dirty;
+
 upsertImmersionRollupDirty:
 INSERT INTO immersion_rollup_dirty(local_date, title_id, reason, updated_at)
 VALUES (:localDate, :titleId, :reason, :updatedAt)

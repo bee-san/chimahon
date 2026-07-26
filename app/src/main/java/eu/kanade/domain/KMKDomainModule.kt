@@ -51,6 +51,7 @@ import tachiyomi.domain.immersion.service.ImmersionStatsDiagnosticsStore
 import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
 import tachiyomi.domain.immersion.service.LookupTelemetry
 import tachiyomi.domain.immersion.service.PreferenceAnkiOperationRepairStore
+import tachiyomi.domain.immersion.service.PreferenceImmersionStatsDiagnosticsPersistence
 import tachiyomi.domain.immersion.service.SourceTextNormalizer
 import tachiyomi.domain.libraryUpdateError.interactor.DeleteLibraryUpdateErrors
 import tachiyomi.domain.libraryUpdateError.interactor.GetLibraryUpdateErrorWithRelations
@@ -72,7 +73,11 @@ class KMKDomainModule : InjektModule {
 
     override fun InjektRegistrar.registerInjectables() {
         addSingletonFactory { ImmersionStatsPreferences(get()) }
-        addSingletonFactory { ImmersionStatsDiagnosticsStore() }
+        addSingletonFactory {
+            ImmersionStatsDiagnosticsStore(
+                PreferenceImmersionStatsDiagnosticsPersistence(get()),
+            )
+        }
         addSingletonFactory { ImmersionShadowMonitor() }
         addSingletonFactory {
             SqlDelightImmersionRepository(

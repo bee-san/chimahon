@@ -36,11 +36,14 @@ import tachiyomi.domain.immersion.service.ActiveTimePolicyDifference
 import tachiyomi.domain.immersion.service.CaptureCommand
 import tachiyomi.domain.immersion.service.DefaultUnicodeCountPolicy
 import tachiyomi.domain.immersion.service.FinalizeReason
+import tachiyomi.domain.immersion.service.ImmersionAdapterDiagnosticKind
+import tachiyomi.domain.immersion.service.ImmersionCaptureAdapter
 import tachiyomi.domain.immersion.service.ImmersionRecorder
 import tachiyomi.domain.immersion.service.ImmersionShadowIdentity
 import tachiyomi.domain.immersion.service.ImmersionShadowReconciler
 import tachiyomi.domain.immersion.service.ImmersionShadowResult
 import tachiyomi.domain.immersion.service.ImmersionShadowTotals
+import tachiyomi.domain.immersion.service.ImmersionStatsDiagnosticsStore
 import tachiyomi.domain.immersion.service.InteractionProvenance
 import tachiyomi.domain.immersion.service.PauseReason
 import tachiyomi.domain.immersion.service.ReadingTimeTolerance
@@ -464,6 +467,7 @@ class NovelCaptureAdapter(
     private val clock: () -> Long = System::currentTimeMillis,
     private val zoneId: () -> ZoneId = ZoneId::systemDefault,
     workerScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    diagnostics: ImmersionStatsDiagnosticsStore? = null,
 ) {
     private val documentId = book.documentId
     private val sourceKey = "$SOURCE_KEY_PREFIX:$documentId"
@@ -479,7 +483,9 @@ class NovelCaptureAdapter(
         createdAtEpochMillis = book.createdAtEpochMillis,
         updatedAtEpochMillis = maxOf(book.createdAtEpochMillis, clock()),
     )
-    private val commands = BoundedNovelCommandQueue<AdapterCommand>()
+    private val commands = BoundedNovelCommandQueue<AdapterCommand> { kind ->
+        diagnostics?.recordAdapterDiagnostic(ImmersionCaptureAdapter.NOVEL, kind)
+    }
     private val lookupSnapshotState = AtomicReference(LookupSnapshotState())
     internal val queueDiagnostics: StateFlow<NovelCommandQueueDiagnostics> = commands.diagnostics
 
@@ -1018,6 +1024,7 @@ class NovelCaptureAdapter(
 private class BoundedNovelCommandQueue<T : Any>(
     private val capacity: Int = NOVEL_CAPTURE_COMMAND_QUEUE_CAPACITY,
     private val overflowCapacity: Int = NOVEL_CAPTURE_COMMAND_OVERFLOW_CAPACITY,
+    private val onDiagnostic: (ImmersionAdapterDiagnosticKind) -> Unit = {},
 ) {
     private val lock = ReentrantLock()
     private val pending = ArrayDeque<QueueEntry<T>>(capacity)
@@ -1064,6 +1071,7 @@ private class BoundedNovelCommandQueue<T : Any>(
             if (pending.size >= capacity && policy is NovelCommandQueuePolicy.LatestSnapshot) {
                 if (!evictOldestSnapshot()) {
                     droppedSnapshots += 1
+                    onDiagnostic(ImmersionAdapterDiagnosticKind.SNAPSHOT_DROPPED)
                     publishDiagnostics()
                     return NovelCommandOfferResult.SNAPSHOT_DROPPED
                 }
@@ -1080,11 +1088,13 @@ private class BoundedNovelCommandQueue<T : Any>(
             if (pending.size >= capacity || overflow.isNotEmpty()) {
                 if (policy is NovelCommandQueuePolicy.LatestSnapshot) {
                     droppedSnapshots += 1
+                    onDiagnostic(ImmersionAdapterDiagnosticKind.SNAPSHOT_DROPPED)
                     publishDiagnostics()
                     return NovelCommandOfferResult.SNAPSHOT_DROPPED
                 }
                 if (overflow.size >= overflowCapacity) {
                     droppedSemanticCommands += 1
+                    onDiagnostic(ImmersionAdapterDiagnosticKind.SEMANTIC_COMMAND_DROPPED)
                     publishDiagnostics()
                     return NovelCommandOfferResult.SEMANTIC_DROPPED
                 }
@@ -1157,6 +1167,7 @@ private class BoundedNovelCommandQueue<T : Any>(
     fun recordWorkerFailure() {
         lock.withLock {
             workerFailures += 1
+            onDiagnostic(ImmersionAdapterDiagnosticKind.WORKER_FAILURE)
             publishDiagnostics()
         }
     }

@@ -27,10 +27,12 @@ import tachiyomi.domain.immersion.model.SourceUnitId
 import tachiyomi.domain.immersion.service.CaptureCommand
 import tachiyomi.domain.immersion.service.CaptureSuppressionReason
 import tachiyomi.domain.immersion.service.FinalizeReason
+import tachiyomi.domain.immersion.service.ImmersionCaptureAdapter
 import tachiyomi.domain.immersion.service.ImmersionRecorder
 import tachiyomi.domain.immersion.service.ImmersionRecorderSnapshot
 import tachiyomi.domain.immersion.service.ImmersionSessionState
 import tachiyomi.domain.immersion.service.ImmersionShadowResult
+import tachiyomi.domain.immersion.service.ImmersionStatsDiagnosticsStore
 import tachiyomi.domain.immersion.service.InteractionProvenance
 import tachiyomi.domain.immersion.service.PauseReason
 import tachiyomi.domain.immersion.service.RecordResult
@@ -526,7 +528,8 @@ class MangaCaptureAdapterTest {
     @Test
     fun `adapter isolates reader from bounded saturation and diagnoses semantic loss`() = runTest {
         val recorder = FakeRecorder()
-        val adapter = adapter(recorder)
+        val diagnostics = ImmersionStatsDiagnosticsStore()
+        val adapter = adapter(recorder, diagnostics = diagnostics)
 
         val failure = runCatching {
             repeat(129) { chapterId ->
@@ -543,6 +546,9 @@ class MangaCaptureAdapterTest {
             it.droppedSemanticCommands shouldBe 1
             it.droppedSnapshots shouldBe 0
         }
+        diagnostics.state.value.adapterDiagnostics
+            .getValue(ImmersionCaptureAdapter.MANGA)
+            .droppedSemanticCommandCount shouldBe NonNegativeCounter(1)
         adapter.finalize(legacy()).await()
         recorder.commands.filterIsInstance<CaptureCommand.Activity>()
             .count { it.eventType == EventType.UNIT_COMPLETED } shouldBe 128
@@ -593,6 +599,7 @@ class MangaCaptureAdapterTest {
     private fun TestScope.adapter(
         recorder: FakeRecorder,
         incognito: Boolean = false,
+        diagnostics: ImmersionStatsDiagnosticsStore? = null,
     ) = MangaCaptureAdapter(
         captureTitle = MangaCaptureTitle(
             mangaId = 1,
@@ -609,6 +616,7 @@ class MangaCaptureAdapterTest {
         clock = { 1_000 },
         zoneId = { ZoneId.of("UTC") },
         workerScope = this,
+        diagnostics = diagnostics,
     )
 
     private fun page(
