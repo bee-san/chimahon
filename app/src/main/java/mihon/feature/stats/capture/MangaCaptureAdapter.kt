@@ -2,6 +2,8 @@
 
 package mihon.feature.stats.capture
 
+import kotlinx.collections.immutable.PersistentMap
+import kotlinx.collections.immutable.persistentMapOf
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -36,6 +38,7 @@ import tachiyomi.domain.immersion.service.ImmersionShadowIdentity
 import tachiyomi.domain.immersion.service.ImmersionShadowReconciler
 import tachiyomi.domain.immersion.service.ImmersionShadowResult
 import tachiyomi.domain.immersion.service.ImmersionShadowTotals
+import tachiyomi.domain.immersion.service.InteractionProvenance
 import tachiyomi.domain.immersion.service.PauseReason
 import tachiyomi.domain.immersion.service.ReadingTimeTolerance
 import tachiyomi.domain.immersion.service.RecordResult
@@ -49,6 +52,7 @@ import java.text.Normalizer
 import java.time.Instant
 import java.time.ZoneId
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 
 data class MangaCaptureTitle(
     val mangaId: Long,
@@ -288,6 +292,7 @@ class MangaCaptureAdapter(
     private val mangaId = captureTitle.mangaId
     private val commands = Channel<AdapterCommand>(Channel.UNLIMITED)
     private val mutableCoverage = MutableStateFlow(MangaOcrCoverageSnapshot())
+    private val activeLookupSources = AtomicReference(ActiveLookupSources())
     val coverage: StateFlow<MangaOcrCoverageSnapshot> = mutableCoverage.asStateFlow()
 
     init {
@@ -331,6 +336,31 @@ class MangaCaptureAdapter(
         commands.trySend(AdapterCommand.OcrResult(page, availability, blocks))
     }
 
+    /**
+     * Snapshots the active session and the exact source identity used for a tapped OCR block.
+     *
+     * Reader coordinate transforms may change a block's bounds, but its stable [MangaOcrBlockCapture.blockId]
+     * survives those transforms. The list index is used only for legacy blocks without an ID.
+     */
+    fun lookupProvenance(
+        page: MangaPageKey,
+        block: MangaOcrBlockCapture,
+        blockIndex: Int,
+    ): InteractionProvenance? {
+        val snapshot = activeLookupSources.get()
+        val sessionId = snapshot.sessionId ?: return null
+        if (block.blockId == null && blockIndex < 0) {
+            return InteractionProvenance(sessionId = sessionId)
+        }
+        val normalizedText = Normalizer.normalize(block.text, Normalizer.Form.NFC)
+        val textHash = ContentHash(sha256(normalizedText))
+        val locator = ocrSourceLocator(page, blockIndex, block, textHash)
+        return InteractionProvenance(
+            sessionId = sessionId,
+            sourceUnitId = snapshot.sourceIdsByLocator[locator.canonicalKey()],
+        )
+    }
+
     fun onChapterCompleted(chapterId: Long) {
         commands.trySend(AdapterCommand.ChapterCompleted(chapterId))
     }
@@ -366,6 +396,7 @@ class MangaCaptureAdapter(
         return when (val result = recorder.startSession(SessionContext(title = title, incognito = incognito))) {
             is SessionStartResult.Started -> result.handle.also { handle ->
                 state.handle = handle
+                activeLookupSources.set(ActiveLookupSources(sessionId = handle.sessionId))
                 if (state.blockers.isNotEmpty()) {
                     recorder.pause(
                         handle,
@@ -483,6 +514,7 @@ class MangaCaptureAdapter(
                 if (recordResult is RecordResult.Enqueued) {
                     state.seenSources += source.id
                     state.replayOrdinals[source.id] = replayOrdinal + 1
+                    publishLookupSource(handle, source)
                 } else {
                     visibleSources -= source.id
                 }
@@ -536,6 +568,7 @@ class MangaCaptureAdapter(
         command: AdapterCommand.Finalize,
     ) {
         val handle = state.handle ?: return
+        activeLookupSources.set(ActiveLookupSources())
         val session = recorder.finalize(handle, command.reason) ?: return
         MangaCaptureReconciliationReporter.record(
             session = session,
@@ -570,20 +603,11 @@ class MangaCaptureAdapter(
     ): ImmersionSourceUnit {
         val normalizedText = Normalizer.normalize(block.text, Normalizer.Form.NFC)
         val textHash = ContentHash(sha256(normalizedText))
-        val blockId = block.blockId ?: index.toString()
-        val locator = MangaSourceLocator(
-            mangaId = mangaId,
-            chapterId = page.chapterId,
-            pageIndex = page.pageIndex,
-            ocrEngineId = block.engineId,
-            ocrRevision = block.engineVersion,
-            ocrBlockId = blockId,
-            normalizedTextHash = textHash,
-        )
+        val locator = ocrSourceLocator(page, index, block, textHash)
         val now = clock()
         val count = DefaultUnicodeCountPolicy.analyze(normalizedText).countableCharacters
         return ImmersionSourceUnit(
-            id = SourceUnitId(stableUuid(SOURCE_NAMESPACE, "${titleId.value}|${locator.canonicalKey()}")),
+            id = ocrSourceId(locator),
             titleId = titleId,
             sourceKind = locator.sourceKind,
             canonicalLocator = locator.canonicalKey(),
@@ -601,6 +625,42 @@ class MangaCaptureAdapter(
             characterCounts = CharacterVolume(gross = count, uniqueSource = count),
         )
     }
+
+    private fun ocrSourceId(locator: MangaSourceLocator) =
+        SourceUnitId(stableUuid(SOURCE_NAMESPACE, "${titleId.value}|${locator.canonicalKey()}"))
+
+    private fun ocrSourceLocator(
+        page: MangaPageKey,
+        index: Int,
+        block: MangaOcrBlockCapture,
+        textHash: ContentHash,
+    ) = MangaSourceLocator(
+        mangaId = mangaId,
+        chapterId = page.chapterId,
+        pageIndex = page.pageIndex,
+        ocrEngineId = block.engineId,
+        ocrRevision = block.engineVersion,
+        ocrBlockId = block.blockId ?: index.toString(),
+        normalizedTextHash = textHash,
+    )
+
+    private fun publishLookupSource(
+        handle: SessionHandle,
+        source: ImmersionSourceUnit,
+    ) {
+        val snapshot = activeLookupSources.get()
+        if (snapshot.sessionId != handle.sessionId) return
+        activeLookupSources.set(
+            snapshot.copy(
+                sourceIdsByLocator = snapshot.sourceIdsByLocator.put(source.canonicalLocator, source.id),
+            ),
+        )
+    }
+
+    private data class ActiveLookupSources(
+        val sessionId: SessionId? = null,
+        val sourceIdsByLocator: PersistentMap<String, SourceUnitId> = persistentMapOf(),
+    )
 
     private data class OcrPageResult(
         val availability: MangaOcrAvailability,

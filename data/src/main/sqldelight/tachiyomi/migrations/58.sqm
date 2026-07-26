@@ -1,0 +1,43 @@
+-- SPDX-License-Identifier: MIT
+
+UPDATE immersion_event
+SET lookup_delta = CASE
+    WHEN EXISTS (
+        SELECT 1
+        FROM immersion_lookup
+        WHERE
+            immersion_lookup.event_id = immersion_event.id
+            AND immersion_lookup.status = 'SUCCESS'
+    ) THEN 1
+    ELSE 0
+END
+WHERE type = 'LOOKUP';
+
+UPDATE immersion_session
+SET lookup_count = (
+    SELECT count(*)
+    FROM immersion_lookup
+    WHERE
+        immersion_lookup.session_id = immersion_session.id
+        AND immersion_lookup.status = 'SUCCESS'
+)
+WHERE legacy_import = 0;
+
+INSERT INTO immersion_rollup_dirty(local_date, title_id, reason, updated_at)
+SELECT
+    immersion_event.local_date,
+    immersion_session.title_id,
+    'LOOKUP_SUCCESS_REPAIR',
+    max(immersion_event.occurred_at)
+FROM immersion_event
+JOIN immersion_lookup ON immersion_lookup.event_id = immersion_event.id
+JOIN immersion_session ON immersion_session.id = immersion_event.session_id
+GROUP BY immersion_event.local_date, immersion_session.title_id
+ON CONFLICT(local_date, title_id, reason) DO UPDATE SET
+    updated_at = max(updated_at, excluded.updated_at);
+
+DROP INDEX IF EXISTS immersion_anki_operation_note_success_index;
+
+CREATE INDEX immersion_anki_operation_note_success_index
+ON immersion_anki_operation(note_id, type)
+WHERE success = 1 AND note_id IS NOT NULL AND type IN ('CREATE', 'UPDATE');

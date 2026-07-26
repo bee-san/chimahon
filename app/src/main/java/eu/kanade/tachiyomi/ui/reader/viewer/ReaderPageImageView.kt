@@ -146,6 +146,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
             isVertical: Boolean,
             mediaInfo: chimahon.MediaInfo?,
             block: OcrTextBlock?,
+            blockIndex: Int,
         ) -> Unit
     )? = null
 
@@ -803,7 +804,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
         onShowOcrPopup?.invoke(
             lookupString, sentenceText, sentenceOffset,
             anchorBounds.left, anchorBounds.top, anchorBounds.width(), anchorBounds.height(),
-            block.vertical, null, block,
+            block.vertical, null, block, ocrBlocks.indexOfFirst { it === block },
         )
         return true
     }

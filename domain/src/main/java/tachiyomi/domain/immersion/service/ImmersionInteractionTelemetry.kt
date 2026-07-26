@@ -17,9 +17,20 @@ import tachiyomi.domain.immersion.model.SourceUnitId
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.text.Normalizer
+import java.time.Instant
+import java.time.ZoneId
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+
+/**
+ * Immutable session/source provenance captured at the user interaction boundary.
+ */
+@Serializable
+data class InteractionProvenance(
+    val sessionId: SessionId,
+    val sourceUnitId: SourceUnitId? = null,
+)
 
 data class LookupIntentToken(
     val id: String,
@@ -34,6 +45,8 @@ interface LookupTelemetry {
     fun begin(
         intentId: String,
         query: String,
+        provenance: InteractionProvenance? = null,
+        allowAmbientFallback: Boolean = true,
     ): LookupIntentToken
 
     fun complete(
@@ -56,18 +69,24 @@ class DefaultLookupTelemetry(
     override fun begin(
         intentId: String,
         query: String,
+        provenance: InteractionProvenance?,
+        allowAmbientFallback: Boolean,
     ): LookupIntentToken {
         require(intentId.isNotBlank()) { "Lookup intent ID cannot be blank" }
         require(query.isNotBlank()) { "Lookup query cannot be blank" }
         val existing = intents[intentId]
         if (existing != null) return existing.token
         val snapshot = recorder.state.value
-        val accepted = snapshot.sessionId != null && snapshot.state.acceptsInteraction()
+        val resolvedProvenance = snapshot.resolveInteractionProvenance(
+            explicit = provenance,
+            allowAmbientFallback = allowAmbientFallback,
+        )
+        val accepted = resolvedProvenance != null
         val normalized = normalizeInteractionText(query)
         val token = LookupIntentToken(
             id = intentId,
-            sessionId = snapshot.sessionId.takeIf { accepted },
-            sourceUnitId = snapshot.sourceUnitId.takeIf { accepted },
+            sessionId = resolvedProvenance?.sessionId,
+            sourceUnitId = resolvedProvenance?.sourceUnitId,
             queryHash = sha256(normalized),
             rawQuery = normalized.takeIf {
                 accepted && rawTextRetention() != RawTextRetention.NEVER
@@ -89,15 +108,16 @@ class DefaultLookupTelemetry(
         val pending = intents[token.id] ?: return RecordResult.Enqueued(0)
         if (!pending.completed.compareAndSet(false, true)) return RecordResult.Enqueued(0)
         intents.remove(token.id, pending)
-        val sessionId = token.sessionId
+        val canonicalToken = pending.token
+        val sessionId = canonicalToken.sessionId
             ?: return RecordResult.Suppressed(CaptureSuppressionReason.NO_ACTIVE_SESSION)
         return recorder.record(
             SessionHandle(sessionId),
             CaptureCommand.Lookup(
-                lookupId = token.id,
-                sourceUnitId = token.sourceUnitId,
-                queryHash = token.queryHash,
-                rawQuery = token.rawQuery,
+                lookupId = canonicalToken.id,
+                sourceUnitId = canonicalToken.sourceUnitId,
+                queryHash = canonicalToken.queryHash,
+                rawQuery = canonicalToken.rawQuery,
                 normalizedHeadword = normalizedHeadword?.let(::normalizeInteractionText),
                 normalizedReading = normalizedReading?.let(::normalizeInteractionText),
                 partOfSpeech = partOfSpeech?.trim()?.takeIf(String::isNotBlank),
@@ -122,6 +142,8 @@ data class AnkiOperationToken(
     val expressionHash: String,
     val normalizedExpression: String,
     val normalizedReading: String?,
+    val occurredAtEpochMillis: Long = 0,
+    val timezoneOffsetSeconds: Int = 0,
 )
 
 @Serializable
@@ -138,6 +160,10 @@ interface AnkiOperationRepairStore {
 
     fun remove(operationId: AnkiOperationId)
 
+    fun removeForSession(sessionId: SessionId): Int
+
+    fun clear()
+
     fun all(): List<PendingAnkiOperation>
 }
 
@@ -153,6 +179,10 @@ object NoOpAnkiOperationRepairStore : AnkiOperationRepairStore {
     override fun put(operation: PendingAnkiOperation) = Unit
 
     override fun remove(operationId: AnkiOperationId) = Unit
+
+    override fun removeForSession(sessionId: SessionId): Int = 0
+
+    override fun clear() = Unit
 
     override fun all(): List<PendingAnkiOperation> = emptyList()
 }
@@ -174,6 +204,20 @@ class PreferenceAnkiOperationRepairStore(
     override fun remove(operationId: AnkiOperationId) {
         synchronized(lock) {
             write(read().filterNot { it.token.operationId == operationId })
+        }
+    }
+
+    override fun removeForSession(sessionId: SessionId): Int =
+        synchronized(lock) {
+            val pending = read()
+            val retained = pending.filterNot { it.token.sessionId == sessionId }
+            write(retained)
+            pending.size - retained.size
+        }
+
+    override fun clear() {
+        synchronized(lock) {
+            write(emptyList())
         }
     }
 
@@ -202,6 +246,7 @@ interface AnkiOperationRecorder {
     fun begin(
         expression: String,
         reading: String? = null,
+        provenance: InteractionProvenance? = null,
     ): AnkiOperationToken
 
     fun complete(
@@ -212,6 +257,8 @@ interface AnkiOperationRecorder {
         errorCode: String? = null,
     ): RecordResult
 
+    fun abandon(token: AnkiOperationToken): Boolean
+
     suspend fun retryPending(): Int
 }
 
@@ -219,23 +266,37 @@ class DefaultAnkiOperationRecorder(
     private val recorder: ImmersionRecorder,
     private val repairStore: AnkiOperationRepairStore = NoOpAnkiOperationRepairStore,
     private val repairWriter: AnkiOperationRepairWriter = NoOpAnkiOperationRepairWriter,
+    private val repairAllowed: () -> Boolean = { true },
+    private val clock: () -> Instant = Instant::now,
+    private val zoneId: () -> ZoneId = ZoneId::systemDefault,
 ) : AnkiOperationRecorder {
+    private val operations = ConcurrentHashMap<AnkiOperationId, PendingAnkiCompletion>()
+
     override fun begin(
         expression: String,
         reading: String?,
+        provenance: InteractionProvenance?,
     ): AnkiOperationToken {
         require(expression.isNotBlank()) { "Anki expression cannot be blank" }
         val snapshot = recorder.state.value
-        val accepted = snapshot.sessionId != null && snapshot.state.acceptsInteraction()
+        val resolvedProvenance = snapshot.resolveInteractionProvenance(
+            explicit = provenance,
+            allowAmbientFallback = true,
+        )
+        val now = clock()
         val normalizedExpression = normalizeInteractionText(expression)
-        return AnkiOperationToken(
+        val token = AnkiOperationToken(
             operationId = AnkiOperationId(UUID.randomUUID().toString()),
-            sessionId = snapshot.sessionId.takeIf { accepted },
-            sourceUnitId = snapshot.sourceUnitId.takeIf { accepted },
+            sessionId = resolvedProvenance?.sessionId,
+            sourceUnitId = resolvedProvenance?.sourceUnitId,
             expressionHash = sha256(normalizedExpression),
             normalizedExpression = normalizedExpression,
             normalizedReading = reading?.let(::normalizeInteractionText),
+            occurredAtEpochMillis = now.toEpochMilli(),
+            timezoneOffsetSeconds = zoneId().rules.getOffset(now).totalSeconds,
         )
+        operations[token.operationId] = PendingAnkiCompletion(token)
+        return token
     }
 
     override fun complete(
@@ -245,17 +306,40 @@ class DefaultAnkiOperationRecorder(
         noteId: Long?,
         errorCode: String?,
     ): RecordResult {
-        val pending = PendingAnkiOperation(token, operationType, status, noteId, errorCode)
-        val sessionId = token.sessionId
+        val completion = operations[token.operationId] ?: return RecordResult.Enqueued(0)
+        if (!completion.completed.compareAndSet(false, true)) return RecordResult.Enqueued(0)
+        operations.remove(token.operationId, completion)
+        val pending = PendingAnkiOperation(completion.token, operationType, status, noteId, errorCode)
+        val sessionId = pending.token.sessionId
             ?: return RecordResult.Suppressed(CaptureSuppressionReason.NO_ACTIVE_SESSION)
-        if (status == AnkiOperationStatus.SUCCESS) repairStore.put(pending)
-        return record(sessionId, pending)
+        val repairQueued = status == AnkiOperationStatus.SUCCESS && repairAllowed()
+        if (repairQueued) repairStore.put(pending)
+        val result = record(sessionId, pending)
+        if (
+            repairQueued &&
+            (
+                result is RecordResult.Suppressed ||
+                    result is RecordResult.Rejected ||
+                    !repairAllowed()
+                )
+        ) {
+            repairStore.remove(pending.token.operationId)
+        }
+        return result
+    }
+
+    override fun abandon(token: AnkiOperationToken): Boolean {
+        val pending = operations[token.operationId] ?: return false
+        if (!pending.completed.compareAndSet(false, true)) return false
+        return operations.remove(token.operationId, pending)
     }
 
     override suspend fun retryPending(): Int {
+        if (!repairAllowed()) return 0
         var repaired = 0
-        repairStore.all().forEach { pending ->
-            if (repairWriter.write(pending)) {
+        for (pending in repairStore.all()) {
+            if (!repairAllowed()) break
+            if (runCatching { repairWriter.write(pending) }.getOrDefault(false)) {
                 repairStore.remove(pending.token.operationId)
                 repaired++
             }
@@ -281,12 +365,30 @@ class DefaultAnkiOperationRecorder(
                 errorCode = pending.errorCode,
             ),
         )
+
+    private data class PendingAnkiCompletion(
+        val token: AnkiOperationToken,
+        val completed: AtomicBoolean = AtomicBoolean(false),
+    )
 }
 
 private fun ImmersionSessionState.acceptsInteraction(): Boolean =
     this == ImmersionSessionState.ACTIVE ||
         this == ImmersionSessionState.IDLE ||
         this == ImmersionSessionState.PAUSED
+
+private fun ImmersionRecorderSnapshot.resolveInteractionProvenance(
+    explicit: InteractionProvenance?,
+    allowAmbientFallback: Boolean,
+): InteractionProvenance? {
+    if (!state.acceptsInteraction()) return null
+    val currentSessionId = sessionId ?: return null
+    return if (explicit == null) {
+        InteractionProvenance(currentSessionId, sourceUnitId).takeIf { allowAmbientFallback }
+    } else {
+        explicit.takeIf { it.sessionId == currentSessionId }
+    }
+}
 
 private fun normalizeInteractionText(value: String): String =
     Normalizer.normalize(value, Normalizer.Form.NFC).trim()

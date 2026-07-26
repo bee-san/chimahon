@@ -79,6 +79,7 @@ import java.util.UUID
 /** One entry in the recursive-lookup history stack (shared by tab and popup). */
 private data class TabLookupFrame(
     val query: String,
+    val lookupToken: LookupIntentToken?,
     val results: List<LookupResult>,
     val styles: List<DictionaryStyle>,
     val mediaDataUris: Map<String, String>,
@@ -295,6 +296,7 @@ data object DictionaryTab : Tab {
 
                     initialFrame = TabLookupFrame(
                         query = rawQuery,
+                        lookupToken = lookupToken,
                         results = emptyList(),
                         styles = emptyList(),
                         mediaDataUris = emptyMap(),
@@ -312,6 +314,7 @@ data object DictionaryTab : Tab {
 
                     initialFrame = TabLookupFrame(
                         query = rawQuery,
+                        lookupToken = lookupToken,
                         results = lookupResult.results,
                         styles = lookupResult.styles,
                         mediaDataUris = lookupResult.mediaDataUris,
@@ -433,6 +436,7 @@ data object DictionaryTab : Tab {
                 val result = results.getOrNull(resultIndex)
                 if (result != null) {
                     val frameIndex = activeTabIndex
+                    val lookupToken = lookupStack.getOrNull(frameIndex)?.lookupToken
                     val expression = result.term.expression
                     scope.launch {
                         val ankiResult = AnkiCardCreator.addToAnki(
@@ -453,6 +457,8 @@ data object DictionaryTab : Tab {
                             type = "novel",
                             syncOnCreate = ankiSyncOnCreate,
                             profileId = activeProfile.id,
+                            lookupToken = lookupToken,
+                            allowAmbientInteractionAttribution = false,
                         )
                         if (ankiResult is AnkiResult.Success || ankiResult is AnkiResult.CardExists || ankiResult is AnkiResult.OpenCard) {
                             val frame = lookupStack.getOrNull(frameIndex)

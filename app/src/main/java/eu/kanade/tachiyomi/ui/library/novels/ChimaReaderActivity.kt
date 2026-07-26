@@ -42,13 +42,20 @@ import eu.kanade.tachiyomi.ui.dictionary.DictionaryPopupWebViewWarmup
 import eu.kanade.tachiyomi.ui.dictionary.DictionaryPreferences
 import eu.kanade.tachiyomi.ui.dictionary.getDictionaryPaths
 import eu.kanade.tachiyomi.ui.reader.viewer.OcrLookupPopup
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import tachiyomi.domain.immersion.model.LookupStatus
+import tachiyomi.domain.immersion.service.InteractionProvenance
+import tachiyomi.domain.immersion.service.LookupIntentToken
+import tachiyomi.domain.immersion.service.LookupTelemetry
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
+import java.util.UUID
 
 /**
  * App-side subclass of [NovelReaderActivity] that wires text-selection events
@@ -62,6 +69,7 @@ import uy.kohesive.injekt.api.get
 class ChimaReaderActivity : NovelReaderActivity() {
 
     private val readerPreferences: eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences by uy.kohesive.injekt.injectLazy()
+    private val lookupTelemetry: LookupTelemetry by uy.kohesive.injekt.injectLazy()
     private var popupWebView: WebView? = null
     private val novelReaderSettings by lazy { com.canopus.chimareader.data.NovelReaderSettings(this, getSettingsNamespace()) }
 
@@ -182,7 +190,6 @@ class ChimaReaderActivity : NovelReaderActivity() {
 
             if (pendingShowByRects) {
                 pendingShowByRects = false
-                cancelActiveLookup()
                 popupVisible = true
                 isPopupActive = true
             }
@@ -308,9 +315,12 @@ class ChimaReaderActivity : NovelReaderActivity() {
         val activeProfile: chimahon.anki.AnkiProfile,
         val screenshot: Bitmap? = null,
         val sentenceOffset: Int = 0,
+        val interactionProvenance: InteractionProvenance? = null,
+        val lookupToken: LookupIntentToken? = null,
     )
 
     private var lookupDeferred: kotlinx.coroutines.Deferred<chimahon.DictionaryRepository.LookupResult2>? = null
+    private var lookupPreparationJob: Job? = null
     private var pendingShowByRects = false
     private var lookupStartTime: Long = 0L
 
@@ -357,24 +367,53 @@ class ChimaReaderActivity : NovelReaderActivity() {
         vertical: Boolean,
         screenshot: Bitmap?,
         resolveAnchorFromWebView: Boolean,
-        sentenceOffset: Int = sentence.indexOf(word).coerceAtLeast(0),
+        sentenceOffset: Int = sentence.lastIndexOf(word).coerceAtLeast(0),
     ) {
+        val interactionProvenance = readerViewModel?.resolveLookupProvenance(
+            selectedText = word,
+            contextText = sentence,
+            selectionOffset = sentenceOffset,
+        )
         val (profile, termPaths) = getOrRefreshLookupPaths()
         cancelActiveLookup()
+        val lookupToken = lookupTelemetry.begin(
+            intentId = UUID.randomUUID().toString(),
+            query = word,
+            provenance = interactionProvenance,
+            allowAmbientFallback = false,
+        )
         pendingShowByRects = false
         selectionRects.clear()
         lookupStartTime = SystemClock.elapsedRealtime()
         pendingLookupRects.clear()
-        lookupDeferred = lifecycleScope.async(Dispatchers.Default) {
+        val deferredLookup = lifecycleScope.async(Dispatchers.Default) {
             Injekt.get<DictionaryRepository>().lookup(word.trim(), termPaths, profile.languageCode)
         }
+        lookupDeferred = deferredLookup
         // Set preliminary state with tap coordinates; refined to exact
         // character position when rects arrive from JS (match path).
-        lookupState = LookupState(word, sentence, x, y, w, h, vertical, profile, screenshot, sentenceOffset)
+        lookupState = LookupState(
+            word = word,
+            sentence = sentence,
+            anchorX = x,
+            anchorY = y,
+            anchorWidth = w,
+            anchorHeight = h,
+            isVertical = vertical,
+            activeProfile = profile,
+            screenshot = screenshot,
+            sentenceOffset = sentenceOffset,
+            interactionProvenance = interactionProvenance,
+            lookupToken = lookupToken,
+        )
+        popupVisible = true
+        isPopupActive = true
 
-        lifecycleScope.launch(Dispatchers.Default) {
+        lookupPreparationJob = lifecycleScope.launch(Dispatchers.Default) {
             val result = try {
-                lookupDeferred?.await()
+                deferredLookup.await()
+            } catch (error: CancellationException) {
+                throw error
             } catch (_: Exception) {
                 null
             }
@@ -383,14 +422,9 @@ class ChimaReaderActivity : NovelReaderActivity() {
                 val matchOffset = word.indexOf(firstMatched).coerceAtLeast(0)
                 val charCount = firstMatched.codePointCount(0, firstMatched.length)
                 withContext(Dispatchers.Main) {
+                    if (lookupState?.lookupToken?.id != lookupToken.id) return@withContext
                     pendingShowByRects = true
                     readerViewModel?.bridge?.send(com.canopus.chimareader.ui.reader.WebViewCommand.GetSelectionRects(charCount, matchOffset))
-                }
-            } else {
-                withContext(Dispatchers.Main) {
-                    lookupState = lookupState?.copy(anchorX = x, anchorY = y, anchorWidth = w, anchorHeight = h)
-                    popupVisible = true
-                    isPopupActive = true
                 }
             }
         }
@@ -414,8 +448,13 @@ class ChimaReaderActivity : NovelReaderActivity() {
     }
 
     private fun cancelActiveLookup() {
+        lookupPreparationJob?.cancel()
+        lookupPreparationJob = null
         lookupDeferred?.cancel()
         lookupDeferred = null
+        lookupState?.lookupToken?.let {
+            lookupTelemetry.complete(it, LookupStatus.CANCELLED)
+        }
     }
 
     /** Apply pending rects to highlight only when popup content is ready. */
@@ -500,6 +539,9 @@ class ChimaReaderActivity : NovelReaderActivity() {
                     dismissOnOutsideTap = false,
                     modifier = Modifier,
                     titleId = bookMetadata?.id,
+                    interactionProvenance = popupState.interactionProvenance,
+                    allowAmbientInteractionAttribution = false,
+                    initialLookupToken = popupState.lookupToken,
                 )
             }
         }

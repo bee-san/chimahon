@@ -8,6 +8,7 @@ import io.kotest.matchers.types.shouldBeInstanceOf
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -30,6 +31,7 @@ import tachiyomi.domain.immersion.service.ImmersionRecorder
 import tachiyomi.domain.immersion.service.ImmersionRecorderSnapshot
 import tachiyomi.domain.immersion.service.ImmersionSessionState
 import tachiyomi.domain.immersion.service.ImmersionShadowResult
+import tachiyomi.domain.immersion.service.InteractionProvenance
 import tachiyomi.domain.immersion.service.PauseReason
 import tachiyomi.domain.immersion.service.RecordResult
 import tachiyomi.domain.immersion.service.ResumeReason
@@ -148,6 +150,124 @@ class MangaCaptureAdapterTest {
     }
 
     @Test
+    fun `lookup provenance freezes the active session and exact duplicate-text block source`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+        val visible = page()
+        val first = block("日本", ymin = 0f, ymax = 0.5f, blockId = "first")
+        val second = block("日本", ymin = 0.5f, ymax = 1f, blockId = "second")
+
+        adapter.onVisiblePages(listOf(visible))
+        adapter.onOcrResult(visible.key, MangaOcrAvailability.AVAILABLE, listOf(first, second))
+        runCurrent()
+
+        val transformedSelection = second.copy(xmin = 0.1f, ymin = 0.1f, xmax = 0.9f, ymax = 0.9f)
+        val provenance = requireNotNull(
+            adapter.lookupProvenance(
+                page = visible.key,
+                block = transformedSelection,
+                blockIndex = 0,
+            ),
+        )
+        val exposures = recorder.exposures(SourceKind.MANGA_OCR_BLOCK)
+
+        provenance.sessionId shouldBe recorder.startedSessionId
+        provenance.sourceUnitId shouldBe exposures[1].source.id
+        provenance.sourceUnitId shouldBe adapter.lookupProvenance(
+            page = visible.key,
+            block = transformedSelection,
+            blockIndex = 0,
+        )?.sourceUnitId
+
+        val next = page(chapter = 10, index = 1)
+        val nextBlock = block("日本", blockId = "second")
+        adapter.onVisiblePages(listOf(next))
+        adapter.onOcrResult(next.key, MangaOcrAvailability.AVAILABLE, listOf(nextBlock))
+        runCurrent()
+
+        val nextProvenance = requireNotNull(adapter.lookupProvenance(next.key, nextBlock, 0))
+        nextProvenance.sessionId shouldBe provenance.sessionId
+        nextProvenance.sourceUnitId shouldBe recorder.exposures(SourceKind.MANGA_OCR_BLOCK).last().source.id
+        provenance.sourceUnitId shouldBe exposures[1].source.id
+
+        adapter.finalize(legacy(characters = 6)).await()
+        adapter.lookupProvenance(visible.key, transformedSelection, 0) shouldBe null
+    }
+
+    @Test
+    fun `lookup provenance keeps the session when an exact OCR source is unavailable`() = runTest {
+        val offscreenRecorder = FakeRecorder()
+        val offscreenAdapter = adapter(offscreenRecorder)
+        val partialPage = MangaPageViewport(
+            key = MangaPageKey(10, 0),
+            visibleTop = 0f,
+            visibleBottom = 0.2f,
+        )
+        val offscreenBlock = block("日本", ymin = 0.6f, ymax = 1f)
+
+        offscreenAdapter.onVisiblePages(listOf(partialPage))
+        offscreenAdapter.onOcrResult(
+            partialPage.key,
+            MangaOcrAvailability.AVAILABLE,
+            listOf(offscreenBlock),
+        )
+        runCurrent()
+
+        offscreenAdapter.lookupProvenance(partialPage.key, offscreenBlock, 0) shouldBe
+            InteractionProvenance(
+                sessionId = requireNotNull(offscreenRecorder.startedSessionId),
+                sourceUnitId = null,
+            )
+        offscreenAdapter.finalize(legacy(equivalent = false)).await()
+
+        val rejectingRecorder = FakeRecorder(rejectOcrExposures = true)
+        val rejectingAdapter = adapter(rejectingRecorder)
+        val visible = page()
+        val rejectedBlock = block("語学")
+
+        rejectingAdapter.onVisiblePages(listOf(visible))
+        rejectingAdapter.onOcrResult(
+            visible.key,
+            MangaOcrAvailability.AVAILABLE,
+            listOf(rejectedBlock),
+        )
+        runCurrent()
+
+        rejectingAdapter.lookupProvenance(visible.key, rejectedBlock, 0) shouldBe
+            InteractionProvenance(
+                sessionId = requireNotNull(rejectingRecorder.startedSessionId),
+                sourceUnitId = null,
+            )
+        rejectingAdapter.finalize(legacy(equivalent = false)).await()
+    }
+
+    @Test
+    fun `immediate OCR tap keeps session provenance until the exact source is published`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+        val visible = page()
+        val selectedBlock = block("即時")
+
+        adapter.onVisiblePages(listOf(visible))
+        runCurrent()
+        adapter.onOcrResult(
+            visible.key,
+            MangaOcrAvailability.AVAILABLE,
+            listOf(selectedBlock),
+        )
+
+        adapter.lookupProvenance(visible.key, selectedBlock, 0) shouldBe
+            InteractionProvenance(
+                sessionId = requireNotNull(recorder.startedSessionId),
+                sourceUnitId = null,
+            )
+        runCurrent()
+        adapter.lookupProvenance(visible.key, selectedBlock, 0)?.sourceUnitId shouldBe
+            recorder.exposures(SourceKind.MANGA_OCR_BLOCK).single().source.id
+        adapter.finalize(legacy(characters = 2)).await()
+    }
+
+    @Test
     fun `background overlays completion and incognito preserve capture semantics`() = runTest {
         val recorder = FakeRecorder()
         val adapter = adapter(recorder)
@@ -174,6 +294,8 @@ class MangaCaptureAdapterTest {
         val suppressed = adapter(suppressedRecorder, incognito = true)
         suppressed.onVisiblePages(listOf(page()))
         suppressed.onOcrResult(page().key, MangaOcrAvailability.AVAILABLE, listOf(block("日")))
+        runCurrent()
+        suppressed.lookupProvenance(page().key, block("日"), 0) shouldBe null
         suppressed.finalize(legacy()).await()
         suppressedRecorder.commands shouldBe emptyList()
     }
@@ -226,9 +348,10 @@ class MangaCaptureAdapterTest {
         ymin: Float = 0f,
         ymax: Float = 1f,
         version: Int = 2,
+        blockId: String = "block-0",
     ) = MangaOcrBlockCapture(
         text = text,
-        blockId = "block-0",
+        blockId = blockId,
         xmin = 0f,
         ymin = ymin,
         xmax = 1f,
@@ -246,12 +369,15 @@ class MangaCaptureAdapterTest {
     private class FakeRecorder(
         private val suppressStart: Boolean = false,
         private val activeMillis: Long = 1_000,
+        private val rejectOcrExposures: Boolean = false,
     ) : ImmersionRecorder {
         private val mutableState = MutableStateFlow(ImmersionRecorderSnapshot())
         override val state: StateFlow<ImmersionRecorderSnapshot> = mutableState
         val commands = mutableListOf<CaptureCommand>()
         val pauses = mutableListOf<PauseReason>()
         val resumes = mutableListOf<ResumeReason>()
+        var startedSessionId: SessionId? = null
+            private set
         private var context: SessionContext? = null
         private var handle: SessionHandle? = null
 
@@ -265,6 +391,7 @@ class MangaCaptureAdapterTest {
             val handle = SessionHandle(SessionId(UUID.randomUUID().toString()))
             this.context = context
             this.handle = handle
+            startedSessionId = handle.sessionId
             return SessionStartResult.Started(handle)
         }
 
@@ -274,6 +401,13 @@ class MangaCaptureAdapterTest {
 
         override fun record(handle: SessionHandle, command: CaptureCommand): RecordResult {
             if (handle != this.handle) return RecordResult.Rejected(ImmersionSessionState.ACTIVE)
+            if (
+                rejectOcrExposures &&
+                command is CaptureCommand.Exposure &&
+                command.source.sourceKind == SourceKind.MANGA_OCR_BLOCK
+            ) {
+                return RecordResult.Rejected(ImmersionSessionState.ACTIVE)
+            }
             commands += command
             return RecordResult.Enqueued(1)
         }

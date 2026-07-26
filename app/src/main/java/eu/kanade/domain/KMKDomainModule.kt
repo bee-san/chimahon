@@ -1,6 +1,7 @@
 package eu.kanade.domain
 
 import chimahon.anki.AnkiDroidInventoryProvider
+import eu.kanade.domain.base.BasePreferences
 import mihon.feature.stats.indexing.DictionaryBackedJapaneseTokenizer
 import mihon.feature.stats.indexing.ImmersionIndexJob
 import mihon.feature.stats.indexing.SqlImmersionIndexExclusionPolicy
@@ -71,7 +72,17 @@ class KMKDomainModule : InjektModule {
         addSingletonFactory { ImmersionStatsPreferences(get()) }
         addSingletonFactory { ImmersionStatsDiagnosticsStore() }
         addSingletonFactory { ImmersionShadowMonitor() }
-        addSingletonFactory { SqlDelightImmersionRepository(get()) }
+        addSingletonFactory {
+            SqlDelightImmersionRepository(
+                handler = get(),
+                onAllStatsReset = {
+                    get<PreferenceAnkiOperationRepairStore>().clear()
+                },
+                onSessionDeleted = { sessionId ->
+                    get<PreferenceAnkiOperationRepairStore>().removeForSession(sessionId)
+                },
+            )
+        }
         addSingletonFactory { NoOpImmersionRecorderRepository() }
         addSingletonFactory<ImmersionRecorderRepository> {
             val preferences = get<ImmersionStatsPreferences>()
@@ -150,11 +161,17 @@ class KMKDomainModule : InjektModule {
             )
         }
         addSingletonFactory<AnkiOperationRecorder> {
+            val statsPreferences = get<ImmersionStatsPreferences>()
+            val basePreferences = get<BasePreferences>()
             DefaultAnkiOperationRecorder(
                 recorder = get(),
                 repairStore = get<PreferenceAnkiOperationRepairStore>(),
                 repairWriter = AnkiOperationRepairWriter {
-                    get<SqlDelightImmersionRepository>().storeUnlinkedAnkiOperation(it)
+                    get<SqlDelightImmersionRepository>().repairAnkiOperation(it)
+                },
+                repairAllowed = {
+                    statsPreferences.captureEnabled().get() &&
+                        !basePreferences.incognitoMode().get()
                 },
             )
         }
@@ -164,6 +181,9 @@ class KMKDomainModule : InjektModule {
                 basePreferences = get(),
                 statsPreferences = get(),
                 ankiOperationRecorder = get(),
+                onAnkiRepairsPersisted = {
+                    ImmersionRollupJob.start(get())
+                },
             )
         }
         addFactory { GetLegacyAggregateTotals(get()) }

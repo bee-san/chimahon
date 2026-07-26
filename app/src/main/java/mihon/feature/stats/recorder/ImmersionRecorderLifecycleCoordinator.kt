@@ -19,6 +19,7 @@ class ImmersionRecorderLifecycleCoordinator(
     private val basePreferences: BasePreferences,
     private val statsPreferences: ImmersionStatsPreferences,
     private val ankiOperationRecorder: AnkiOperationRecorder,
+    private val onAnkiRepairsPersisted: () -> Unit = {},
 ) {
     private var scope: CoroutineScope? = null
 
@@ -28,16 +29,29 @@ class ImmersionRecorderLifecycleCoordinator(
         scope.launch {
             recorder.setIncognito(basePreferences.incognitoMode().get())
             recorder.recoverAbandonedSessions()
-            ankiOperationRecorder.retryPending()
+            retryPendingAnkiOperations()
         }
         basePreferences.incognitoMode().changes()
-            .onEach(recorder::setIncognito)
+            .onEach { enabled ->
+                recorder.setIncognito(enabled)
+                if (!enabled) retryPendingAnkiOperations()
+            }
             .launchIn(scope)
         statsPreferences.captureEnabled().changes()
             .onEach { enabled ->
-                if (!enabled) recorder.finalize(FinalizeReason.CAPTURE_DISABLED)
+                if (enabled) {
+                    retryPendingAnkiOperations()
+                } else {
+                    recorder.finalize(FinalizeReason.CAPTURE_DISABLED)
+                }
             }
             .launchIn(scope)
+    }
+
+    private suspend fun retryPendingAnkiOperations() {
+        if (ankiOperationRecorder.retryPending() > 0) {
+            onAnkiRepairsPersisted()
+        }
     }
 
     fun onForeground() {

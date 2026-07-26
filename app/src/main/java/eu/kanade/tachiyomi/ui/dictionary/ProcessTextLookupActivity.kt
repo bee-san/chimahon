@@ -110,6 +110,7 @@ private fun ProcessTextLookupOverlay(
                 activeProfile = activeProfile,
                 type = "novel",
                 usePopup = false,
+                allowAmbientInteractionAttribution = false,
             )
         }
     }

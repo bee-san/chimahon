@@ -5,9 +5,11 @@ package com.canopus.chimareader.stats.capture
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -32,6 +34,7 @@ import tachiyomi.domain.immersion.service.ImmersionRecorder
 import tachiyomi.domain.immersion.service.ImmersionRecorderSnapshot
 import tachiyomi.domain.immersion.service.ImmersionSessionState
 import tachiyomi.domain.immersion.service.ImmersionShadowResult
+import tachiyomi.domain.immersion.service.InteractionProvenance
 import tachiyomi.domain.immersion.service.PauseReason
 import tachiyomi.domain.immersion.service.RecordResult
 import tachiyomi.domain.immersion.service.ResumeReason
@@ -42,6 +45,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.util.UUID
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class NovelCaptureAdapterTest {
 
     @BeforeEach
@@ -71,6 +75,185 @@ class NovelCaptureAdapterTest {
         recorder.commands.filterIsInstance<CaptureCommand.Progress>()
             .single()
             .netCharacters shouldBe NetCharacterProgress(20)
+    }
+
+    @Test
+    fun `lookup selection resolves the active session and exact visible source range`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+        val selectedRange = visibleRange(0, "😀彼は本を読む。")
+        val otherRange = visibleRange(64, "彼女は海を見る。")
+        val sentenceOffset = selectedRange.text.indexOf("読む")
+
+        adapter.start("chapter-1.xhtml", 0)
+        adapter.onVisibleRanges(
+            "chapter-1.xhtml",
+            ranges(selectedRange, otherRange),
+        )
+        runCurrent()
+
+        val selectedSource = recorder.commands
+            .filterIsInstance<CaptureCommand.Exposure>()
+            .single { it.source.sourceStart == selectedRange.start }
+            .source
+        adapter.resolveLookupProvenance(
+            sectionId = "chapter-1.xhtml",
+            selectedText = "読む",
+            contextText = selectedRange.text,
+            selectionOffset = sentenceOffset,
+        ) shouldBe
+            tachiyomi.domain.immersion.service.InteractionProvenance(
+                sessionId = requireNotNull(recorder.activeSessionId),
+                sourceUnitId = selectedSource.id,
+            )
+        adapter.finalize(legacy()).await()
+    }
+
+    @Test
+    fun `lookup provenance keeps the session for missing stale mismatched and ambiguous ranges`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+        val repeatedText = "同じ文を読む。"
+        val selectedOffset = repeatedText.indexOf("読む")
+
+        adapter.start("chapter-1.xhtml", 0)
+        runCurrent()
+        val sessionOnly = InteractionProvenance(
+            sessionId = requireNotNull(recorder.activeSessionId),
+            sourceUnitId = null,
+        )
+        adapter.resolveLookupProvenance(
+            "chapter-1.xhtml",
+            "読む",
+            repeatedText,
+            selectedOffset,
+        ) shouldBe sessionOnly
+
+        adapter.onVisibleRanges(
+            "chapter-1.xhtml",
+            ranges(
+                visibleRange(0, repeatedText),
+                visibleRange(64, repeatedText),
+            ),
+        )
+        runCurrent()
+        adapter.resolveLookupProvenance(
+            "chapter-1.xhtml",
+            "読む",
+            repeatedText,
+            selectedOffset,
+        ) shouldBe sessionOnly
+        adapter.resolveLookupProvenance(
+            "chapter-2.xhtml",
+            "読む",
+            repeatedText,
+            selectedOffset,
+        ) shouldBe sessionOnly
+        adapter.resolveLookupProvenance(
+            "chapter-1.xhtml",
+            "泳ぐ",
+            "海で泳ぐ。",
+            "海で泳ぐ。".indexOf("泳ぐ"),
+        ) shouldBe sessionOnly
+
+        adapter.onChapterChanged(
+            "chapter-2.xhtml",
+            100,
+            NovelNavigationCause.NEXT_CHAPTER,
+        )
+        adapter.lookupProvenanceSnapshot() shouldBe null
+        adapter.finalize(legacy()).await()
+    }
+
+    @Test
+    fun `immediate range lookup keeps session provenance until exact ranges are published`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+        val text = "すぐに読む。"
+        val offset = text.indexOf("読む")
+
+        adapter.start("chapter-1.xhtml", 0)
+        runCurrent()
+        adapter.onVisibleRanges(
+            "chapter-1.xhtml",
+            ranges(visibleRange(0, text)),
+        )
+
+        adapter.resolveLookupProvenance(
+            "chapter-1.xhtml",
+            "読む",
+            text,
+            offset,
+        ) shouldBe InteractionProvenance(
+            sessionId = requireNotNull(recorder.activeSessionId),
+            sourceUnitId = null,
+        )
+        runCurrent()
+        adapter.resolveLookupProvenance(
+            "chapter-1.xhtml",
+            "読む",
+            text,
+            offset,
+        )?.sourceUnitId shouldBe recorder.commands
+            .filterIsInstance<CaptureCommand.Exposure>()
+            .single()
+            .source
+            .id
+        adapter.finalize(legacy()).await()
+    }
+
+    @Test
+    fun `lookup snapshot is immutable and invalidation prevents queued ranges from resurfacing`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+        val firstText = "最初の文を読む。"
+        val secondText = "次の文を見る。"
+
+        adapter.start("chapter-1.xhtml", 0)
+        adapter.onVisibleRanges(
+            "chapter-1.xhtml",
+            ranges(visibleRange(0, firstText)),
+        )
+        runCurrent()
+        val capturedSnapshot = requireNotNull(adapter.lookupProvenanceSnapshot())
+        val capturedProvenance = requireNotNull(
+            capturedSnapshot.resolve(
+                "chapter-1.xhtml",
+                "読む",
+                firstText,
+                firstText.indexOf("読む"),
+            ),
+        )
+
+        adapter.onVisibleRanges(
+            "chapter-1.xhtml",
+            ranges(visibleRange(64, secondText)),
+        )
+        runCurrent()
+        capturedSnapshot.resolve(
+            "chapter-1.xhtml",
+            "読む",
+            firstText,
+            firstText.indexOf("読む"),
+        ) shouldBe capturedProvenance
+        adapter.resolveLookupProvenance(
+            "chapter-1.xhtml",
+            "読む",
+            firstText,
+            firstText.indexOf("読む"),
+        ) shouldBe InteractionProvenance(
+            sessionId = requireNotNull(recorder.activeSessionId),
+            sourceUnitId = null,
+        )
+
+        adapter.onVisibleRanges(
+            "chapter-1.xhtml",
+            ranges(visibleRange(128, "遅延した文を読む。")),
+        )
+        adapter.setOverlayVisible(NovelCaptureOverlay.IMAGE_VIEWER, true)
+        runCurrent()
+        adapter.lookupProvenanceSnapshot() shouldBe null
+        adapter.finalize(legacy()).await()
     }
 
     @Test
@@ -290,6 +473,16 @@ class NovelCaptureAdapterTest {
     private fun ranges(vararg values: NovelVisibleRange): String =
         Json.encodeToString(values.toList())
 
+    private fun visibleRange(
+        start: Long,
+        text: String,
+    ): NovelVisibleRange =
+        NovelVisibleRange(
+            start = start,
+            endExclusive = start + text.codePointCount(0, text.length),
+            text = text,
+        )
+
     private fun legacy(
         activeMillis: Long = 1_000,
         net: Long = 0,
@@ -310,6 +503,8 @@ class NovelCaptureAdapterTest {
         val resumes = mutableListOf<ResumeReason>()
         private var context: SessionContext? = null
         private var handle: SessionHandle? = null
+        val activeSessionId: SessionId?
+            get() = handle?.sessionId
 
         override suspend fun startSession(context: SessionContext): SessionStartResult {
             if (suppressStart) {

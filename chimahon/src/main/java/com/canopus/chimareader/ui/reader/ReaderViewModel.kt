@@ -35,6 +35,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import tachiyomi.domain.immersion.service.ImmersionRecorder
 import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
+import tachiyomi.domain.immersion.service.InteractionProvenance
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.io.File
@@ -638,6 +639,18 @@ class ReaderViewModel(
             rangesJson = rangesJson,
         )
     }
+
+    fun resolveLookupProvenance(
+        selectedText: String,
+        contextText: String,
+        selectionOffset: Int,
+    ): InteractionProvenance? =
+        immersionCapture?.resolveLookupProvenance(
+            sectionId = sectionId(index),
+            selectedText = selectedText,
+            contextText = contextText,
+            selectionOffset = selectionOffset,
+        )
 
     fun onReaderPositionRestored(
         chapterUrl: String,

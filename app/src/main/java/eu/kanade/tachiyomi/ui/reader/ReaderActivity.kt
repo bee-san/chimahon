@@ -152,7 +152,9 @@ import exh.util.mangaType
 import kotlinx.collections.immutable.persistentSetOf
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.collections.immutable.toImmutableSet
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
@@ -176,6 +178,10 @@ import tachiyomi.core.common.util.lang.launchNonCancellable
 import tachiyomi.core.common.util.lang.withUIContext
 import tachiyomi.core.common.util.system.UrlUtils
 import tachiyomi.core.common.util.system.logcat
+import tachiyomi.domain.immersion.model.LookupStatus
+import tachiyomi.domain.immersion.service.InteractionProvenance
+import tachiyomi.domain.immersion.service.LookupIntentToken
+import tachiyomi.domain.immersion.service.LookupTelemetry
 import tachiyomi.domain.manga.model.MangaCover
 import tachiyomi.domain.manga.model.asMangaCover
 import tachiyomi.domain.source.service.SourceManager
@@ -187,6 +193,7 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import uy.kohesive.injekt.injectLazy
 import java.io.ByteArrayOutputStream
+import java.util.UUID
 import kotlin.time.Duration.Companion.seconds
 import androidx.compose.ui.graphics.Color as ComposeColor
 
@@ -243,6 +250,7 @@ class ReaderActivity : BaseActivity() {
     private var ocrPopupState by mutableStateOf<OcrPopupState?>(null)
     private var ocrPopupVisible by mutableStateOf(false)
     private var ocrSelectionPanelState by mutableStateOf<OcrSelectionPanelState?>(null)
+    private var ocrLookupPreparationJob: Job? = null
 
     private val twoFingerTapSlop by lazy { ViewConfiguration.get(this).scaledTouchSlop }
     private var twoFingerTapTracking = false
@@ -299,6 +307,8 @@ class ReaderActivity : BaseActivity() {
         val mediaInfo: chimahon.MediaInfo? = null,
         val sourcePage: ReaderPage? = null,
         val deferredLookup: kotlinx.coroutines.Deferred<chimahon.DictionaryRepository.LookupResult2>? = null,
+        val interactionProvenance: InteractionProvenance? = null,
+        val lookupToken: LookupIntentToken,
     )
 
     private data class OcrSelectionPanelState(
@@ -744,6 +754,9 @@ class ReaderActivity : BaseActivity() {
                 fullText = popupState?.fullText ?: "",
                 charOffset = popupState?.charOffset ?: 0,
                 onDismiss = {
+                    popupState?.lookupToken?.let {
+                        lookupTelemetry.complete(it, LookupStatus.CANCELLED)
+                    }
                     ocrPopupVisible = false
                 },
                 webView = popupState?.webView ?: defaultWebView,
@@ -820,6 +833,9 @@ class ReaderActivity : BaseActivity() {
                     }
                 },
                 titleId = viewModel.state.value.manga?.id?.toString(),
+                interactionProvenance = popupState?.interactionProvenance,
+                allowAmbientInteractionAttribution = false,
+                initialLookupToken = popupState?.lookupToken,
             )
         }
 
@@ -827,45 +843,71 @@ class ReaderActivity : BaseActivity() {
         when (val viewer = viewModel.state.value.viewer) {
             is PagerViewer -> {
                 if (viewer.onShowOcrPopup == null) {
-                    viewer.onShowOcrPopup = { lookupString, fullText, charOffset, anchorX, anchorY, anchorWidth, anchorHeight, isVertical, _, sourcePage ->
+                    viewer.onShowOcrPopup = { lookupString, fullText, charOffset, anchorX, anchorY, anchorWidth, anchorHeight, isVertical, _, sourcePage, sourceBlock, sourceBlockIndex ->
+                        val interactionProvenance = viewModel.mangaOcrLookupProvenance(
+                            page = sourcePage,
+                            block = sourceBlock,
+                            blockIndex = sourceBlockIndex,
+                        )
+                        ocrLookupPreparationJob?.cancel()
+                        ocrPopupState?.lookupToken?.let {
+                            lookupTelemetry.complete(it, LookupStatus.CANCELLED)
+                        }
+                        val lookupToken = lookupTelemetry.begin(
+                            intentId = UUID.randomUUID().toString(),
+                            query = lookupString,
+                            provenance = interactionProvenance,
+                            allowAmbientFallback = false,
+                        )
                         val (activeProfile, deferredLookup) = preDeferLookup(lookupString)
 
-                        lifecycleScope.launch(Dispatchers.Default) {
-                            val result = try {
-                                deferredLookup.await()
-                            } catch (_: Exception) {
-                                null
-                            }
-                            val firstMatched = result?.results?.firstOrNull()?.matched
-                            val charCount = firstMatched?.codePointCount(0, firstMatched.length)
-
-                            val rect = withContext(Dispatchers.Main) {
-                                if (charCount != null) {
-                                    val pager = viewer.pager
-                                    for (i in 0 until pager.childCount) {
-                                        val h = pager.getChildAt(i) as? PagerPageHolder
-                                        if (h?.hasActiveOcrBlock == true) return@withContext h.refineActiveOcrBlock(charCount)
-                                    }
-                                }
-                                null as android.graphics.RectF?
-                            }
-
-                            withContext(Dispatchers.Main) {
-                                val state = viewModel.state.value
-                                val mediaInfo = if (state.manga != null && state.currentChapter != null) {
-                                    chimahon.MediaInfo(mangaTitle = state.manga!!.title, chapterName = state.currentChapter!!.chapter.name)
-                                } else {
+                        ocrLookupPreparationJob = lifecycleScope.launch(Dispatchers.Default) {
+                            var handedOff = false
+                            try {
+                                val result = try {
+                                    deferredLookup.await()
+                                } catch (error: CancellationException) {
+                                    throw error
+                                } catch (_: Exception) {
                                     null
                                 }
-                                ensureOcrResources()
-                                ocrPopupState = OcrPopupState(
-                                    lookupString, fullText, charOffset, ocrWebView!!, dictionaryRepository,
-                                    rect?.left ?: anchorX, rect?.top ?: anchorY,
-                                    rect?.width() ?: anchorWidth, rect?.height() ?: anchorHeight,
-                                    isVertical, getOrRefreshLookupPaths().first, mediaInfo, sourcePage, null,
-                                )
-                                ocrSelectionPanelState = null
-                                ocrPopupVisible = true
+                                val firstMatched = result?.results?.firstOrNull()?.matched
+                                val charCount = firstMatched?.codePointCount(0, firstMatched.length)
+
+                                val rect = withContext(Dispatchers.Main) {
+                                    if (charCount != null) {
+                                        val pager = viewer.pager
+                                        for (i in 0 until pager.childCount) {
+                                            val h = pager.getChildAt(i) as? PagerPageHolder
+                                            if (h?.hasActiveOcrBlock == true) return@withContext h.refineActiveOcrBlock(charCount)
+                                        }
+                                    }
+                                    null as android.graphics.RectF?
+                                }
+
+                                withContext(Dispatchers.Main) {
+                                    val state = viewModel.state.value
+                                    val mediaInfo = if (state.manga != null && state.currentChapter != null) {
+                                        chimahon.MediaInfo(mangaTitle = state.manga!!.title, chapterName = state.currentChapter!!.chapter.name)
+                                    } else {
+                                        null
+                                    }
+                                    ensureOcrResources()
+                                    ocrPopupState = OcrPopupState(
+                                        lookupString, fullText, charOffset, ocrWebView!!, dictionaryRepository,
+                                        rect?.left ?: anchorX, rect?.top ?: anchorY,
+                                        rect?.width() ?: anchorWidth, rect?.height() ?: anchorHeight,
+                                        isVertical, activeProfile, mediaInfo, sourcePage, deferredLookup,
+                                        interactionProvenance, lookupToken,
+                                    )
+                                    ocrSelectionPanelState = null
+                                    ocrPopupVisible = true
+                                    handedOff = true
+                                }
+                            } finally {
+                                if (!handedOff) {
+                                    lookupTelemetry.complete(lookupToken, LookupStatus.CANCELLED)
+                                }
                             }
                         }
                     }
@@ -873,6 +915,11 @@ class ReaderActivity : BaseActivity() {
                 if (viewer.onShowOcrSelectionPanel == null) {
                     viewer.onShowOcrSelectionPanel = { text, anchorX, anchorY, anchorWidth, anchorHeight ->
                         runOnUiThread {
+                            ocrLookupPreparationJob?.cancel()
+                            ocrLookupPreparationJob = null
+                            ocrPopupState?.lookupToken?.let {
+                                lookupTelemetry.complete(it, LookupStatus.CANCELLED)
+                            }
                             ocrPopupVisible = false
                             ocrSelectionPanelState = OcrSelectionPanelState(
                                 text = text,
@@ -886,51 +933,84 @@ class ReaderActivity : BaseActivity() {
                 }
                 if (viewer.onDismissOcrPopup == null) {
                     viewer.onDismissOcrPopup = {
-                        runOnUiThread { ocrPopupVisible = false }
+                        runOnUiThread {
+                            ocrLookupPreparationJob?.cancel()
+                            ocrLookupPreparationJob = null
+                            ocrPopupState?.lookupToken?.let {
+                                lookupTelemetry.complete(it, LookupStatus.CANCELLED)
+                            }
+                            ocrPopupVisible = false
+                        }
                     }
                 }
             }
             is WebtoonViewer -> {
                 if (viewer.onShowOcrPopup == null) {
-                    viewer.onShowOcrPopup = { lookupString, fullText, charOffset, anchorX, anchorY, anchorWidth, anchorHeight, isVertical, _, sourcePage ->
+                    viewer.onShowOcrPopup = { lookupString, fullText, charOffset, anchorX, anchorY, anchorWidth, anchorHeight, isVertical, _, sourcePage, sourceBlock, sourceBlockIndex ->
+                        val interactionProvenance = viewModel.mangaOcrLookupProvenance(
+                            page = sourcePage,
+                            block = sourceBlock,
+                            blockIndex = sourceBlockIndex,
+                        )
+                        ocrLookupPreparationJob?.cancel()
+                        ocrPopupState?.lookupToken?.let {
+                            lookupTelemetry.complete(it, LookupStatus.CANCELLED)
+                        }
+                        val lookupToken = lookupTelemetry.begin(
+                            intentId = UUID.randomUUID().toString(),
+                            query = lookupString,
+                            provenance = interactionProvenance,
+                            allowAmbientFallback = false,
+                        )
                         val (activeProfile, deferredLookup) = preDeferLookup(lookupString)
 
-                        lifecycleScope.launch(Dispatchers.Default) {
-                            val result = try {
-                                deferredLookup.await()
-                            } catch (_: Exception) {
-                                null
-                            }
-                            val firstMatched = result?.results?.firstOrNull()?.matched
-                            val charCount = firstMatched?.codePointCount(0, firstMatched.length)
-
-                            val rect = withContext(Dispatchers.Main) {
-                                if (charCount != null) {
-                                    val recycler = viewer.recycler
-                                    for (i in 0 until recycler.childCount) {
-                                        val h = recycler.getChildViewHolder(recycler.getChildAt(i)) as? WebtoonPageHolder
-                                        if (h?.hasActiveOcrBlock == true) return@withContext h.refineActiveOcrBlock(charCount)
-                                    }
-                                }
-                                null as android.graphics.RectF?
-                            }
-
-                            withContext(Dispatchers.Main) {
-                                val state = viewModel.state.value
-                                val mediaInfo = if (state.manga != null && state.currentChapter != null) {
-                                    chimahon.MediaInfo(mangaTitle = state.manga!!.title, chapterName = state.currentChapter!!.chapter.name)
-                                } else {
+                        ocrLookupPreparationJob = lifecycleScope.launch(Dispatchers.Default) {
+                            var handedOff = false
+                            try {
+                                val result = try {
+                                    deferredLookup.await()
+                                } catch (error: CancellationException) {
+                                    throw error
+                                } catch (_: Exception) {
                                     null
                                 }
-                                ensureOcrResources()
-                                ocrPopupState = OcrPopupState(
-                                    lookupString, fullText, charOffset, ocrWebView!!, dictionaryRepository,
-                                    rect?.left ?: anchorX, rect?.top ?: anchorY,
-                                    rect?.width() ?: anchorWidth, rect?.height() ?: anchorHeight,
-                                    isVertical, getOrRefreshLookupPaths().first, mediaInfo, sourcePage, null,
-                                )
-                                ocrSelectionPanelState = null
-                                ocrPopupVisible = true
+                                val firstMatched = result?.results?.firstOrNull()?.matched
+                                val charCount = firstMatched?.codePointCount(0, firstMatched.length)
+
+                                val rect = withContext(Dispatchers.Main) {
+                                    if (charCount != null) {
+                                        val recycler = viewer.recycler
+                                        for (i in 0 until recycler.childCount) {
+                                            val h = recycler.getChildViewHolder(recycler.getChildAt(i)) as? WebtoonPageHolder
+                                            if (h?.hasActiveOcrBlock == true) return@withContext h.refineActiveOcrBlock(charCount)
+                                        }
+                                    }
+                                    null as android.graphics.RectF?
+                                }
+
+                                withContext(Dispatchers.Main) {
+                                    val state = viewModel.state.value
+                                    val mediaInfo = if (state.manga != null && state.currentChapter != null) {
+                                        chimahon.MediaInfo(mangaTitle = state.manga!!.title, chapterName = state.currentChapter!!.chapter.name)
+                                    } else {
+                                        null
+                                    }
+                                    ensureOcrResources()
+                                    ocrPopupState = OcrPopupState(
+                                        lookupString, fullText, charOffset, ocrWebView!!, dictionaryRepository,
+                                        rect?.left ?: anchorX, rect?.top ?: anchorY,
+                                        rect?.width() ?: anchorWidth, rect?.height() ?: anchorHeight,
+                                        isVertical, activeProfile, mediaInfo, sourcePage, deferredLookup,
+                                        interactionProvenance, lookupToken,
+                                    )
+                                    ocrSelectionPanelState = null
+                                    ocrPopupVisible = true
+                                    handedOff = true
+                                }
+                            } finally {
+                                if (!handedOff) {
+                                    lookupTelemetry.complete(lookupToken, LookupStatus.CANCELLED)
+                                }
                             }
                         }
                     }
@@ -938,6 +1018,11 @@ class ReaderActivity : BaseActivity() {
                 if (viewer.onShowOcrSelectionPanel == null) {
                     viewer.onShowOcrSelectionPanel = { text, anchorX, anchorY, anchorWidth, anchorHeight ->
                         runOnUiThread {
+                            ocrLookupPreparationJob?.cancel()
+                            ocrLookupPreparationJob = null
+                            ocrPopupState?.lookupToken?.let {
+                                lookupTelemetry.complete(it, LookupStatus.CANCELLED)
+                            }
                             ocrPopupVisible = false
                             ocrSelectionPanelState = OcrSelectionPanelState(
                                 text = text,
@@ -951,7 +1036,14 @@ class ReaderActivity : BaseActivity() {
                 }
                 if (viewer.onDismissOcrPopup == null) {
                     viewer.onDismissOcrPopup = {
-                        runOnUiThread { ocrPopupVisible = false }
+                        runOnUiThread {
+                            ocrLookupPreparationJob?.cancel()
+                            ocrLookupPreparationJob = null
+                            ocrPopupState?.lookupToken?.let {
+                                lookupTelemetry.complete(it, LookupStatus.CANCELLED)
+                            }
+                            ocrPopupVisible = false
+                        }
                     }
                 }
             }
@@ -1094,6 +1186,10 @@ class ReaderActivity : BaseActivity() {
      * Called when the activity is destroyed. Cleans up the viewer, configuration and any view.
      */
     override fun onDestroy() {
+        ocrLookupPreparationJob?.cancel()
+        ocrPopupState?.lookupToken?.let {
+            lookupTelemetry.complete(it, LookupStatus.CANCELLED)
+        }
         super.onDestroy()
         viewModel.state.value.viewer?.destroy()
         releaseOcrResources()
@@ -2471,6 +2567,7 @@ class ReaderActivity : BaseActivity() {
     // ==================== Dictionary Popup State ====================
     private var ocrWebView: android.webkit.WebView? = null
     private val dictionaryRepository: chimahon.DictionaryRepository by injectLazy()
+    private val lookupTelemetry: LookupTelemetry by injectLazy()
 
     private fun ensureOcrResources() {
         ocrWebView ?: createOcrWebView(this).also { ocrWebView = it }

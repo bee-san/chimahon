@@ -97,6 +97,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.domain.immersion.model.LookupStatus
+import tachiyomi.domain.immersion.service.InteractionProvenance
+import tachiyomi.domain.immersion.service.LookupIntentToken
 import tachiyomi.domain.immersion.service.LookupTelemetry
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.util.collectAsState
@@ -112,6 +114,7 @@ private val miningScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 private data class LookupFrame(
     val id: String = UUID.randomUUID().toString(),
     val query: String,
+    val lookupToken: LookupIntentToken,
     val sentence: String,
     val sentenceOffset: Int,
     val results: List<LookupResult>,
@@ -121,9 +124,16 @@ private data class LookupFrame(
     val entryJsons: List<String>? = null,
 )
 
+private data class LookupTelemetryIntent(
+    val token: LookupIntentToken,
+    val recordsCompletion: Boolean,
+)
+
 private data class RecursivePopupRequest(
     val id: String = UUID.randomUUID().toString(),
     val query: String,
+    val lookupToken: LookupIntentToken,
+    val lookupError: String? = null,
     val sentence: String,
     val sentenceOffset: Int,
     val tapX: Float? = null,
@@ -169,6 +179,12 @@ fun OcrLookupPopup(
     isRecursiveChild: Boolean = false,
     modifier: Modifier = Modifier,
     titleId: String? = null,
+    interactionProvenance: InteractionProvenance? = null,
+    allowAmbientInteractionAttribution: Boolean = true,
+    inheritedLookupToken: LookupIntentToken? = null,
+    initialLookupToken: LookupIntentToken? = null,
+    initialLookupTokenRecordsCompletion: Boolean = true,
+    initialLookupError: String? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -286,6 +302,58 @@ fun OcrLookupPopup(
         if (isAmoled && isDark) Color.Black else colorScheme.surface
     }
 
+    fun beginLookupIntent(
+        query: String,
+        intentId: String = UUID.randomUUID().toString(),
+        provenance: InteractionProvenance? = interactionProvenance,
+        parentLookupToken: LookupIntentToken? = inheritedLookupToken,
+    ): LookupTelemetryIntent {
+        val attribution = resolveInheritedLookupAttribution(
+            inheritedLookupToken = parentLookupToken,
+            fallbackProvenance = provenance,
+        )
+        return when (attribution) {
+            is InheritedLookupAttribution.Begin -> {
+                LookupTelemetryIntent(
+                    token = lookupTelemetry.begin(
+                        intentId = intentId,
+                        query = query,
+                        provenance = attribution.provenance,
+                        allowAmbientFallback = allowAmbientInteractionAttribution,
+                    ),
+                    recordsCompletion = true,
+                )
+            }
+            is InheritedLookupAttribution.Suppressed -> {
+                LookupTelemetryIntent(
+                    token = attribution.lookupToken,
+                    recordsCompletion = false,
+                )
+            }
+        }
+    }
+
+    fun completeLookupIntent(
+        intent: LookupTelemetryIntent,
+        status: LookupStatus,
+        normalizedHeadword: String? = null,
+        normalizedReading: String? = null,
+        partOfSpeech: String? = null,
+        dictionaryId: String? = null,
+        resultId: String? = null,
+    ) {
+        if (!intent.recordsCompletion) return
+        lookupTelemetry.complete(
+            token = intent.token,
+            status = status,
+            normalizedHeadword = normalizedHeadword,
+            normalizedReading = normalizedReading,
+            partOfSpeech = partOfSpeech,
+            dictionaryId = dictionaryId,
+            resultId = resultId,
+        )
+    }
+
     /** Perform a dictionary lookup and push a new frame onto the stack. */
     fun pushLookup(
         query: String,
@@ -295,12 +363,50 @@ fun OcrLookupPopup(
         sentenceOffsetContext: Int = charOffset,
         deferredResult: kotlinx.coroutines.Deferred<chimahon.DictionaryRepository.LookupResult2>? = null,
         entryJsons: List<String>? = null,
+        entryLookupError: String? = null,
+        provenance: InteractionProvenance? = interactionProvenance,
+        parentLookupToken: LookupIntentToken? = inheritedLookupToken,
+        suppliedLookupToken: LookupIntentToken? = null,
+        suppliedLookupTokenRecordsCompletion: Boolean = false,
     ) {
-        val lookupToken = lookupTelemetry.begin(intentId, query)
+        val lookupIntent = suppliedLookupToken?.let {
+            LookupTelemetryIntent(
+                token = it,
+                recordsCompletion = suppliedLookupTokenRecordsCompletion,
+            )
+        } ?: beginLookupIntent(
+            query = query,
+            intentId = intentId,
+            provenance = provenance,
+            parentLookupToken = parentLookupToken,
+        )
+        val lookupToken = lookupIntent.token
+
+        val cleanQuery = if (isRecursive) {
+            query.replace(Regex("[\\s\\p{Punct}「」『』【】（）〔〕［］｛｝〈〉《》…、。！？!?]+"), "").trim()
+        } else {
+            query.trim()
+        }
+
+        if (isRecursive) {
+            if (cleanQuery.isBlank()) {
+                completeLookupIntent(lookupIntent, LookupStatus.CANCELLED)
+                return
+            }
+            // Ignore if entirely ascii/english letters and numbers
+            if (cleanQuery.all { it.code <= 127 }) {
+                completeLookupIntent(lookupIntent, LookupStatus.CANCELLED)
+                return
+            }
+        }
+
+        val finalQuery = if (isRecursive) cleanQuery else query
+
         if (entryJsons != null) {
             val frame = LookupFrame(
                 id = UUID.randomUUID().toString(),
-                query = query,
+                query = finalQuery,
+                lookupToken = lookupToken,
                 sentence = sentenceContext,
                 sentenceOffset = sentenceOffsetContext,
                 results = emptyList(),
@@ -311,44 +417,34 @@ fun OcrLookupPopup(
             )
             val truncated = lookupStackState.stack.take(lookupStackState.activeIndex + 1) + frame
             lookupStackState = LookupStackState(stack = truncated, activeIndex = truncated.size - 1)
-            errorMessage = null
+            errorMessage = entryLookupError
             isLoading = false
-            lookupTelemetry.complete(lookupToken, LookupStatus.SUCCESS)
+            completeLookupIntent(
+                intent = lookupIntent,
+                status = resolveLookupResultStatus(
+                    hasResults = entryJsons.isNotEmpty(),
+                    error = entryLookupError,
+                ),
+            )
             return
         }
 
-        val cleanQuery = if (isRecursive) {
-            query.replace(Regex("[\\s\\p{Punct}「」『』【】（）〔〕［］｛｝〈〉《》…、。！？!?]+"), "").trim()
-        } else {
-            query.trim()
-        }
-
-        if (isRecursive) {
-            if (cleanQuery.isBlank()) {
-                lookupTelemetry.complete(lookupToken, LookupStatus.CANCELLED)
-                return
-            }
-            // Ignore if entirely ascii/english letters and numbers
-            if (cleanQuery.all { it.code <= 127 }) {
-                lookupTelemetry.complete(lookupToken, LookupStatus.CANCELLED)
-                return
-            }
-        }
-
-        val finalQuery = if (isRecursive) cleanQuery else query
         val generation = ++lookupGeneration
         contentReady = false
         val shouldShowLoading = !isRecursive && lastRenderedLookupGeneration < 0
 
         fun handleResult(result: chimahon.DictionaryRepository.LookupResult2, orderedResults: List<LookupResult>, phaseStart: Long) {
             if (generation != lookupGeneration) {
-                lookupTelemetry.complete(lookupToken, LookupStatus.CANCELLED)
+                completeLookupIntent(lookupIntent, LookupStatus.CANCELLED)
                 return
             }
             val selectedResult = orderedResults.firstOrNull()
-            lookupTelemetry.complete(
-                token = lookupToken,
-                status = if (selectedResult == null) LookupStatus.EMPTY else LookupStatus.SUCCESS,
+            completeLookupIntent(
+                intent = lookupIntent,
+                status = resolveLookupResultStatus(
+                    hasResults = selectedResult != null,
+                    error = result.error,
+                ),
                 normalizedHeadword = selectedResult?.term?.expression,
                 normalizedReading = selectedResult?.term?.reading,
                 partOfSpeech = selectedResult?.term?.rules,
@@ -364,6 +460,7 @@ fun OcrLookupPopup(
             val frame = LookupFrame(
                 id = UUID.randomUUID().toString(),
                 query = finalQuery,
+                lookupToken = lookupToken,
                 sentence = sentenceContext,
                 sentenceOffset = sentenceOffsetContext,
                 results = orderedResults,
@@ -471,15 +568,16 @@ fun OcrLookupPopup(
                     }
                     handleResult(result, orderedResults, phaseStart)
                 } catch (e: Exception) {
-                    if (e is CancellationException) {
-                        lookupTelemetry.complete(lookupToken, LookupStatus.CANCELLED)
+                    val status = resolveLookupExceptionStatus(e)
+                    if (status == LookupStatus.CANCELLED) {
+                        completeLookupIntent(lookupIntent, status)
                         throw e
                     }
                     if (generation != lookupGeneration) {
-                        lookupTelemetry.complete(lookupToken, LookupStatus.CANCELLED)
+                        completeLookupIntent(lookupIntent, LookupStatus.CANCELLED)
                         return@launch
                     }
-                    lookupTelemetry.complete(lookupToken, LookupStatus.FAILED)
+                    completeLookupIntent(lookupIntent, status)
                     errorMessage = e.message ?: "Lookup failed"
                     isLoading = false
                 }
@@ -495,11 +593,16 @@ fun OcrLookupPopup(
                 val orderedResults = orderLookupResultsForDisplay(result.results, activeProfile, context)
                 handleResult(result, orderedResults, phaseStart)
             } catch (e: Exception) {
-                if (generation != lookupGeneration) {
-                    lookupTelemetry.complete(lookupToken, LookupStatus.CANCELLED)
+                val status = resolveLookupExceptionStatus(e)
+                if (status == LookupStatus.CANCELLED) {
+                    completeLookupIntent(lookupIntent, status)
                     return
                 }
-                lookupTelemetry.complete(lookupToken, LookupStatus.FAILED)
+                if (generation != lookupGeneration) {
+                    completeLookupIntent(lookupIntent, LookupStatus.CANCELLED)
+                    return
+                }
+                completeLookupIntent(lookupIntent, status)
                 errorMessage = e.message ?: "Lookup failed"
                 isLoading = false
             }
@@ -667,6 +770,7 @@ fun OcrLookupPopup(
     ) {
         val result = results.getOrNull(index) ?: return
         val miningFrame = currentFrame
+        val miningLookupToken = miningFrame?.lookupToken
         val miningSentence = miningFrame?.sentence ?: fullText
         val miningOffset = result.matched
             .takeIf { it.isNotBlank() }
@@ -715,6 +819,7 @@ fun OcrLookupPopup(
                     profileId = activeProfile.id,
                     titleId = titleId,
                     mediaRequest = effectiveMediaRequest,
+                    lookupToken = miningLookupToken,
                 )
                 if (ankiResult is AnkiResult.Success || ankiResult is AnkiResult.CardExists || ankiResult is AnkiResult.OpenCard) {
                     withContext(kotlinx.coroutines.Dispatchers.Main) {
@@ -737,7 +842,6 @@ fun OcrLookupPopup(
                                 chimahon.anki.AnkiDroidBridge(context).guiEditNote(ankiResult.noteId)
                             }
                             AnkiResult.Cancelled -> Unit
-                            else -> {}
                         }
                     }
                 } else {
@@ -785,6 +889,7 @@ fun OcrLookupPopup(
                     profileId = activeProfile.id,
                     titleId = titleId,
                     mediaRequest = effectiveMediaRequest,
+                    lookupToken = miningLookupToken,
                 )
                 withContext(kotlinx.coroutines.Dispatchers.Main) {
                     if (!context.canReceiveMiningUi()) return@withContext
@@ -944,7 +1049,20 @@ fun OcrLookupPopup(
         }
     }
 
-    LaunchedEffect(lookupString, fullText, charOffset, visible, initialLookupDeferred, initialEntryJsons) {
+    LaunchedEffect(
+        lookupString,
+        fullText,
+        charOffset,
+        visible,
+        initialLookupDeferred,
+        initialEntryJsons,
+        initialLookupToken,
+        initialLookupTokenRecordsCompletion,
+        initialLookupError,
+        interactionProvenance,
+        allowAmbientInteractionAttribution,
+        inheritedLookupToken,
+    ) {
         if (!visible) return@LaunchedEffect
         if (lookupString.isBlank()) {
             lookupGeneration++
@@ -966,6 +1084,9 @@ fun OcrLookupPopup(
             intentId = UUID.randomUUID().toString(),
             deferredResult = initialLookupDeferred,
             entryJsons = initialEntryJsons,
+            entryLookupError = initialLookupError,
+            suppliedLookupToken = initialLookupToken,
+            suppliedLookupTokenRecordsCompletion = initialLookupTokenRecordsCompletion,
         )
     }
 
@@ -981,28 +1102,64 @@ fun OcrLookupPopup(
     }
 
     // Callbacks forwarded from the WebView bridge
-    val onRecursiveLookup: (String, String?, Int?, Float?, Float?, String?) -> Unit = { word, sentence, offset, x, y, type ->
+    val onRecursiveLookup: (String, String?, Int?, Float?, Float?, String?) -> Unit = onRecursiveLookup@{ word, sentence, offset, x, y, type ->
         val targetSentence = recursiveSentence(sentence)
         val targetOffset = recursiveOffset(sentence, offset)
+        val recursiveLookupToken = currentFrame?.lookupToken ?: inheritedLookupToken
         if (type == "kanji") {
-            val paths = getDictionaryPaths(context, activeProfile)
-            val kanjiResult = runCatching {
-                repository.queryKanji(word)
-            }.getOrNull()
+            val cleanQuery = word.replace(Regex("[\\s\\p{Punct}「」『』【】（）〔〕［］｛｝〈〉《》…、。！？!?]+"), "").trim()
+            val popupIntent = if (recursiveNavMode == "popup") {
+                beginLookupIntent(
+                    query = word,
+                    parentLookupToken = recursiveLookupToken,
+                )
+            } else {
+                null
+            }
+            if (cleanQuery.isBlank() || cleanQuery.all { it.code <= 127 }) {
+                if (popupIntent != null) {
+                    completeLookupIntent(popupIntent, LookupStatus.CANCELLED)
+                } else {
+                    pushLookup(
+                        query = word,
+                        isRecursive = true,
+                        sentenceContext = targetSentence,
+                        sentenceOffsetContext = targetOffset,
+                        parentLookupToken = recursiveLookupToken,
+                    )
+                }
+                return@onRecursiveLookup
+            }
+            val kanjiAttempt = runCatching {
+                repository.queryKanji(cleanQuery)
+            }
+            val kanjiResult = kanjiAttempt.getOrNull()
+            val lookupError = kanjiAttempt.exceptionOrNull()?.let { error ->
+                error.message ?: "Kanji lookup failed"
+            }
             val jsonStrings = kanjiResult?.entries?.map { e ->
                 buildKanjiEntryJson(kanjiResult.character, e).toString()
             } ?: emptyList()
-            if (recursiveNavMode == "popup") {
+            if (popupIntent != null) {
+                completeLookupIntent(
+                    intent = popupIntent,
+                    status = resolveLookupResultStatus(
+                        hasResults = jsonStrings.isNotEmpty(),
+                        error = lookupError,
+                    ),
+                )
                 val resolvedResult = CompletableDeferred(
                     chimahon.DictionaryRepository.LookupResult2(
                         results = emptyList(),
                         styles = emptyList(),
                         mediaDataUris = emptyMap(),
-                        error = null,
+                        error = lookupError,
                     ),
                 )
                 childPopupRequest = RecursivePopupRequest(
-                    query = word,
+                    query = cleanQuery,
+                    lookupToken = popupIntent.token,
+                    lookupError = lookupError,
                     sentence = targetSentence,
                     sentenceOffset = targetOffset,
                     deferredResult = resolvedResult,
@@ -1015,26 +1172,50 @@ fun OcrLookupPopup(
                     sentenceContext = targetSentence,
                     sentenceOffsetContext = targetOffset,
                     entryJsons = jsonStrings,
+                    entryLookupError = lookupError,
+                    parentLookupToken = recursiveLookupToken,
                 )
             }
         } else if (recursiveNavMode == "popup") {
             // Sync lookup (same warm path as pushLookup's recursive branch),
             // then create a child popup with the results — no parent WebView update.
+            val popupIntent = beginLookupIntent(
+                query = word,
+                parentLookupToken = recursiveLookupToken,
+            )
             val cleanQuery = word.replace(Regex("[\\s\\p{Punct}「」『』【】（）〔〕［］｛｝〈〉《》…、。！？!?]+"), "").trim()
-            if (cleanQuery.isNotBlank() && cleanQuery.any { it.code > 127 }) {
+            if (cleanQuery.isBlank() || cleanQuery.all { it.code <= 127 }) {
+                completeLookupIntent(popupIntent, LookupStatus.CANCELLED)
+            } else {
                 val termPaths = getDictionaryPaths(context, activeProfile)
-                val result = runCatching {
-                    repository.lookup(cleanQuery, termPaths, activeProfile.languageCode)
-                }.getOrElse {
+                val lookupAttempt = runCatching {
+                    val result = repository.lookup(cleanQuery, termPaths, activeProfile.languageCode)
+                    result to orderLookupResultsForDisplay(result.results, activeProfile, context)
+                }
+                val (result, orderedResults) = lookupAttempt.getOrElse { error ->
                     chimahon.DictionaryRepository.LookupResult2(
                         results = emptyList(),
                         styles = emptyList(),
                         mediaDataUris = emptyMap(),
-                        error = it.message,
-                    )
+                        error = error.message ?: "Lookup failed",
+                    ) to emptyList()
                 }
-                val orderedResults = orderLookupResultsForDisplay(result.results, activeProfile, context)
-                val matched = orderedResults.firstOrNull()?.matched
+                val selectedResult = orderedResults.firstOrNull()
+                completeLookupIntent(
+                    intent = popupIntent,
+                    status = resolveLookupResultStatus(
+                        hasResults = selectedResult != null,
+                        error = result.error,
+                    ),
+                    normalizedHeadword = selectedResult?.term?.expression,
+                    normalizedReading = selectedResult?.term?.reading,
+                    partOfSpeech = selectedResult?.term?.rules,
+                    dictionaryId = selectedResult?.term?.glossaries?.firstOrNull()?.dictName,
+                    resultId = selectedResult?.let { selected ->
+                        "${selected.term.expression}\u0000${selected.term.reading}"
+                    },
+                )
+                val matched = selectedResult?.matched
                 if (!matched.isNullOrBlank()) {
                     val resolvedResult = CompletableDeferred(
                         chimahon.DictionaryRepository.LookupResult2(
@@ -1054,7 +1235,8 @@ fun OcrLookupPopup(
                         }.getOrNull()
                         val cssScale = density.density
                         childPopupRequest = RecursivePopupRequest(
-                            query = matched,
+                            query = cleanQuery,
+                            lookupToken = popupIntent.token,
                             sentence = targetSentence,
                             sentenceOffset = targetOffset,
                             tapX = (rect?.optDouble("x")?.toFloat() ?: x ?: 0f) * cssScale,
@@ -1077,6 +1259,7 @@ fun OcrLookupPopup(
                 isRecursive = true,
                 sentenceContext = targetSentence,
                 sentenceOffsetContext = targetOffset,
+                parentLookupToken = recursiveLookupToken,
             )
         }
     }
@@ -1470,8 +1653,13 @@ fun OcrLookupPopup(
             onContentReadyChange = null,
             initialLookupDeferred = request.deferredResult,
             initialEntryJsons = request.entryJsons,
+            initialLookupToken = request.lookupToken,
+            initialLookupTokenRecordsCompletion = false,
+            initialLookupError = request.lookupError,
             isRecursiveChild = true,
             titleId = titleId,
+            interactionProvenance = interactionProvenance,
+            allowAmbientInteractionAttribution = allowAmbientInteractionAttribution,
         )
     }
 }

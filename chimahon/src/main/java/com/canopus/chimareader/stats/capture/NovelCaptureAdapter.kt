@@ -40,6 +40,7 @@ import tachiyomi.domain.immersion.service.ImmersionShadowIdentity
 import tachiyomi.domain.immersion.service.ImmersionShadowReconciler
 import tachiyomi.domain.immersion.service.ImmersionShadowResult
 import tachiyomi.domain.immersion.service.ImmersionShadowTotals
+import tachiyomi.domain.immersion.service.InteractionProvenance
 import tachiyomi.domain.immersion.service.PauseReason
 import tachiyomi.domain.immersion.service.ReadingTimeTolerance
 import tachiyomi.domain.immersion.service.RecordResult
@@ -53,6 +54,7 @@ import java.text.Normalizer
 import java.time.Instant
 import java.time.ZoneId
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * A layout-independent range emitted by the reader JavaScript.
@@ -94,6 +96,156 @@ object NovelVisibleRangeCodec {
                     }
                 }
             }
+}
+
+/**
+ * Immutable interaction view of the source ranges successfully captured for the current novel
+ * viewport. Raw range text remains private and transient; callers can only resolve a selection to
+ * its canonical session/source provenance.
+ */
+class NovelLookupProvenanceSnapshot internal constructor(
+    val sessionId: SessionId,
+    val sectionId: String,
+    ranges: List<Pair<SourceUnitId, List<Int>>>,
+) {
+    private val visibleRanges = ranges.map { (sourceUnitId, text) ->
+        NovelLookupSourceRange(
+            sourceUnitId = sourceUnitId,
+            text = text.toList(),
+        )
+    }
+
+    fun resolve(
+        sectionId: String,
+        selectedText: String,
+        contextText: String,
+        selectionOffset: Int,
+    ): InteractionProvenance? {
+        if (sectionId != this.sectionId) return null
+        val selection = NovelLookupSelection.create(
+            selectedText = selectedText,
+            contextText = contextText,
+            selectionOffset = selectionOffset,
+        ) ?: return null
+        val candidates = visibleRanges.mapNotNull { range ->
+            range.match(selection)
+        }
+        val bestScore = candidates.maxOfOrNull(NovelLookupMatch::score) ?: return null
+        val bestSources = candidates
+            .filter { it.score == bestScore }
+            .map(NovelLookupMatch::sourceUnitId)
+            .distinct()
+        val sourceUnitId = bestSources.singleOrNull() ?: return null
+        return InteractionProvenance(
+            sessionId = sessionId,
+            sourceUnitId = sourceUnitId,
+        )
+    }
+}
+
+private data class NovelLookupSourceRange(
+    val sourceUnitId: SourceUnitId,
+    val text: List<Int>,
+) {
+    fun match(selection: NovelLookupSelection): NovelLookupMatch? {
+        val selectedStart = selection.selectedStart
+        val selectedCodePoints = selection.selectedText
+        val anchor = selection.contextText[selectedStart]
+        var bestScore: NovelLookupMatchScore? = null
+        text.forEachIndexed { rangeIndex, codePoint ->
+            if (codePoint != anchor) return@forEachIndexed
+            val availableSelectionLength = minOf(selectedCodePoints.size, text.size - rangeIndex)
+            if (
+                availableSelectionLength <= 0 ||
+                !text.matchesAt(rangeIndex, selectedCodePoints, availableSelectionLength)
+            ) {
+                return@forEachIndexed
+            }
+            var matchedBefore = 0
+            while (
+                rangeIndex - matchedBefore - 1 >= 0 &&
+                selectedStart - matchedBefore - 1 >= 0 &&
+                text[rangeIndex - matchedBefore - 1] ==
+                selection.contextText[selectedStart - matchedBefore - 1]
+            ) {
+                matchedBefore += 1
+            }
+            var matchedAfter = 0
+            while (
+                rangeIndex + matchedAfter < text.size &&
+                selectedStart + matchedAfter < selection.contextText.size &&
+                text[rangeIndex + matchedAfter] ==
+                selection.contextText[selectedStart + matchedAfter]
+            ) {
+                matchedAfter += 1
+            }
+            val score = NovelLookupMatchScore(
+                selectedCharacters = availableSelectionLength,
+                contextCharacters = matchedBefore + matchedAfter,
+            )
+            val currentBest = bestScore
+            if (currentBest == null || score > currentBest) {
+                bestScore = score
+            }
+        }
+        return bestScore?.let { NovelLookupMatch(sourceUnitId, it) }
+    }
+}
+
+private data class NovelLookupSelection(
+    val selectedText: List<Int>,
+    val contextText: List<Int>,
+    val selectedStart: Int,
+) {
+    companion object {
+        fun create(
+            selectedText: String,
+            contextText: String,
+            selectionOffset: Int,
+        ): NovelLookupSelection? {
+            val normalizedSelectedText = Normalizer.normalize(selectedText.trim(), Normalizer.Form.NFC)
+            if (normalizedSelectedText.isEmpty() || contextText.isEmpty()) return null
+            val safeOffset = contextText.safeUtf16Offset(selectionOffset)
+            val normalizedContextPrefix = Normalizer.normalize(
+                contextText.substring(0, safeOffset),
+                Normalizer.Form.NFC,
+            )
+            val normalizedContext = Normalizer.normalize(contextText, Normalizer.Form.NFC)
+            val selectedCodePoints = normalizedSelectedText.toCodePointList()
+            val contextCodePoints = normalizedContext.toCodePointList()
+            var selectedStart = normalizedContextPrefix.codePointCount(
+                0,
+                normalizedContextPrefix.length,
+            )
+            if (!contextCodePoints.matchesAt(selectedStart, selectedCodePoints, selectedCodePoints.size)) {
+                val occurrences = contextCodePoints.occurrencesOf(selectedCodePoints)
+                selectedStart = occurrences.singleOrNull() ?: return null
+            }
+            return NovelLookupSelection(
+                selectedText = selectedCodePoints,
+                contextText = contextCodePoints,
+                selectedStart = selectedStart,
+            )
+        }
+    }
+}
+
+private data class NovelLookupMatch(
+    val sourceUnitId: SourceUnitId,
+    val score: NovelLookupMatchScore,
+)
+
+private data class NovelLookupMatchScore(
+    val selectedCharacters: Int,
+    val contextCharacters: Int,
+) : Comparable<NovelLookupMatchScore> {
+    override fun compareTo(other: NovelLookupMatchScore): Int =
+        compareValuesBy(
+            this,
+            other,
+            NovelLookupMatchScore::contextCharacters,
+            NovelLookupMatchScore::selectedCharacters,
+        )
 }
 
 data class NovelCaptureBook(
@@ -325,6 +477,7 @@ class NovelCaptureAdapter(
         updatedAtEpochMillis = maxOf(book.createdAtEpochMillis, clock()),
     )
     private val commands = Channel<AdapterCommand>(Channel.UNLIMITED)
+    private val lookupSnapshotState = AtomicReference(LookupSnapshotState())
 
     init {
         workerScope.launch {
@@ -368,17 +521,26 @@ class NovelCaptureAdapter(
         sectionId: String,
         netPosition: Long,
     ) {
-        commands.trySend(AdapterCommand.Start(sectionId, netPosition))
+        val snapshotEpoch = invalidateLookupSnapshot()
+        commands.trySend(AdapterCommand.Start(sectionId, netPosition, snapshotEpoch))
     }
 
     fun onVisibleRanges(
         sectionId: String,
         rangesJson: String,
     ) {
-        commands.trySend(AdapterCommand.VisibleRanges(sectionId, rangesJson))
+        val snapshotEpoch = invalidateLookupSnapshot()
+        commands.trySend(
+            AdapterCommand.VisibleRanges(
+                sectionId = sectionId,
+                rangesJson = rangesJson,
+                snapshotEpoch = snapshotEpoch,
+            ),
+        )
     }
 
     fun onProgress(netPosition: Long) {
+        invalidateLookupSnapshot()
         commands.trySend(AdapterCommand.Progress(netPosition))
     }
 
@@ -386,6 +548,7 @@ class NovelCaptureAdapter(
         netPosition: Long,
         recordSeek: Boolean,
     ) {
+        invalidateLookupSnapshot()
         commands.trySend(AdapterCommand.ResetProgress(netPosition, recordSeek))
     }
 
@@ -394,6 +557,7 @@ class NovelCaptureAdapter(
         netPosition: Long,
         cause: NovelNavigationCause,
     ) {
+        invalidateLookupSnapshot()
         commands.trySend(AdapterCommand.ChapterChanged(sectionId, netPosition, cause))
     }
 
@@ -409,17 +573,43 @@ class NovelCaptureAdapter(
         overlay: NovelCaptureOverlay,
         visible: Boolean,
     ) {
+        if (visible) invalidateLookupSnapshot()
         commands.trySend(AdapterCommand.Blocked(CaptureBlocker.Overlay(overlay), visible))
     }
 
     fun setBackgrounded(backgrounded: Boolean) {
+        if (backgrounded) invalidateLookupSnapshot()
         commands.trySend(AdapterCommand.Blocked(CaptureBlocker.Background, backgrounded))
+    }
+
+    fun lookupProvenanceSnapshot(): NovelLookupProvenanceSnapshot? =
+        lookupSnapshotState.get().snapshot
+
+    fun resolveLookupProvenance(
+        sectionId: String,
+        selectedText: String,
+        contextText: String,
+        selectionOffset: Int,
+    ): InteractionProvenance? {
+        val lookupState = lookupSnapshotState.get()
+        val sessionId = lookupState.sessionId ?: return null
+        val sourceUnitId = lookupState.snapshot?.resolve(
+            sectionId = sectionId,
+            selectedText = selectedText,
+            contextText = contextText,
+            selectionOffset = selectionOffset,
+        )?.sourceUnitId
+        return InteractionProvenance(
+            sessionId = sessionId,
+            sourceUnitId = sourceUnitId,
+        )
     }
 
     fun finalize(
         legacy: LegacyNovelSessionSnapshot,
         reason: FinalizeReason = FinalizeReason.NORMAL,
     ): CompletableDeferred<Unit> {
+        clearLookupSnapshot()
         val completion = CompletableDeferred<Unit>()
         if (commands.trySend(AdapterCommand.Finalize(reason, legacy, completion)).isFailure) {
             completion.complete(Unit)
@@ -437,7 +627,13 @@ class NovelCaptureAdapter(
                 handle = result.handle,
                 sectionId = command.sectionId,
                 lastNetPosition = command.netPosition,
-            )
+            ).also { startedState ->
+                publishLookupSnapshot(
+                    state = startedState,
+                    ranges = emptyList(),
+                    expectedEpoch = command.snapshotEpoch,
+                )
+            }
         } else {
             state
         }
@@ -451,18 +647,29 @@ class NovelCaptureAdapter(
         if (command.sectionId != state.sectionId || state.blockers.isNotEmpty()) return
         val ranges = runCatching { NovelVisibleRangeCodec.decode(command.rangesJson) }
             .getOrNull()
-            ?: return
+            ?: run {
+                publishLookupSnapshot(
+                    state = state,
+                    ranges = emptyList(),
+                    expectedEpoch = command.snapshotEpoch,
+                )
+                return
+            }
         val sources = ranges.associate { range ->
             val source = sourceFor(command.sectionId, range)
-            source.id to source
+            source.id to CapturedNovelVisibleRange(
+                source = source,
+                normalizedText = Normalizer.normalize(range.text, Normalizer.Form.NFC),
+            )
         }
         val reportedIds = sources.keys
         val successfullyVisible = state.visibleSourceIds.intersect(reportedIds).toMutableSet()
         sources
             .filterKeys { it !in state.visibleSourceIds }
             .values
-            .sortedBy { it.sourceStart }
-            .forEach { source ->
+            .sortedBy { it.source.sourceStart }
+            .forEach { capturedRange ->
+                val source = capturedRange.source
                 val count = source.characterCounts.gross
                 val globallySeen = source.id in state.seenSourceIds ||
                     recorder.hasSeenSource(source.id)
@@ -490,6 +697,14 @@ class NovelCaptureAdapter(
             }
         state.visibleSourceIds.clear()
         state.visibleSourceIds += successfullyVisible
+        publishLookupSnapshot(
+            state = state,
+            ranges = sources
+                .filterKeys { it in successfullyVisible }
+                .values
+                .sortedBy { it.source.sourceStart },
+            expectedEpoch = command.snapshotEpoch,
+        )
     }
 
     private fun handleProgress(
@@ -573,6 +788,47 @@ class NovelCaptureAdapter(
         )
     }
 
+    private fun invalidateLookupSnapshot(): Long {
+        return lookupSnapshotState.updateAndGet { state ->
+            LookupSnapshotState(
+                epoch = state.epoch + 1,
+                sessionId = state.sessionId,
+                snapshot = null,
+            )
+        }.epoch
+    }
+
+    private fun clearLookupSnapshot() {
+        lookupSnapshotState.updateAndGet { state ->
+            LookupSnapshotState(epoch = state.epoch + 1)
+        }
+    }
+
+    private fun publishLookupSnapshot(
+        state: AdapterState,
+        ranges: List<CapturedNovelVisibleRange>,
+        expectedEpoch: Long,
+    ) {
+        val handle = state.handle ?: return
+        val snapshot = NovelLookupProvenanceSnapshot(
+            sessionId = handle.sessionId,
+            sectionId = state.sectionId,
+            ranges = ranges.map { range ->
+                range.source.id to range.normalizedText.toCodePointList()
+            },
+        )
+        lookupSnapshotState.updateAndGet { current ->
+            if (current.epoch == expectedEpoch) {
+                current.copy(
+                    sessionId = handle.sessionId,
+                    snapshot = snapshot,
+                )
+            } else {
+                current
+            }
+        }
+    }
+
     private fun sourceFor(
         sectionId: String,
         range: NovelVisibleRange,
@@ -623,15 +879,28 @@ class NovelCaptureAdapter(
         var titleCompleted: Boolean = false,
     )
 
+    private data class CapturedNovelVisibleRange(
+        val source: ImmersionSourceUnit,
+        val normalizedText: String,
+    )
+
+    private data class LookupSnapshotState(
+        val epoch: Long = 0,
+        val sessionId: SessionId? = null,
+        val snapshot: NovelLookupProvenanceSnapshot? = null,
+    )
+
     private sealed interface AdapterCommand {
         data class Start(
             val sectionId: String,
             val netPosition: Long,
+            val snapshotEpoch: Long,
         ) : AdapterCommand
 
         data class VisibleRanges(
             val sectionId: String,
             val rangesJson: String,
+            val snapshotEpoch: Long,
         ) : AdapterCommand
 
         data class Progress(val netPosition: Long) : AdapterCommand
@@ -710,4 +979,45 @@ private fun String.hasOnlyUnicodeScalarValues(): Boolean {
         offset += Character.charCount(codePoint)
     }
     return true
+}
+
+private fun String.safeUtf16Offset(requestedOffset: Int): Int {
+    val offset = requestedOffset.coerceIn(0, length)
+    return if (
+        offset in 1 until length &&
+        this[offset].isLowSurrogate() &&
+        this[offset - 1].isHighSurrogate()
+    ) {
+        offset - 1
+    } else {
+        offset
+    }
+}
+
+private fun String.toCodePointList(): List<Int> =
+    codePoints().toArray().toList()
+
+private fun List<Int>.matchesAt(
+    startIndex: Int,
+    expected: List<Int>,
+    length: Int,
+): Boolean {
+    if (
+        startIndex < 0 ||
+        length < 0 ||
+        startIndex + length > size ||
+        length > expected.size
+    ) {
+        return false
+    }
+    return (0 until length).all { offset ->
+        this[startIndex + offset] == expected[offset]
+    }
+}
+
+private fun List<Int>.occurrencesOf(value: List<Int>): List<Int> {
+    if (value.isEmpty() || value.size > size) return emptyList()
+    return (0..size - value.size).filter { startIndex ->
+        matchesAt(startIndex, value, value.size)
+    }
 }

@@ -45,6 +45,8 @@ import tachiyomi.domain.immersion.model.ImmersionAnkiItem
 import tachiyomi.domain.immersion.model.ImmersionAnkiSnapshot
 import tachiyomi.domain.immersion.model.ImmersionDataException
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
+import tachiyomi.domain.immersion.model.ImmersionPortableCell
+import tachiyomi.domain.immersion.model.ImmersionPortableCellKind
 import tachiyomi.domain.immersion.model.ImmersionReindexRequest
 import tachiyomi.domain.immersion.model.ImmersionSessionStart
 import tachiyomi.domain.immersion.model.ImmersionSourceUnit
@@ -79,16 +81,22 @@ import tachiyomi.domain.immersion.model.UnicodeCodePoint
 import tachiyomi.domain.immersion.service.AnkiOperationToken
 import tachiyomi.domain.immersion.service.PendingAnkiOperation
 import java.time.Instant
+import java.time.ZoneId
 import java.util.UUID
 
 @Execution(ExecutionMode.SAME_THREAD)
 class SqlDelightImmersionRepositoryTest {
 
+    private val databaseDispatcher = Dispatchers.IO.limitedParallelism(1)
+    private var allStatsResetCallbacks = 0
+    private val deletedSessionCallbacks = mutableListOf<SessionId>()
     private lateinit var driver: JdbcSqliteDriver
     private lateinit var repository: SqlDelightImmersionRepository
 
     @BeforeEach
     fun setUp() {
+        allStatsResetCallbacks = 0
+        deletedSessionCallbacks.clear()
         driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
         Database.Schema.create(driver).value
         driver.execute(null, "PRAGMA foreign_keys = ON", 0).value
@@ -97,9 +105,11 @@ class SqlDelightImmersionRepositoryTest {
             AndroidDatabaseHandler(
                 db = database,
                 driver = driver,
-                queryDispatcher = Dispatchers.IO,
-                transactionDispatcher = Dispatchers.IO,
+                queryDispatcher = databaseDispatcher,
+                transactionDispatcher = databaseDispatcher,
             ),
+            onAllStatsReset = { allStatsResetCallbacks++ },
+            onSessionDeleted = deletedSessionCallbacks::add,
         )
     }
 
@@ -210,6 +220,105 @@ class SqlDelightImmersionRepositoryTest {
         } finally {
             migrationDriver.close()
         }
+    }
+
+    @Test
+    fun `migration 58 repairs historical successful lookup counts without changing legacy aggregates`() = runTest {
+        prepareSession()
+        val statuses = listOf(
+            LookupStatus.SUCCESS,
+            LookupStatus.EMPTY,
+            LookupStatus.FAILED,
+            LookupStatus.CANCELLED,
+        )
+        repository.appendEventBatch(
+            statuses.mapIndexed { index, status ->
+                LookupEvent(
+                    id = eventId(900 + index),
+                    sessionId = SESSION_ID,
+                    sequence = index + 1L,
+                    occurredAtEpochMillis = 1_100L + index,
+                    timezoneOffsetSeconds = 0,
+                    lookupId = "migration-lookup-$status",
+                    sourceUnitId = null,
+                    queryHash = "migration-query-$status",
+                    rawQuery = null,
+                    normalizedHeadword = null,
+                    normalizedReading = null,
+                    partOfSpeech = null,
+                    dictionaryId = null,
+                    resultId = null,
+                    status = status,
+                )
+            },
+        ) shouldContainExactly List(statuses.size) { PersistenceResult.Applied }
+        repository.createSession(
+            sessionStart(
+                id = sessionId(901),
+                startedAt = 2_000,
+            ),
+        ) shouldBe PersistenceResult.Applied
+        repository.createSession(
+            sessionStart(
+                id = sessionId(902),
+                startedAt = 3_000,
+            ),
+        ) shouldBe PersistenceResult.Applied
+
+        driver.execute(
+            null,
+            "UPDATE immersion_event SET lookup_delta = 1 WHERE type = 'LOOKUP'",
+            0,
+        ).value
+        driver.execute(
+            null,
+            "UPDATE immersion_session SET lookup_count = 4 WHERE id = '${SESSION_ID.value}'",
+            0,
+        ).value
+        driver.execute(
+            null,
+            """
+            UPDATE immersion_session
+            SET
+                lookup_count = 7,
+                legacy_import = 1,
+                legacy_local_date = 0,
+                legacy_metric_quality = 'LEGACY_AMBIGUOUS'
+            WHERE id = '${sessionId(901).value}'
+            """.trimIndent(),
+            0,
+        ).value
+        driver.execute(
+            null,
+            "UPDATE immersion_session SET lookup_count = 9 WHERE id = '${sessionId(902).value}'",
+            0,
+        ).value
+
+        Database.Schema.migrate(
+            driver = driver,
+            oldVersion = 58,
+            newVersion = Database.Schema.version,
+        ).value
+
+        queryStrings(
+            """
+            SELECT lookup.status || ':' || event.lookup_delta
+            FROM immersion_lookup AS lookup
+            JOIN immersion_event AS event ON event.id = lookup.event_id
+            ORDER BY lookup.status
+            """.trimIndent(),
+        ) shouldContainExactly listOf(
+            "CANCELLED:0",
+            "EMPTY:0",
+            "FAILED:0",
+            "SUCCESS:1",
+        )
+        queryLong("SELECT lookup_count FROM immersion_session WHERE id = '${SESSION_ID.value}'") shouldBe 1
+        queryLong("SELECT lookup_count FROM immersion_session WHERE id = '${sessionId(901).value}'") shouldBe 7
+        queryLong("SELECT lookup_count FROM immersion_session WHERE id = '${sessionId(902).value}'") shouldBe 0
+        queryLong(
+            "SELECT count(*) FROM immersion_rollup_dirty WHERE reason = 'LOOKUP_SUCCESS_REPAIR'",
+        ) shouldBe 1
     }
 
     @Test
@@ -432,6 +541,7 @@ class SqlDelightImmersionRepositoryTest {
         repository.appendExposure(exposure(sequence = 1, eventNumber = 1))
 
         repository.deleteSession(SESSION_ID) shouldBe true
+        deletedSessionCallbacks shouldContainExactly listOf(SESSION_ID)
 
         queryLong("SELECT count(*) FROM immersion_session") shouldBe 0
         queryLong("SELECT count(*) FROM immersion_event") shouldBe 0
@@ -625,6 +735,89 @@ class SqlDelightImmersionRepositoryTest {
     }
 
     @Test
+    fun `only successful lookup status increments aggregates while every status remains persisted`() = runTest {
+        prepareSession()
+        val statuses = listOf(
+            LookupStatus.SUCCESS,
+            LookupStatus.EMPTY,
+            LookupStatus.FAILED,
+            LookupStatus.CANCELLED,
+        )
+        val lookups = statuses.mapIndexed { index, status ->
+            val sequence = index + 1L
+            LookupEvent(
+                id = eventId(73 + index),
+                sessionId = SESSION_ID,
+                sequence = sequence,
+                occurredAtEpochMillis = 1_000 + sequence * 100,
+                timezoneOffsetSeconds = 0,
+                lookupId = UUID.randomUUID().toString(),
+                sourceUnitId = null,
+                queryHash = "query-$status",
+                rawQuery = null,
+                normalizedHeadword = "読む",
+                normalizedReading = "よむ",
+                partOfSpeech = "verb",
+                dictionaryId = "test-dictionary",
+                resultId = if (status == LookupStatus.SUCCESS) "result-success" else null,
+                status = status,
+            )
+        }
+
+        repository.appendEventBatch(lookups) shouldContainExactly List(statuses.size) {
+            PersistenceResult.Applied
+        }
+        repository.appendEventBatch(lookups) shouldContainExactly List(statuses.size) {
+            PersistenceResult.AlreadyApplied
+        }
+
+        queryLong("SELECT count(*) FROM immersion_lookup") shouldBe statuses.size.toLong()
+        queryStrings("SELECT status FROM immersion_lookup ORDER BY status") shouldContainExactly
+            statuses.map { it.name }.sorted()
+        queryLong("SELECT count(*) FROM immersion_event WHERE type = 'LOOKUP'") shouldBe statuses.size.toLong()
+        queryStrings(
+            """
+            SELECT lookup.status || ':' || event.lookup_delta
+            FROM immersion_lookup AS lookup
+            JOIN immersion_event AS event ON event.id = lookup.event_id
+            ORDER BY lookup.status
+            """.trimIndent(),
+        ) shouldContainExactly listOf(
+            "CANCELLED:0",
+            "EMPTY:0",
+            "FAILED:0",
+            "SUCCESS:1",
+        )
+        queryLong("SELECT sum(lookup_delta) FROM immersion_event") shouldBe 1
+        queryLong("SELECT lookup_count FROM immersion_session") shouldBe 1
+        repository.getSession(SESSION_ID)?.lastSequence shouldBe statuses.size.toLong()
+
+        repository.finalizeSession(
+            sessionId = SESSION_ID,
+            status = SessionStatus.COMPLETED,
+            endedAtEpochMillis = 2_000,
+            elapsedDuration = MillisecondDuration(1_000),
+        )
+        repository.overview().lookups shouldBe NonNegativeCounter(1)
+
+        val date = ImmersionLocalDate.parse("1970-01-01")
+        val range = LocalDateRange(date, date)
+        repeat(2) {
+            repository.rebuildRollups(
+                range = range,
+                rollupVersion = 2,
+                nowEpochMillis = 3_000L + it,
+            ).let { result ->
+                result.eventCount shouldBe statuses.size.toLong()
+                result.sessionCount shouldBe 1
+                result.rowCount shouldBe 1
+            }
+            repository.dailyRollups(range).single().metrics.successfulLookups shouldBe NonNegativeCounter(1)
+            queryLong("SELECT sum(lookups) FROM immersion_daily_rollup") shouldBe 1
+        }
+    }
+
+    @Test
     fun `externally successful Anki operation can be repaired without fabricating a session event`() = runTest {
         val operationId = AnkiOperationId(UUID.randomUUID().toString())
         val pending = PendingAnkiOperation(
@@ -648,6 +841,211 @@ class SqlDelightImmersionRepositoryTest {
         queryLong("SELECT count(*) FROM immersion_anki_operation") shouldBe 1
         queryLong("SELECT count(*) FROM immersion_anki_operation WHERE event_id IS NULL AND session_id IS NULL") shouldBe 1
         queryLong("SELECT count(*) FROM immersion_event") shouldBe 0
+        repository.exportPortableArchive(
+            includeRawText = false,
+            createdAtEpochMillis = 4_000,
+        ).tables.single { it.name == "immersion_anki_operation" }.rows shouldBe emptyList()
+    }
+
+    @Test
+    fun `portable merge discards legacy unlinked Anki operation rows`() = runTest {
+        prepareSession()
+        repository.appendEventBatch(
+            listOf(
+                AnkiOperationEvent(
+                    id = eventId(94),
+                    sessionId = SESSION_ID,
+                    sequence = 1,
+                    occurredAtEpochMillis = 1_100,
+                    timezoneOffsetSeconds = 0,
+                    operationId = AnkiOperationId(UUID.randomUUID().toString()),
+                    sourceUnitId = null,
+                    expressionHash = "portable-anki-expression",
+                    normalizedExpression = "読む",
+                    normalizedReading = "よむ",
+                    operationType = AnkiOperationType.CREATE,
+                    status = AnkiOperationStatus.SUCCESS,
+                    noteId = 99,
+                ),
+            ),
+        ) shouldContainExactly listOf(PersistenceResult.Applied)
+        val linkedArchive = repository.exportPortableArchive(
+            includeRawText = false,
+            createdAtEpochMillis = 2_000,
+        )
+        val linkedTable = linkedArchive.tables.single { it.name == "immersion_anki_operation" }
+        val legacyCells = linkedTable.rows.single().cells.toMutableList()
+        listOf("event_id", "session_id", "source_unit_id", "word_id").forEach { columnName ->
+            val index = linkedTable.columns.indexOfFirst { it.name == columnName }
+            legacyCells[index] = ImmersionPortableCell(ImmersionPortableCellKind.NULL)
+        }
+        val legacyArchive = linkedArchive.copy(
+            tables = listOf(
+                linkedTable.copy(
+                    rows = listOf(linkedTable.rows.single().copy(cells = legacyCells)),
+                ),
+            ),
+        )
+
+        val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        try {
+            Database.Schema.create(targetDriver).value
+            targetDriver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+            val target = SqlDelightImmersionRepository(
+                AndroidDatabaseHandler(
+                    createDatabase(targetDriver),
+                    targetDriver,
+                    databaseDispatcher,
+                    databaseDispatcher,
+                ),
+            )
+
+            target.mergePortableArchive(legacyArchive, 3_000).insertedRows shouldBe 0
+            queryLong(targetDriver, "SELECT count(*) FROM immersion_anki_operation") shouldBe 0
+        } finally {
+            targetDriver.close()
+        }
+    }
+
+    @Test
+    fun `Anki repair preserves operation session and source identity and advances counters once`() = runTest {
+        prepareSession()
+        repository.appendExposure(exposure(sequence = 1, eventNumber = 95)) shouldBe PersistenceResult.Applied
+        val operationId = AnkiOperationId(UUID.randomUUID().toString())
+        val pending = PendingAnkiOperation(
+            token = AnkiOperationToken(
+                operationId = operationId,
+                sessionId = SESSION_ID,
+                sourceUnitId = SOURCE_ID,
+                expressionHash = "expression-hash",
+                normalizedExpression = "読む",
+                normalizedReading = "よむ",
+                occurredAtEpochMillis = 1_500,
+                timezoneOffsetSeconds = 0,
+            ),
+            operationType = AnkiOperationType.CREATE,
+            status = AnkiOperationStatus.SUCCESS,
+            noteId = 99,
+            errorCode = null,
+        )
+
+        repository.repairAnkiOperation(pending, repairedAtEpochMillis = 2_000) shouldBe true
+        repository.repairAnkiOperation(pending, repairedAtEpochMillis = 3_000) shouldBe true
+
+        queryLong("SELECT count(*) FROM immersion_anki_operation WHERE id = '${operationId.value}'") shouldBe 1
+        queryStrings(
+            """
+            SELECT session_id || ':' || source_unit_id
+            FROM immersion_anki_operation
+            WHERE id = '${operationId.value}'
+            """.trimIndent(),
+        ) shouldContainExactly listOf("${SESSION_ID.value}:${SOURCE_ID.value}")
+        queryLong(
+            "SELECT count(*) FROM immersion_anki_operation WHERE event_id IS NOT NULL",
+        ) shouldBe 1
+        queryLong(
+            "SELECT count(*) FROM immersion_event WHERE type = 'ANKI_OPERATION' AND cards_created_delta = 1",
+        ) shouldBe 1
+        queryLong("SELECT cards_created FROM immersion_session WHERE id = '${SESSION_ID.value}'") shouldBe 1
+        queryLong("SELECT last_sequence FROM immersion_session WHERE id = '${SESSION_ID.value}'") shouldBe 2
+
+        repository.finalizeSession(
+            sessionId = SESSION_ID,
+            status = SessionStatus.COMPLETED,
+            endedAtEpochMillis = 3_500,
+            elapsedDuration = MillisecondDuration(2_500),
+        )
+        repository.overview().cardsCreated shouldBe NonNegativeCounter(1)
+        val date = ImmersionLocalDate.parse("1970-01-01")
+        repository.rebuildRollups(
+            range = LocalDateRange(date, date),
+            rollupVersion = 2,
+            nowEpochMillis = 4_000,
+        )
+        queryLong("SELECT sum(cards_created) FROM immersion_daily_rollup") shouldBe 1
+    }
+
+    @Test
+    fun `legacy pending Anki repair derives local time from the repair zone`() = runTest {
+        prepareSession()
+        val operationId = AnkiOperationId(UUID.randomUUID().toString())
+        val repairedAt = Instant.parse("2026-07-01T00:30:00Z")
+        val repairZone = ZoneId.of("America/Los_Angeles")
+        val pending = PendingAnkiOperation(
+            token = AnkiOperationToken(
+                operationId = operationId,
+                sessionId = SESSION_ID,
+                sourceUnitId = null,
+                expressionHash = "legacy-expression-hash",
+                normalizedExpression = "読む",
+                normalizedReading = "よむ",
+            ),
+            operationType = AnkiOperationType.CREATE,
+            status = AnkiOperationStatus.SUCCESS,
+            noteId = 100,
+            errorCode = null,
+        )
+
+        repository.repairAnkiOperation(
+            operation = pending,
+            repairedAtEpochMillis = repairedAt.toEpochMilli(),
+            repairZoneId = repairZone,
+        ) shouldBe true
+
+        queryLong(
+            "SELECT occurred_at FROM immersion_event WHERE anki_operation_id = '${operationId.value}'",
+        ) shouldBe repairedAt.toEpochMilli()
+        queryLong(
+            "SELECT timezone_offset_seconds FROM immersion_event WHERE anki_operation_id = '${operationId.value}'",
+        ) shouldBe repairZone.rules.getOffset(repairedAt).totalSeconds.toLong()
+        queryLong(
+            "SELECT local_date FROM immersion_event WHERE anki_operation_id = '${operationId.value}'",
+        ) shouldBe repairedAt.atZone(repairZone).toLocalDate().toEpochDay()
+    }
+
+    @Test
+    fun `distinct successful updates to one Anki note remain independently idempotent`() = runTest {
+        prepareSession()
+        val operations = List(2) { index ->
+            PendingAnkiOperation(
+                token = AnkiOperationToken(
+                    operationId = AnkiOperationId(UUID.randomUUID().toString()),
+                    sessionId = SESSION_ID,
+                    sourceUnitId = null,
+                    expressionHash = "update-expression-hash-$index",
+                    normalizedExpression = "読む",
+                    normalizedReading = "よむ",
+                    occurredAtEpochMillis = 1_100L + index,
+                    timezoneOffsetSeconds = 0,
+                ),
+                operationType = AnkiOperationType.UPDATE,
+                status = AnkiOperationStatus.SUCCESS,
+                noteId = 99,
+                errorCode = null,
+            )
+        }
+
+        operations.forEachIndexed { index, operation ->
+            repository.repairAnkiOperation(
+                operation = operation,
+                repairedAtEpochMillis = 2_000L + index,
+            ) shouldBe true
+        }
+        operations.forEachIndexed { index, operation ->
+            repository.repairAnkiOperation(
+                operation = operation,
+                repairedAtEpochMillis = 3_000L + index,
+            ) shouldBe true
+        }
+
+        queryLong(
+            "SELECT count(*) FROM immersion_anki_operation WHERE note_id = 99 AND type = 'UPDATE'",
+        ) shouldBe 2
+        queryLong(
+            "SELECT count(*) FROM immersion_event WHERE type = 'ANKI_OPERATION' AND cards_updated_delta = 1",
+        ) shouldBe 2
+        queryLong("SELECT cards_updated FROM immersion_session WHERE id = '${SESSION_ID.value}'") shouldBe 2
+        queryLong("SELECT last_sequence FROM immersion_session WHERE id = '${SESSION_ID.value}'") shouldBe 2
     }
 
     @Test
@@ -1092,6 +1490,103 @@ class SqlDelightImmersionRepositoryTest {
     }
 
     @Test
+    fun `portable merge canonicalizes historical lookup counters before rebuilding rollups`() = runTest {
+        prepareSession()
+        repository.appendExposure(exposure(sequence = 1, eventNumber = 909)) shouldBe PersistenceResult.Applied
+        val statuses = listOf(
+            LookupStatus.SUCCESS,
+            LookupStatus.EMPTY,
+            LookupStatus.FAILED,
+            LookupStatus.CANCELLED,
+        )
+        repository.appendEventBatch(
+            statuses.mapIndexed { index, status ->
+                LookupEvent(
+                    id = eventId(910 + index),
+                    sessionId = SESSION_ID,
+                    sequence = index + 2L,
+                    occurredAtEpochMillis = 1_100L + index,
+                    timezoneOffsetSeconds = 0,
+                    lookupId = "portable-lookup-$status",
+                    sourceUnitId = null,
+                    queryHash = "portable-query-$status",
+                    rawQuery = null,
+                    normalizedHeadword = null,
+                    normalizedReading = null,
+                    partOfSpeech = null,
+                    dictionaryId = null,
+                    resultId = null,
+                    status = status,
+                )
+            },
+        ) shouldContainExactly List(statuses.size) { PersistenceResult.Applied }
+        repository.finalizeSession(
+            sessionId = SESSION_ID,
+            status = SessionStatus.COMPLETED,
+            endedAtEpochMillis = 2_000,
+            elapsedDuration = MillisecondDuration(1_000),
+        )
+        driver.execute(
+            null,
+            "UPDATE immersion_event SET lookup_delta = 1 WHERE type = 'LOOKUP'",
+            0,
+        ).value
+        driver.execute(
+            null,
+            "UPDATE immersion_session SET lookup_count = 4 WHERE id = '${SESSION_ID.value}'",
+            0,
+        ).value
+        val historicalArchive = repository.exportPortableArchive(
+            includeRawText = false,
+            createdAtEpochMillis = 3_000,
+        )
+
+        val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        try {
+            Database.Schema.create(targetDriver).value
+            targetDriver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+            val target = SqlDelightImmersionRepository(
+                AndroidDatabaseHandler(
+                    createDatabase(targetDriver),
+                    targetDriver,
+                    Dispatchers.IO,
+                    Dispatchers.IO,
+                ),
+            )
+
+            target.mergePortableArchive(historicalArchive, 4_000).let { report ->
+                report.quarantinedConflicts shouldBe 0
+                report.rebuiltRollupRows shouldBe 1
+            }
+            target.overview().lookups shouldBe NonNegativeCounter(1)
+            queryStrings(
+                targetDriver,
+                """
+                SELECT lookup.status || ':' || event.lookup_delta
+                FROM immersion_lookup AS lookup
+                JOIN immersion_event AS event ON event.id = lookup.event_id
+                ORDER BY lookup.status
+                """.trimIndent(),
+            ) shouldContainExactly listOf(
+                "CANCELLED:0",
+                "EMPTY:0",
+                "FAILED:0",
+                "SUCCESS:1",
+            )
+            queryLong(targetDriver, "SELECT sum(lookups) FROM immersion_daily_rollup") shouldBe 1
+            queryLong(targetDriver, "SELECT sum(lookups) FROM immersion_lifetime_rollup") shouldBe 1
+
+            target.mergePortableArchive(historicalArchive, 4_001).let { report ->
+                report.insertedRows shouldBe 0
+                report.quarantinedConflicts shouldBe 0
+            }
+            target.overview().lookups shouldBe NonNegativeCounter(1)
+        } finally {
+            targetDriver.close()
+        }
+    }
+
+    @Test
     fun `portable merge quarantines same identity with a different payload`() = runTest {
         repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
         val archive = repository.exportPortableArchive(false, 3_000)
@@ -1133,6 +1628,13 @@ class SqlDelightImmersionRepositoryTest {
             2_000,
             MillisecondDuration(1_000),
         ) shouldBe PersistenceResult.Applied
+        val rollupDate = ImmersionLocalDate.parse("1970-01-01")
+        repository.rebuildRollups(
+            LocalDateRange(rollupDate, rollupDate),
+            rollupVersion = 2,
+            nowEpochMillis = 2_500,
+        )
+        queryLong("SELECT count(*) FROM immersion_daily_rollup") shouldBe 1
         val oldArchive = repository.exportPortableArchive(false, 3_000)
 
         repository.deleteSession(SESSION_ID) shouldBe true
@@ -1148,6 +1650,8 @@ class SqlDelightImmersionRepositoryTest {
         repository.overview().sessions shouldBe NonNegativeCounter.ZERO
         queryLong("SELECT count(*) FROM immersion_event") shouldBe 0
         queryLong("SELECT count(*) FROM immersion_source_unit") shouldBe 0
+        queryLong("SELECT count(*) FROM immersion_daily_rollup") shouldBe 0
+        queryLong("SELECT count(*) FROM immersion_lifetime_rollup") shouldBe 0
     }
 
     @Test
@@ -1205,6 +1709,7 @@ class SqlDelightImmersionRepositoryTest {
         }
 
         repository.resetAllStats("device-reset", 4_000).sessions shouldBe 1
+        allStatsResetCallbacks shouldBe 1
         repository.overview().sessions shouldBe NonNegativeCounter.ZERO
         queryLong("SELECT count(*) FROM immersion_title") shouldBe 0
         queryLong("SELECT count(*) FROM immersion_tombstone") shouldNotBe 0

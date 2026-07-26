@@ -120,11 +120,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import tachiyomi.domain.immersion.model.LookupStatus
+import tachiyomi.domain.immersion.service.LookupTelemetry
 import tachiyomi.presentation.core.components.material.padding
 import tachiyomi.presentation.core.i18n.stringResource
 import tachiyomi.presentation.core.util.collectAsState
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
+import java.util.UUID
 import kotlin.math.abs
 
 @Suppress("CompositionLocalAllowlist")
@@ -145,6 +148,7 @@ fun PlayerControls(
     val gesturePreferences = remember { Injekt.get<GesturePreferences>() }
     val audioPreferences = remember { Injekt.get<AudioPreferences>() }
     val subtitlePreferences = remember { Injekt.get<SubtitlePreferences>() }
+    val lookupTelemetry = remember { Injekt.get<LookupTelemetry>() }
     val interactionSource = remember { MutableInteractionSource() }
     val controlsShown by viewModel.controlsShown.collectAsState()
     val areControlsLocked by viewModel.areControlsLocked.collectAsState()
@@ -200,6 +204,9 @@ fun PlayerControls(
     )
     fun releaseSubtitleLookupRequest() {
         subtitleLookupRequest
+            ?.lookupToken
+            ?.let { lookupTelemetry.complete(it, LookupStatus.CANCELLED) }
+        subtitleLookupRequest
             ?.sceneCaptureRequest
             ?.let(viewModel::releaseSceneRequest)
         subtitleLookupRequest = null
@@ -233,9 +240,19 @@ fun PlayerControls(
         ) {
             return@openSubtitleLookup
         }
+        val interactionProvenance = viewModel.snapshotSubtitleLookupProvenance(
+            displayCueIndex = subtitleLookup.cueIndex,
+            displayedText = subtitleLookup.fullText,
+        )
         wasPlayerAlreadyPause = viewModel.paused.value
         viewModel.pause()
         releaseSubtitleLookupRequest()
+        val lookupToken = lookupTelemetry.begin(
+            intentId = UUID.randomUUID().toString(),
+            query = subtitleLookup.lookupString,
+            provenance = interactionProvenance,
+            allowAmbientFallback = false,
+        )
         val baseRequest = SubtitleLookupRequest(
             lookupString = subtitleLookup.lookupString,
             fullText = subtitleLookup.fullText,
@@ -252,19 +269,28 @@ fun PlayerControls(
             lineTop = subtitleLookup.lineTop,
             lineWidth = subtitleLookup.lineWidth,
             lineHeight = subtitleLookup.lineHeight,
+            interactionProvenance = interactionProvenance,
+            lookupToken = lookupToken,
         )
         subtitleLookupCaptureJob = subtitleLookupScope.launch {
-            var sceneRequest = viewModel.captureSubtitleSceneRequest(
-                parsedSubtitleCandidate = subtitleLookup.parsedSubtitleCandidate,
-                playbackFallback = subtitleLookup.playbackFallback,
-            )
-            if (!isActive) {
+            var sceneRequest: eu.kanade.tachiyomi.ui.player.scene.SceneCaptureRequest? = null
+            var handedOff = false
+            try {
+                sceneRequest = viewModel.captureSubtitleSceneRequest(
+                    parsedSubtitleCandidate = subtitleLookup.parsedSubtitleCandidate,
+                    playbackFallback = subtitleLookup.playbackFallback,
+                )
+                if (!isActive) return@launch
+                subtitleLookupRequest = baseRequest.copy(sceneCaptureRequest = sceneRequest)
+                sceneRequest = null
+                handedOff = true
+            } finally {
                 sceneRequest?.let(viewModel::releaseSceneRequest)
-                return@launch
+                if (!handedOff) {
+                    lookupTelemetry.complete(lookupToken, LookupStatus.CANCELLED)
+                }
+                subtitleLookupCaptureJob = null
             }
-            subtitleLookupRequest = baseRequest.copy(sceneCaptureRequest = sceneRequest)
-            sceneRequest = null
-            subtitleLookupCaptureJob = null
         }
     }
     val togglePanel: (Panels) -> Unit = { panel ->
@@ -1064,6 +1090,7 @@ private data class SubtitleLookupSelection(
     val lineTop: Float,
     val lineWidth: Float,
     val lineHeight: Float,
+    val cueIndex: Int? = null,
     val parsedSubtitleCandidate: SceneRangeCandidate? = null,
     val playbackFallback: SceneRangeCandidate? = null,
 )
@@ -1103,6 +1130,7 @@ private fun TextLayoutResult.subtitleLookupSelectionForTap(
         lineTop = lineBounds.top,
         lineWidth = lineBounds.width,
         lineHeight = lineBounds.height,
+        cueIndex = cue?.index,
         parsedSubtitleCandidate = cue?.sceneTimingCandidate,
         // SubtitleCue positions are subtitle-file timestamps, even when the cue has no parsed end.
         // The capture factory must build a MEDIA-clock fallback from the snapshotted mpv position.

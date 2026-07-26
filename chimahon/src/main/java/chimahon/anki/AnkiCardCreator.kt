@@ -27,9 +27,40 @@ import tachiyomi.domain.immersion.model.AnkiOperationStatus
 import tachiyomi.domain.immersion.model.AnkiOperationType
 import tachiyomi.domain.immersion.service.AnkiOperationRecorder
 import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
+import tachiyomi.domain.immersion.service.InteractionProvenance
+import tachiyomi.domain.immersion.service.LookupIntentToken
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.util.Locale
+
+internal sealed interface AnkiInteractionTelemetryAttribution {
+    data object Ambient : AnkiInteractionTelemetryAttribution
+
+    data object Suppressed : AnkiInteractionTelemetryAttribution
+
+    data class Explicit(
+        val provenance: InteractionProvenance,
+    ) : AnkiInteractionTelemetryAttribution
+}
+
+internal fun LookupIntentToken?.toAnkiInteractionTelemetryAttribution(
+    allowAmbientAttribution: Boolean = true,
+): AnkiInteractionTelemetryAttribution {
+    if (this == null) {
+        return if (allowAmbientAttribution) {
+            AnkiInteractionTelemetryAttribution.Ambient
+        } else {
+            AnkiInteractionTelemetryAttribution.Suppressed
+        }
+    }
+    val capturedSessionId = sessionId ?: return AnkiInteractionTelemetryAttribution.Suppressed
+    return AnkiInteractionTelemetryAttribution.Explicit(
+        InteractionProvenance(
+            sessionId = capturedSessionId,
+            sourceUnitId = sourceUnitId,
+        ),
+    )
+}
 
 // =============================================================================
 // Legacy FieldType enum for UI backwards compatibility
@@ -322,46 +353,76 @@ object AnkiCardCreator {
         profileId: String = "",
         titleId: String? = null,
         mediaRequest: AnkiMediaRequest? = null,
+        lookupToken: LookupIntentToken? = null,
+        allowAmbientInteractionAttribution: Boolean = true,
     ): AnkiResult {
-        val operationRecorder = Injekt.get<AnkiOperationRecorder>()
-        val operation = operationRecorder.begin(result.term.expression, result.term.reading)
-        val outcome = addToAnkiWithDependencies(
-            context = context,
-            dependencies = productionDependencies(context),
-            result = result,
-            deck = deck,
-            model = model,
-            fieldMapJson = fieldMapJson,
-            tags = tags,
-            dupCheck = dupCheck,
-            dupScope = dupScope,
-            dupAction = dupAction,
-            sentence = sentence,
-            offset = offset,
-            media = media,
-            screenshotBytes = screenshotBytes,
-            sentenceAudioBytes = sentenceAudioBytes,
-            sentenceAudioExtension = sentenceAudioExtension,
-            glossaryIndex = glossaryIndex,
-            selection = selection,
-            selectedDict = selectedDict,
-            popupSelection = popupSelection,
-            styles = styles,
-            forceOpen = forceOpen,
-            type = type,
-            syncOnCreate = syncOnCreate,
-            profileId = profileId,
-            titleId = titleId,
-            mediaRequest = mediaRequest,
-        )
+        val trackedOperation = when (
+            val attribution = lookupToken.toAnkiInteractionTelemetryAttribution(
+                allowAmbientAttribution = allowAmbientInteractionAttribution,
+            )
+        ) {
+            AnkiInteractionTelemetryAttribution.Ambient -> {
+                Injekt.get<AnkiOperationRecorder>().let { recorder ->
+                    recorder to recorder.begin(result.term.expression, result.term.reading)
+                }
+            }
+            is AnkiInteractionTelemetryAttribution.Explicit -> {
+                Injekt.get<AnkiOperationRecorder>().let { recorder ->
+                    recorder to recorder.begin(
+                        expression = result.term.expression,
+                        reading = result.term.reading,
+                        provenance = attribution.provenance,
+                    )
+                }
+            }
+            AnkiInteractionTelemetryAttribution.Suppressed -> null
+        }
+        val outcome = try {
+            addToAnkiWithDependencies(
+                context = context,
+                dependencies = productionDependencies(context),
+                result = result,
+                deck = deck,
+                model = model,
+                fieldMapJson = fieldMapJson,
+                tags = tags,
+                dupCheck = dupCheck,
+                dupScope = dupScope,
+                dupAction = dupAction,
+                sentence = sentence,
+                offset = offset,
+                media = media,
+                screenshotBytes = screenshotBytes,
+                sentenceAudioBytes = sentenceAudioBytes,
+                sentenceAudioExtension = sentenceAudioExtension,
+                glossaryIndex = glossaryIndex,
+                selection = selection,
+                selectedDict = selectedDict,
+                popupSelection = popupSelection,
+                styles = styles,
+                forceOpen = forceOpen,
+                type = type,
+                syncOnCreate = syncOnCreate,
+                profileId = profileId,
+                titleId = titleId,
+                mediaRequest = mediaRequest,
+            )
+        } catch (error: Throwable) {
+            trackedOperation?.let { (recorder, operation) ->
+                recorder.abandon(operation)
+            }
+            throw error
+        }
         val operationResult = outcome.toOperationResult()
-        operationRecorder.complete(
-            token = operation,
-            operationType = operationResult.type,
-            status = operationResult.status,
-            noteId = operationResult.noteId,
-            errorCode = operationResult.errorCode,
-        )
+        trackedOperation?.let { (recorder, operation) ->
+            recorder.complete(
+                token = operation,
+                operationType = operationResult.type,
+                status = operationResult.status,
+                noteId = operationResult.noteId,
+                errorCode = operationResult.errorCode,
+            )
+        }
         return outcome
     }
 
