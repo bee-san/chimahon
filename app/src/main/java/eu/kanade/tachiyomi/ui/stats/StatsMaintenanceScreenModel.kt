@@ -4,6 +4,7 @@ package eu.kanade.tachiyomi.ui.stats
 
 import cafe.adriel.voyager.core.model.ScreenModel
 import cafe.adriel.voyager.core.model.screenModelScope
+import com.canopus.chimareader.stats.capture.NovelCaptureReconciliationReporter
 import eu.kanade.domain.sync.SyncPreferences
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -13,6 +14,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import mihon.feature.stats.capture.MangaCaptureReconciliationReporter
 import tachiyomi.domain.immersion.model.ImmersionDeletionPreview
 import tachiyomi.domain.immersion.model.ImmersionIntegrityReport
 import tachiyomi.domain.immersion.model.ImmersionMaintenanceSummary
@@ -26,6 +28,7 @@ import tachiyomi.domain.immersion.service.ImmersionAnalyticsService
 import tachiyomi.domain.immersion.service.ImmersionExportDocument
 import tachiyomi.domain.immersion.service.ImmersionExportService
 import tachiyomi.domain.immersion.service.ImmersionReindexController
+import tachiyomi.domain.immersion.service.ImmersionStatsDiagnosticsStore
 import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
 import tachiyomi.domain.immersion.service.ImmersionStatsVersions
 import uy.kohesive.injekt.Injekt
@@ -38,12 +41,16 @@ class StatsMaintenanceScreenModel(
     private val reindexController: ImmersionReindexController = Injekt.get(),
     private val ankiRepository: ImmersionAnkiRepository = Injekt.get(),
     private val preferences: ImmersionStatsPreferences = Injekt.get(),
+    private val diagnostics: ImmersionStatsDiagnosticsStore = Injekt.get(),
     private val syncPreferences: SyncPreferences = Injekt.get(),
 ) : ScreenModel {
     private val mutableState = MutableStateFlow(
         StatsMaintenanceState(
             retention = preferences.rawTextRetention().get(),
             captureEnabled = preferences.captureEnabled().get(),
+            readerIdleTimeoutSeconds = normalizeStatsReaderIdleTimeoutSeconds(
+                preferences.readerIdleTimeoutSeconds().get(),
+            ),
             indexingEnabled = preferences.indexingEnabled().get(),
             uiEnabled = preferences.uiEnabled().get(),
             ankiSyncEnabled = preferences.ankiSyncEnabled().get(),
@@ -75,6 +82,11 @@ class StatsMaintenanceScreenModel(
                 StatsExportKind.EVENT_JSON_WITH_RAW_TEXT -> exports.eventJson(includeRawText = true)
                 StatsExportKind.VOCABULARY_CSV -> exports.vocabularyCsv(StatsFilter())
                 StatsExportKind.CHARACTERS_CSV -> exports.charactersCsv(StatsFilter())
+                StatsExportKind.HEALTH_PARITY_JSON -> statsHealthParityDocument(
+                    diagnostics = diagnostics.state.value,
+                    novelReport = NovelCaptureReconciliationReporter.report.value,
+                    mangaReport = MangaCaptureReconciliationReporter.report.value,
+                )
             }
             mutableExportDocuments.emit(document)
             mutableState.update { it.copy(lastOperation = StatsMaintenanceOperation.EXPORT_READY) }
@@ -89,6 +101,12 @@ class StatsMaintenanceScreenModel(
     fun setCaptureEnabled(enabled: Boolean) {
         preferences.captureEnabled().set(enabled)
         mutableState.update { it.copy(captureEnabled = enabled) }
+    }
+
+    fun setReaderIdleTimeoutSeconds(seconds: Int) {
+        val validated = validatedStatsReaderIdleTimeoutSeconds(seconds) ?: return
+        preferences.readerIdleTimeoutSeconds().set(validated)
+        mutableState.update { it.copy(readerIdleTimeoutSeconds = validated) }
     }
 
     fun setIndexingEnabled(enabled: Boolean) {
@@ -262,6 +280,9 @@ class StatsMaintenanceScreenModel(
                 rawTextDeletionPreview = rawTextPreview,
                 deletionPreview = deletionPreview,
                 captureEnabled = preferences.captureEnabled().get(),
+                readerIdleTimeoutSeconds = normalizeStatsReaderIdleTimeoutSeconds(
+                    preferences.readerIdleTimeoutSeconds().get(),
+                ),
                 indexingEnabled = preferences.indexingEnabled().get(),
                 uiEnabled = preferences.uiEnabled().get(),
                 ankiSyncEnabled = preferences.ankiSyncEnabled().get(),
@@ -296,6 +317,7 @@ data class StatsMaintenanceState(
     val scopedDeletionPreview: ImmersionDeletionPreview? = null,
     val retention: RawTextRetention,
     val captureEnabled: Boolean,
+    val readerIdleTimeoutSeconds: Int,
     val indexingEnabled: Boolean,
     val uiEnabled: Boolean,
     val ankiSyncEnabled: Boolean,
@@ -314,6 +336,7 @@ enum class StatsExportKind {
     EVENT_JSON_WITH_RAW_TEXT,
     VOCABULARY_CSV,
     CHARACTERS_CSV,
+    HEALTH_PARITY_JSON,
 }
 
 enum class StatsMaintenanceOperation {

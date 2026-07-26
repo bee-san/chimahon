@@ -131,6 +131,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import logcat.LogPriority
 import mihon.feature.stats.capture.VideoCaptureAdapter
+import mihon.feature.stats.capture.VideoCaptureLifecycleCoordinator
 import mihon.feature.stats.capture.VideoCaptureTitle
 import mihon.feature.stats.capture.VideoCoverageSnapshot
 import mihon.feature.stats.capture.VideoEpisodeCapture
@@ -390,8 +391,9 @@ class PlayerViewModel @JvmOverloads constructor(
     val videoStatsProgress: StateFlow<VideoProgressSnapshot?> = _videoStatsProgress.asStateFlow()
     private val _videoMediaCaptureContext = MutableStateFlow<VideoMediaCaptureContext?>(null)
     val videoMediaCaptureContext: StateFlow<VideoMediaCaptureContext?> = _videoMediaCaptureContext.asStateFlow()
-    private var videoCaptureAdapter: VideoCaptureAdapter? = null
-    private var videoCaptureEpisodeId: Long? = null
+    private val videoCaptureLifecycle = VideoCaptureLifecycleCoordinator()
+    private val videoCaptureAdapter: VideoCaptureAdapter?
+        get() = videoCaptureLifecycle.currentAdapter
     private var videoCaptureCollectors: Job? = null
     private var videoOcrFramePositionMillis = 0L
     private var videoOcrLookupFrame: VideoOcrFrameCapture? = null
@@ -2798,22 +2800,20 @@ class PlayerViewModel @JvmOverloads constructor(
         }
     }
 
-    private fun updateEpisode(episode: Episode) {
+    private suspend fun updateEpisode(episode: Episode) {
         mediaTitle.update { _ -> episode.name }
         _isEpisodeOnline.update { _ -> isEpisodeOnline() == true }
         MPVLib.setPropertyDouble("user-data/current-anime/episode-number", episode.episode_number.toDouble())
         initializeVideoCapture()
     }
 
-    private fun initializeVideoCapture() {
+    private suspend fun initializeVideoCapture() {
         val anime = currentAnime.value ?: return
         val episode = currentEpisode.value ?: return
         val source = currentSource.value ?: return
         val episodeId = episode.id ?: return
-        if (videoCaptureEpisodeId == episodeId && videoCaptureAdapter != null) return
+        if (videoCaptureLifecycle.currentEpisodeId == episodeId && videoCaptureAdapter != null) return
 
-        videoCaptureAdapter?.finalize(FinalizeReason.TITLE_CHANGED)
-        videoCaptureCollectors?.cancel()
         dynamicCaptureCues.clear()
         videoSubtitleLookupCuesByDisplayIndex.clear()
         videoOcrLookupFrame = null
@@ -2826,39 +2826,42 @@ class PlayerViewModel @JvmOverloads constructor(
         val languageTag = profile.languageCode
             .takeIf(String::isNotBlank)
             ?.let { runCatching { LanguageTag.from(it) }.getOrNull() }
-        val adapter = VideoCaptureAdapter(
-            captureTitle = VideoCaptureTitle(
-                animeId = anime.id,
-                sourceId = anime.source,
-                displayTitle = anime.title,
-                profileId = profile.id,
-                languageTag = languageTag,
-                createdAtEpochMillis = anime.dateAdded.coerceAtLeast(0),
-            ),
-            episode = VideoEpisodeCapture(
-                episodeId = episodeId,
-                mediaId = "episode:$episodeId",
-                displayName = episode.name,
-                durationMillis = duration.value.takeIf { it > 0 }?.let { (it * 1_000).toLong() },
-            ),
-            recorder = immersionRecorder,
-            rawTextRetention = immersionStatsPreferences::effectiveRawTextRetention,
-            bufferingGraceMillis = immersionStatsPreferences.videoBufferingGraceSeconds().get() * 1_000L,
-            incognito = incognitoMode,
-        )
-        videoCaptureAdapter = adapter
-        videoCaptureEpisodeId = episodeId
-        videoCaptureCollectors = viewModelScope.launch {
-            launch { adapter.coverage.collect(_videoStatsCoverage::emit) }
-            launch { adapter.progress.collect(_videoStatsProgress::emit) }
-            launch { adapter.mediaContext.collect(_videoMediaCaptureContext::emit) }
+        val adapter = videoCaptureLifecycle.switchEpisode(episodeId) {
+            VideoCaptureAdapter(
+                captureTitle = VideoCaptureTitle(
+                    animeId = anime.id,
+                    sourceId = anime.source,
+                    displayTitle = anime.title,
+                    profileId = profile.id,
+                    languageTag = languageTag,
+                    createdAtEpochMillis = anime.dateAdded.coerceAtLeast(0),
+                ),
+                episode = VideoEpisodeCapture(
+                    episodeId = episodeId,
+                    mediaId = "episode:$episodeId",
+                    displayName = episode.name,
+                    durationMillis = duration.value.takeIf { it > 0 }?.let { (it * 1_000).toLong() },
+                ),
+                recorder = immersionRecorder,
+                rawTextRetention = immersionStatsPreferences::effectiveRawTextRetention,
+                bufferingGraceMillis = immersionStatsPreferences.videoBufferingGraceSeconds().get() * 1_000L,
+                incognito = incognitoMode,
+            )
+        } ?: return
+        val collectorsInstalled = videoCaptureLifecycle.withCurrentAdapter(adapter) {
+            videoCaptureCollectors?.cancel()
+            videoCaptureCollectors = viewModelScope.launch {
+                launch { adapter.coverage.collect(_videoStatsCoverage::emit) }
+                launch { adapter.progress.collect(_videoStatsProgress::emit) }
+                launch { adapter.mediaContext.collect(_videoMediaCaptureContext::emit) }
+            }
         }
+        if (!collectorsInstalled) return
         reportVideoSubtitleTracks()
         adapter.setSubtitleModeVisible(subtitlesVisible.value)
     }
 
     fun onPlayableVideoLoaded() {
-        initializeVideoCapture()
         videoCaptureAdapter?.onPlayableMedia()
         videoCaptureAdapter?.setPlaying(!paused.value)
     }
@@ -2883,9 +2886,7 @@ class PlayerViewModel @JvmOverloads constructor(
     }
 
     fun finalizeVideoCapture(reason: FinalizeReason = FinalizeReason.NORMAL) {
-        videoCaptureAdapter?.finalize(reason)
-        videoCaptureAdapter = null
-        videoCaptureEpisodeId = null
+        videoCaptureLifecycle.finalizeCurrent(reason)
         videoSubtitleLookupCuesByDisplayIndex.clear()
         videoOcrLookupFrame = null
         videoCaptureCollectors?.cancel()

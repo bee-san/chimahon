@@ -66,6 +66,7 @@ import eu.kanade.tachiyomi.ui.player.ExternalIntents
 import eu.kanade.tachiyomi.ui.player.PlayerActivity
 import eu.kanade.tachiyomi.ui.player.settings.PlayerPreferences
 import eu.kanade.tachiyomi.ui.reader.ReaderActivity
+import eu.kanade.tachiyomi.util.system.toast
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.receiveAsFlow
@@ -73,10 +74,12 @@ import mihon.feature.migration.dialog.MigrateMangaDialog
 import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.core.common.util.lang.withIOContext
+import tachiyomi.core.common.util.lang.withUIContext
 import tachiyomi.domain.chapter.model.Chapter
 import tachiyomi.domain.episode.model.Episode
 import tachiyomi.domain.history.model.SearchHistory
 import tachiyomi.i18n.MR
+import tachiyomi.i18n.kmk.KMR
 import tachiyomi.presentation.core.components.material.Scaffold
 import tachiyomi.presentation.core.components.material.TabText
 import tachiyomi.presentation.core.i18n.stringResource
@@ -433,18 +436,26 @@ data object HistoryTab : Tab {
         }
 
         val playerPreferences: PlayerPreferences by injectLazy()
-        withIOContext {
-            if (playerPreferences.alwaysUseExternalPlayer().get()) {
-                try {
-                    val intent = ExternalIntents().getExternalIntent(context, episode.animeId, episode.id, null)
-                    if (intent != null) {
-                        context.startActivity(intent)
-                        return@withIOContext
-                    }
-                } catch (e: Throwable) {
+        if (playerPreferences.alwaysUseExternalPlayer().get()) {
+            val intent = try {
+                withIOContext {
+                    ExternalIntents().getExternalIntent(context, episode.animeId, episode.id, null)
+                }
+            } catch (e: Throwable) {
+                withUIContext {
                     snackbarHostState.showSnackbar(e.message ?: context.stringResource(MR.strings.internal_error))
                 }
+                null
             }
+            if (intent != null) {
+                withUIContext {
+                    context.startActivity(intent)
+                    context.toast(KMR.strings.stats_external_player_not_captured)
+                }
+                return
+            }
+        }
+        withUIContext {
             context.startActivity(PlayerActivity.newIntent(context, episode.animeId, episode.id))
         }
     }

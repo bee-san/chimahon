@@ -36,9 +36,10 @@ import kotlinx.collections.immutable.persistentListOf
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import tachiyomi.core.common.i18n.stringResource
-import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.core.common.util.lang.withIOContext
+import tachiyomi.core.common.util.lang.withUIContext
 import tachiyomi.i18n.MR
+import tachiyomi.i18n.kmk.KMR
 import tachiyomi.presentation.core.i18n.stringResource
 import uy.kohesive.injekt.injectLazy
 
@@ -67,18 +68,24 @@ fun Screen.animeUpdatesTab(
         val playerPreferences: PlayerPreferences by injectLazy()
         val update = updateItem.update
         val extPlayer = playerPreferences.alwaysUseExternalPlayer().get() != altPlayer
-        withIOContext {
-            if (extPlayer) {
-                try {
-                    val intent = ExternalIntents().getExternalIntent(context, update.animeId, update.episodeId, null)
-                    if (intent != null) {
-                        context.startActivity(intent)
-                        return@withIOContext
-                    }
-                } catch (e: Throwable) {
-                    context.toast(e.message)
+        if (extPlayer) {
+            val intent = try {
+                withIOContext {
+                    ExternalIntents().getExternalIntent(context, update.animeId, update.episodeId, null)
                 }
+            } catch (e: Throwable) {
+                withUIContext { context.toast(e.message) }
+                null
             }
+            if (intent != null) {
+                withUIContext {
+                    context.startActivity(intent)
+                    context.toast(KMR.strings.stats_external_player_not_captured)
+                }
+                return
+            }
+        }
+        withUIContext {
             context.startActivity(PlayerActivity.newIntent(context, update.animeId, update.episodeId))
         }
     }
@@ -102,7 +109,7 @@ fun Screen.animeUpdatesTab(
                 onMultiDeleteClicked = screenModel::showConfirmDeleteEpisodes,
                 onUpdateSelected = screenModel::toggleSelection,
                 onOpenEpisode = { updateItem: AnimeUpdatesItem, altPlayer: Boolean ->
-                    scope.launchIO {
+                    scope.launch {
                         openEpisode(updateItem, altPlayer)
                     }
                     Unit

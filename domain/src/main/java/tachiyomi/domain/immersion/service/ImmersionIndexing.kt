@@ -47,16 +47,31 @@ class DefaultSourceTextNormalizer(
         )
         normalized = normalized.replace(WHITESPACE, " ").trim()
         if (collapseRepeatedCharacters) {
-            normalized = normalized.replace(REPEATED_CHARACTER) { match ->
-                match.value.take(3)
-            }
+            normalized = collapseRepeatedCodePoints(normalized)
         }
         return NormalizedText(normalized, language, version)
     }
 
+    private fun collapseRepeatedCodePoints(input: String): String {
+        val collapsed = StringBuilder(input.length)
+        var previousCodePoint = -1
+        var repeatCount = 0
+        var offset = 0
+        while (offset < input.length) {
+            val codePoint = input.codePointAt(offset)
+            repeatCount = if (codePoint == previousCodePoint) repeatCount + 1 else 1
+            previousCodePoint = codePoint
+            if (repeatCount <= MAX_REPEATED_CODE_POINTS) {
+                collapsed.appendCodePoint(codePoint)
+            }
+            offset += Character.charCount(codePoint)
+        }
+        return collapsed.toString()
+    }
+
     private companion object {
+        const val MAX_REPEATED_CODE_POINTS = 3
         val WHITESPACE = Regex("\\s+")
-        val REPEATED_CHARACTER = Regex("(.)\\1{3,}")
     }
 }
 

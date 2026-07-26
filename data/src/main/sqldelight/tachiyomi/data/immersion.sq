@@ -1332,6 +1332,62 @@ WHERE
     AND status IN ('ACTIVE', 'COMPLETED', 'ABANDONED')
     AND last_sequence + 1 = :sequence;
 
+repairImmersionSessionCounters:
+UPDATE immersion_session
+SET
+    active_duration_ms = coalesce((
+        SELECT sum(active_duration_delta_ms)
+        FROM immersion_event
+        WHERE session_id = :sessionId
+    ), 0),
+    gross_characters = coalesce((
+        SELECT sum(gross_character_delta)
+        FROM immersion_event
+        WHERE session_id = :sessionId
+    ), 0),
+    unique_source_characters = coalesce((
+        SELECT sum(unique_source_character_delta)
+        FROM immersion_event
+        WHERE session_id = :sessionId
+    ), 0),
+    net_characters = coalesce((
+        SELECT sum(net_character_delta)
+        FROM immersion_event
+        WHERE session_id = :sessionId
+    ), 0),
+    source_unit_count = (
+        SELECT count(DISTINCT source_unit_id)
+        FROM immersion_event
+        WHERE
+            session_id = :sessionId
+            AND type = 'EXPOSURE'
+            AND source_unit_id IS NOT NULL
+    ),
+    lookup_count = coalesce((
+        SELECT sum(lookup_delta)
+        FROM immersion_event
+        WHERE session_id = :sessionId
+    ), 0),
+    cards_created = coalesce((
+        SELECT sum(cards_created_delta)
+        FROM immersion_event
+        WHERE session_id = :sessionId
+    ), 0),
+    cards_updated = coalesce((
+        SELECT sum(cards_updated_delta)
+        FROM immersion_event
+        WHERE session_id = :sessionId
+    ), 0),
+    last_sequence = coalesce((
+        SELECT max(sequence)
+        FROM immersion_event
+        WHERE session_id = :sessionId
+    ), 0)
+WHERE
+    id = :sessionId
+    AND legacy_import = 0
+    AND status != 'DELETED';
+
 incrementImmersionRevision:
 UPDATE immersion_rollup_state
 SET revision = revision + 1, updated_at = :updatedAt
@@ -1365,7 +1421,13 @@ WHERE
     AND source.indexing_terminal_reason IS NULL
     AND (
         (
-            source.indexing_status IN ('PENDING', 'FAILED')
+            (
+                source.indexing_status IN ('PENDING', 'FAILED')
+                OR (
+                    source.indexing_status = 'INDEXED'
+                    AND source.raw_text IS NOT NULL
+                )
+            )
             AND (
                 source.next_index_attempt_at IS NULL
                 OR source.next_index_attempt_at <= :nowEpochMillis
@@ -1687,7 +1749,13 @@ SELECT count(*)
 FROM immersion_source_unit
 WHERE
     indexed_version < :targetVersion
-    AND indexing_status IN ('PENDING', 'FAILED', 'IN_PROGRESS')
+    AND (
+        indexing_status IN ('PENDING', 'FAILED', 'IN_PROGRESS')
+        OR (
+            indexing_status = 'INDEXED'
+            AND raw_text IS NOT NULL
+        )
+    )
     AND indexing_terminal_reason IS NULL;
 
 isImmersionIndexEntityExcluded:

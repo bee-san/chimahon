@@ -31,8 +31,9 @@ behavior.
 - Duplicate legacy rows retain current screen parity by summing their time, character,
   and card values into one daily aggregate.
 
-The importer runs as unique WorkManager work only when the hidden immersion UI flag is
-enabled. Current legacy writers and current stats UI stay unchanged.
+The importer runs as unique WorkManager work whenever event-backed capture is enabled.
+The dashboard remains independently opt-in, and current legacy writers stay active as
+the safe-shadow rollback path.
 
 ## Synthetic aggregate semantics
 

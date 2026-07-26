@@ -246,6 +246,11 @@ interface ImmersionMaintenanceRepository {
 
     suspend fun validateInvariants(expectedRollupVersion: Int): ImmersionIntegrityReport
 
+    suspend fun repairSessionCounters(
+        sessionId: SessionId,
+        repairedAtEpochMillis: Long,
+    ): Boolean
+
     suspend fun maintenanceSummary(): ImmersionMaintenanceSummary
 
     suspend fun previewAllStatsDeletion(): ImmersionDeletionPreview

@@ -19,16 +19,19 @@ import androidx.glance.layout.height
 import androidx.glance.layout.padding
 import androidx.glance.layout.width
 import eu.kanade.tachiyomi.R
+import eu.kanade.tachiyomi.ui.stats.statsDurationParts
 import tachiyomi.core.common.Constants
+import tachiyomi.core.common.i18n.pluralStringResource
+import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
 import tachiyomi.domain.immersion.model.LocalDateRange
 import tachiyomi.domain.immersion.model.StatsFilter
 import tachiyomi.domain.immersion.service.ImmersionAnalyticsService
 import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
+import tachiyomi.i18n.kmk.KMR
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.time.LocalDate
-import java.util.concurrent.TimeUnit
 
 class ReadingStatsWidget : GlanceAppWidget() {
 
@@ -42,8 +45,15 @@ class ReadingStatsWidget : GlanceAppWidget() {
             return
         }
 
-        val stats = loadTodayStats()
-        val timeString = formatReadingTime(stats.activeTimeMillis)
+        val stats = when (val loadState = loadTodayStats()) {
+            is ReadingStatsWidgetLoadState.Available -> loadState.stats
+            ReadingStatsWidgetLoadState.Unavailable -> {
+                val unavailableMessage = context.stringResource(KMR.strings.stats_widget_unavailable)
+                provideContent { WidgetLockedState(unavailableMessage) }
+                return
+            }
+        }
+        val timeString = formatReadingTime(context, stats.activeTimeMillis)
         val charactersPerHour = stats.charactersPerHour
 
         val labelCharacters = context.getString(R.string.widget_stat_characters)
@@ -100,44 +110,83 @@ class ReadingStatsWidget : GlanceAppWidget() {
         }
     }
 
-    private fun formatReadingTime(totalTimeMs: Long): String {
-        val hours = TimeUnit.MILLISECONDS.toHours(totalTimeMs)
-        val minutes = TimeUnit.MILLISECONDS.toMinutes(totalTimeMs) % 60
-        return if (hours > 0) "${hours}h ${minutes}m" else "${minutes}m"
+    private fun formatReadingTime(context: Context, totalTimeMs: Long): String {
+        val parts = readingStatsWidgetDurationParts(totalTimeMs)
+        val minuteText = context.pluralStringResource(
+            KMR.plurals.stats_widget_duration_minutes,
+            parts.minutes.toInt(),
+            parts.minutes,
+        )
+        val hours = parts.hours ?: return minuteText
+        return context.stringResource(
+            KMR.strings.stats_duration_hours_minutes,
+            context.pluralStringResource(
+                KMR.plurals.stats_widget_duration_hours,
+                hours.toInt(),
+                hours,
+            ),
+            minuteText,
+        )
     }
 
-    private suspend fun loadTodayStats(): TodayStats {
+    private suspend fun loadTodayStats(): ReadingStatsWidgetLoadState {
         val preferences = Injekt.get<ImmersionStatsPreferences>()
         val basis = preferences.dashboardCharacterMetric().get()
         val today = ImmersionLocalDate.from(LocalDate.now())
-        return runCatching {
-            val overview = Injekt.get<ImmersionAnalyticsService>().overview(
-                StatsFilter(
-                    dateRange = LocalDateRange(today, today),
-                    includeLegacyAggregates = preferences.includeLegacyAggregates().get(),
-                    characterMetric = basis,
-                    includeRereadsAndReplays = preferences.dashboardIncludeRereads().get(),
-                ),
-            ).value.comparison.current
-            TodayStats(
-                characters = overview.characters.valueFor(basis),
-                activeTimeMillis = overview.activeTime.value,
-                charactersPerHour = overview.readingSpeedPerHour(basis)?.toInt(),
-                cardsCreated = overview.cardsCreated.value,
-            )
-        }.getOrElse {
-            TodayStats()
-        }
+        return readingStatsWidgetLoadState(
+            runCatching {
+                val overview = Injekt.get<ImmersionAnalyticsService>().overview(
+                    StatsFilter(
+                        dateRange = LocalDateRange(today, today),
+                        includeLegacyAggregates = preferences.includeLegacyAggregates().get(),
+                        characterMetric = basis,
+                        includeRereadsAndReplays = preferences.dashboardIncludeRereads().get(),
+                    ),
+                ).value.comparison.current
+                ReadingStatsWidgetData(
+                    characters = overview.characters.valueFor(basis),
+                    activeTimeMillis = overview.activeTime.value,
+                    charactersPerHour = overview.readingSpeedPerHour(basis)?.toInt(),
+                    cardsCreated = overview.cardsCreated.value,
+                )
+            },
+        )
     }
-
-    private data class TodayStats(
-        val characters: Long = 0,
-        val activeTimeMillis: Long = 0,
-        val charactersPerHour: Int? = null,
-        val cardsCreated: Long = 0,
-    )
 
     companion object {
         private val COMPACT_THRESHOLD = 180.dp
     }
+}
+
+internal data class ReadingStatsWidgetData(
+    val characters: Long = 0,
+    val activeTimeMillis: Long = 0,
+    val charactersPerHour: Int? = null,
+    val cardsCreated: Long = 0,
+)
+
+internal data class ReadingStatsWidgetDurationParts(
+    val hours: Long?,
+    val minutes: Long,
+)
+
+internal sealed interface ReadingStatsWidgetLoadState {
+    data class Available(val stats: ReadingStatsWidgetData) : ReadingStatsWidgetLoadState
+
+    data object Unavailable : ReadingStatsWidgetLoadState
+}
+
+internal fun readingStatsWidgetLoadState(
+    result: Result<ReadingStatsWidgetData>,
+): ReadingStatsWidgetLoadState = result.fold(
+    onSuccess = ReadingStatsWidgetLoadState::Available,
+    onFailure = { ReadingStatsWidgetLoadState.Unavailable },
+)
+
+internal fun readingStatsWidgetDurationParts(totalTimeMs: Long): ReadingStatsWidgetDurationParts {
+    val parts = statsDurationParts(totalTimeMs)
+    return ReadingStatsWidgetDurationParts(
+        hours = parts.hours.takeIf { it > 0L },
+        minutes = parts.minutes,
+    )
 }

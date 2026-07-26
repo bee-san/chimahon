@@ -381,9 +381,11 @@
     <string name="stats_stale">Stale</string>
     <string name="stats_removed">Removed</string>
     <string name="stats_legacy">Legacy aggregate</string>
+    <string name="stats_legacy_session_detail">Imported legacy aggregates preserve totals only. Original session timelines, source-unit provenance, word occurrences, and character occurrences were not recorded and are unavailable.</string>
     <string name="stats_no_data">No statistics match these filters.</string>
     <string name="stats_section_failed">This section could not be loaded. Other statistics are still available.</string>
     <string name="stats_loading_section">Loading statistics…</string>
+    <string name="stats_widget_unavailable">Today\'s statistics could not be loaded. Tap to open Chimahon.</string>
     <string name="stats_recent_sessions">Recent sessions</string>
     <string name="stats_view_all">View all</string>
     <string name="stats_activity_chart">Activity chart</string>
@@ -528,6 +530,7 @@
     <string name="stats_goal_title_required">Select a title filter before creating a finish-title goal.</string>
     <string name="stats_goal_required_pace">Required pace: %1$s per active day</string>
     <string name="stats_goal_rolling_seven">Rolling 7-day pace: %1$s</string>
+    <string name="stats_goal_rolling_thirty">Rolling 30-day pace: %1$s</string>
     <string name="stats_goal_streaks">Current streak: %1$d · Longest: %2$d</string>
     <string name="stats_goal_rest_day">Today is a configured rest day and does not break the streak.</string>
     <string name="stats_goal_check_in">Check in</string>
@@ -560,6 +563,8 @@
     <string name="stats_rollout_legacy_writes_inactive">Legacy rollback writes are inactive.</string>
     <string name="stats_capture_enabled">Capture event-backed statistics</string>
     <string name="stats_capture_enabled_summary">Record new event-backed sessions. Turning this off leaves existing statistics untouched.</string>
+    <string name="stats_reader_idle_timeout">Reader idle timeout</string>
+    <string name="stats_reader_idle_timeout_summary">Stop counting active reader time after %1$s without interaction.</string>
     <string name="stats_indexing_enabled">Index retained source text</string>
     <string name="stats_indexing_enabled_summary">Build vocabulary, character, and source-search data from retained text.</string>
     <string name="stats_goals_enabled">Statistics goals</string>
@@ -568,7 +573,8 @@
     <string name="stats_open">Open</string>
     <string name="stats_confirm">Confirm</string>
     <string name="stats_export_data">Export stats data</string>
-    <string name="stats_export_data_summary">Versioned aggregate, event, vocabulary, and character exports.</string>
+    <string name="stats_export_data_summary">Versioned aggregate, event, vocabulary, and character exports, plus a privacy-safe health and parity report.</string>
+    <string name="stats_export_health_parity_json">Health and parity JSON (privacy-safe)</string>
     <string name="stats_export_aggregate_json">Aggregate JSON</string>
     <string name="stats_export_aggregate_csv">Aggregate CSV</string>
     <string name="stats_export_events_json">Sessions and events JSON without source text</string>
