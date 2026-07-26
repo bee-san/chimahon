@@ -4126,7 +4126,11 @@ VALUES (
     :updatedAt
 )
 ON CONFLICT(id) DO UPDATE SET
+    type = excluded.type,
+    metric = excluded.metric,
     target = excluded.target,
+    period = excluded.period,
+    start_date = excluded.start_date,
     end_date = excluded.end_date,
     weekday_multipliers = excluded.weekday_multipliers,
     rest_day_policy = excluded.rest_day_policy,

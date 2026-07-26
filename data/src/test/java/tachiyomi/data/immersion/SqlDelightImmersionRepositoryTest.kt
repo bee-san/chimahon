@@ -50,6 +50,7 @@ import tachiyomi.domain.immersion.model.ImmersionAnkiItem
 import tachiyomi.domain.immersion.model.ImmersionAnkiSnapshot
 import tachiyomi.domain.immersion.model.ImmersionDataException
 import tachiyomi.domain.immersion.model.ImmersionGoal
+import tachiyomi.domain.immersion.model.ImmersionGoalAchievement
 import tachiyomi.domain.immersion.model.ImmersionGoalCheckIn
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
 import tachiyomi.domain.immersion.model.ImmersionMergeDisposition
@@ -3299,6 +3300,74 @@ class SqlDelightImmersionRepositoryTest {
                 ),
             ),
         )
+    }
+
+    @Test
+    fun `prospective goal edit persists its definition without replacing creation or history`() = runTest {
+        val original = ImmersionGoal(
+            id = "prospective-goal",
+            type = "PERPETUAL_DAILY",
+            metric = "gross_characters",
+            target = 1_000.0,
+            period = "DAILY",
+            startDate = ImmersionLocalDate.parse("2026-07-01"),
+            endDate = null,
+            mediaKind = MediaKind.NOVEL,
+            profileId = "japanese",
+            languageTag = LanguageTag("ja"),
+            titleId = TITLE_ID,
+            weekdayMultipliers = "MONDAY=1.0",
+            restDayPolicy = "NONE",
+            state = "ACTIVE",
+            createdAtEpochMillis = 1_000,
+            updatedAtEpochMillis = 1_000,
+        )
+        val checkIn = ImmersionGoalCheckIn(
+            goalId = original.id,
+            localDate = ImmersionLocalDate.parse("2026-07-02"),
+            status = "COMPLETED",
+            note = "kept",
+            occurredAtEpochMillis = 2_000,
+        )
+        val achievement = ImmersionGoalAchievement(
+            id = "prospective-goal-25",
+            goalId = original.id,
+            milestoneKey = "25",
+            earnedAtEpochMillis = 2_100,
+            targetSnapshot = original.target,
+        )
+        repository.upsertGoal(original)
+        repository.upsertCheckIn(checkIn)
+        repository.recordAchievement(achievement)
+
+        repository.upsertGoal(
+            original.copy(
+                type = "DATE_BOUND_TOTAL",
+                metric = "active_time_ms",
+                target = 1_800_000.0,
+                period = "TOTAL",
+                startDate = ImmersionLocalDate.parse("2026-07-26"),
+                endDate = ImmersionLocalDate.parse("2026-08-31"),
+                weekdayMultipliers = "SATURDAY=0.5;SUNDAY=0.0",
+                restDayPolicy = "SKIP",
+                createdAtEpochMillis = 1_500,
+                updatedAtEpochMillis = 3_000,
+            ),
+        )
+
+        repository.getGoals().single() shouldBe original.copy(
+            type = "DATE_BOUND_TOTAL",
+            metric = "active_time_ms",
+            target = 1_800_000.0,
+            period = "TOTAL",
+            startDate = ImmersionLocalDate.parse("2026-07-26"),
+            endDate = ImmersionLocalDate.parse("2026-08-31"),
+            weekdayMultipliers = "SATURDAY=0.5;SUNDAY=0.0",
+            restDayPolicy = "SKIP",
+            updatedAtEpochMillis = 3_000,
+        )
+        repository.getCheckIns(original.id) shouldContainExactly listOf(checkIn)
+        repository.getAchievements(original.id) shouldContainExactly listOf(achievement)
     }
 
     @Test
