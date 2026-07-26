@@ -20,15 +20,32 @@ class ImmersionStatsPreferences(
     private val goalsEnabledPreference = preferenceStore.getBoolean(GOALS_ENABLED, true)
     private val legacyWritesEnabledPreference = preferenceStore.getBoolean(LEGACY_WRITES_ENABLED, false)
     private val rolloutVersionPreference = preferenceStore.getInt(ROLLOUT_VERSION, 0)
+    private val rawTextRetentionPreference = preferenceStore.getEnum(
+        RAW_TEXT_RETENTION,
+        RawTextRetention.NEVER,
+    )
+    private val rawTextDisclosureVersionPreference = preferenceStore.getInt(
+        RAW_TEXT_DISCLOSURE_VERSION,
+        0,
+    )
 
     fun applyReleaseRolloutDefaults() {
-        if (rolloutVersionPreference.get() >= CURRENT_ROLLOUT_VERSION) return
-        captureEnabled().set(true)
-        indexingEnabled().set(true)
-        uiEnabled().set(true)
-        ankiSyncEnabled().set(true)
-        goalsEnabled().set(true)
-        legacyWritesEnabled().set(false)
+        val rolloutVersion = rolloutVersionPreference.get()
+        if (rolloutVersion >= CURRENT_ROLLOUT_VERSION) return
+        if (rolloutVersion < FEATURE_ROLLOUT_VERSION) {
+            captureEnabled().set(true)
+            indexingEnabled().set(true)
+            uiEnabled().set(true)
+            ankiSyncEnabled().set(true)
+            goalsEnabled().set(true)
+            legacyWritesEnabled().set(false)
+        }
+        if (
+            rolloutVersion < RAW_TEXT_DISCLOSURE_ROLLOUT_VERSION &&
+            rawTextRetentionPreference.isSet()
+        ) {
+            rawTextDisclosureVersionPreference.set(CURRENT_RAW_TEXT_DISCLOSURE_VERSION)
+        }
         rolloutVersionPreference.set(CURRENT_ROLLOUT_VERSION)
     }
 
@@ -56,10 +73,22 @@ class ImmersionStatsPreferences(
         DEFAULT_VIDEO_BUFFERING_GRACE_SECONDS,
     )
 
-    fun rawTextRetention() = preferenceStore.getEnum(
-        RAW_TEXT_RETENTION,
-        RawTextRetention.UNTIL_DELETED,
-    )
+    fun rawTextRetention() = rawTextRetentionPreference
+
+    fun rawTextDisclosureRequired(): Boolean =
+        rawTextDisclosureVersionPreference.get() < CURRENT_RAW_TEXT_DISCLOSURE_VERSION
+
+    fun effectiveRawTextRetention(): RawTextRetention =
+        if (rawTextDisclosureRequired()) {
+            RawTextRetention.NEVER
+        } else {
+            rawTextRetentionPreference.get()
+        }
+
+    fun acknowledgeRawTextDisclosure(retention: RawTextRetention) {
+        rawTextRetentionPreference.set(retention)
+        rawTextDisclosureVersionPreference.set(CURRENT_RAW_TEXT_DISCLOSURE_VERSION)
+    }
 
     fun novelNetProgressPolicy() = preferenceStore.getEnum(
         NOVEL_NET_PROGRESS_POLICY,
@@ -102,9 +131,12 @@ class ImmersionStatsPreferences(
     )
 
     companion object {
-        const val CURRENT_ROLLOUT_VERSION = 1
+        const val CURRENT_ROLLOUT_VERSION = 2
+        const val CURRENT_RAW_TEXT_DISCLOSURE_VERSION = 1
         const val DEFAULT_READER_IDLE_TIMEOUT_SECONDS = 120
         const val DEFAULT_VIDEO_BUFFERING_GRACE_SECONDS = 5
+        private const val FEATURE_ROLLOUT_VERSION = 1
+        private const val RAW_TEXT_DISCLOSURE_ROLLOUT_VERSION = 2
 
         const val CAPTURE_ENABLED = "immersion_stats_capture_enabled"
         const val INDEXING_ENABLED = "immersion_stats_indexing_enabled"
@@ -117,6 +149,7 @@ class ImmersionStatsPreferences(
         const val READER_IDLE_TIMEOUT_SECONDS = "immersion_stats_reader_idle_timeout_seconds"
         const val VIDEO_BUFFERING_GRACE_SECONDS = "immersion_stats_video_buffering_grace_seconds"
         const val RAW_TEXT_RETENTION = "immersion_stats_raw_text_retention"
+        const val RAW_TEXT_DISCLOSURE_VERSION = "immersion_stats_raw_text_disclosure_version"
         const val NOVEL_NET_PROGRESS_POLICY = "immersion_stats_novel_net_progress_policy"
         const val DASHBOARD_RANGE_PRESET = "immersion_stats_dashboard_range_preset"
         const val DASHBOARD_MEDIA_KIND = "immersion_stats_dashboard_media_kind"

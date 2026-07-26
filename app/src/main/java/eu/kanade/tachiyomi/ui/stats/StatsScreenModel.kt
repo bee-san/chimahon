@@ -26,6 +26,7 @@ import tachiyomi.domain.immersion.model.ImmersionLocalDate
 import tachiyomi.domain.immersion.model.LanguageTag
 import tachiyomi.domain.immersion.model.LocalDateRange
 import tachiyomi.domain.immersion.model.MediaKind
+import tachiyomi.domain.immersion.model.RawTextRetention
 import tachiyomi.domain.immersion.model.SessionPage
 import tachiyomi.domain.immersion.model.StatsFilter
 import tachiyomi.domain.immersion.model.TitleId
@@ -111,6 +112,13 @@ class StatsScreenModel(
                 ).awaitAll()
             }
         }
+    }
+
+    fun rawTextDisclosureRequired(): Boolean =
+        preferences.rawTextDisclosureRequired()
+
+    fun acknowledgeRawTextDisclosure(retention: RawTextRetention) {
+        preferences.acknowledgeRawTextDisclosure(retention)
     }
 
     fun selectTab(tab: StatsTab) {

@@ -495,6 +495,8 @@
     <string name="stats_storage_summary">Storage summary</string>
     <string name="stats_storage_summary_value">%1$s database · %2$s sessions · %3$s events · %4$s source units</string>
     <string name="stats_raw_text_storage">Retained source text</string>
+    <string name="stats_raw_text_disclosure_title">Choose source-text privacy</string>
+    <string name="stats_raw_text_disclosure_message">Chimahon can keep passages, OCR, subtitles, and lookup text on this device to build vocabulary, character, and source drill-down stats. Nothing is retained until you choose. You can change this later, including 30-day and one-year options, in Stats data and privacy.</string>
     <string name="stats_raw_text_storage_value">%1$s source units · %2$s</string>
     <string name="stats_integrity">Integrity</string>
     <string name="stats_integrity_healthy">All checked invariants pass.</string>
@@ -518,7 +520,7 @@
     <string name="stats_retention_until_deleted">Keep until I delete it</string>
     <string name="stats_delete_raw_text">Delete retained source text</string>
     <string name="stats_delete_raw_text_summary">Keep aggregate totals and stable source hashes while removing searchable excerpts.</string>
-    <string name="stats_delete_raw_text_warning">Delete retained text from %1$s source units? Aggregate statistics will remain. This cannot be undone without a full-text backup.</string>
+    <string name="stats_delete_raw_text_warning">Delete %1$s private text records? Aggregate statistics will remain. This cannot be undone without a full-text backup.</string>
     <string name="stats_rebuild_rollups">Rebuild aggregate statistics</string>
     <string name="stats_rebuild_rollups_summary">Recalculate derived daily and lifetime totals from source events.</string>
     <string name="stats_rebuild_index">Rebuild word and character index</string>

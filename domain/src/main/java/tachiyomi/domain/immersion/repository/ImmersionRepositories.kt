@@ -4,6 +4,7 @@ package tachiyomi.domain.immersion.repository
 
 import kotlinx.coroutines.flow.Flow
 import tachiyomi.domain.immersion.model.AnalyticsAnkiSummary
+import tachiyomi.domain.immersion.model.AnalyticsBucketInventory
 import tachiyomi.domain.immersion.model.AnalyticsCharacterRow
 import tachiyomi.domain.immersion.model.AnalyticsDataQuality
 import tachiyomi.domain.immersion.model.AnalyticsInventoryMetrics
@@ -38,6 +39,7 @@ import tachiyomi.domain.immersion.model.IndexWorkItem
 import tachiyomi.domain.immersion.model.IndexedCharacter
 import tachiyomi.domain.immersion.model.IndexedWord
 import tachiyomi.domain.immersion.model.LanguageTag
+import tachiyomi.domain.immersion.model.LocalDateRange
 import tachiyomi.domain.immersion.model.MillisecondDuration
 import tachiyomi.domain.immersion.model.PersistenceResult
 import tachiyomi.domain.immersion.model.RecordedImmersionEvent
@@ -133,6 +135,16 @@ interface ImmersionAnalyticsRepository {
     ): List<ImmersionDailyRollup>
 
     suspend fun inventoryMetrics(filter: StatsFilter): AnalyticsInventoryMetrics
+
+    /**
+     * Returns one inventory result per ordered, non-overlapping bucket. The
+     * buckets are authoritative for dates; gaps are excluded from cumulative
+     * inventory even when [StatsFilter.dateRange] spans them.
+     */
+    suspend fun bucketInventoryMetrics(
+        filter: StatsFilter,
+        buckets: List<LocalDateRange>,
+    ): List<AnalyticsBucketInventory>
 
     suspend fun titleInventoryMetrics(filter: StatsFilter): Map<TitleId, AnalyticsInventoryMetrics>
 

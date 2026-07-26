@@ -19,6 +19,7 @@ import tachiyomi.data.Immersion_source_unit
 import tachiyomi.data.SelectImmersionIndexWork
 import tachiyomi.data.SelectLegacyImmersionAggregates
 import tachiyomi.domain.immersion.model.AnalyticsAnkiSummary
+import tachiyomi.domain.immersion.model.AnalyticsBucketInventory
 import tachiyomi.domain.immersion.model.AnalyticsCharacterRow
 import tachiyomi.domain.immersion.model.AnalyticsDataQuality
 import tachiyomi.domain.immersion.model.AnalyticsInventoryMetrics
@@ -77,6 +78,7 @@ import tachiyomi.domain.immersion.model.LegacyImportBatch
 import tachiyomi.domain.immersion.model.LegacyImportIdentity
 import tachiyomi.domain.immersion.model.LegacyImportResult
 import tachiyomi.domain.immersion.model.LegacyImportResultState
+import tachiyomi.domain.immersion.model.LocalDateRange
 import tachiyomi.domain.immersion.model.LookupEvent
 import tachiyomi.domain.immersion.model.LookupStatus
 import tachiyomi.domain.immersion.model.MaturityTier
@@ -354,6 +356,22 @@ class SqlDelightImmersionRepository(
                     searchTokens = rawText.searchTokenDocument(),
                 )
             }
+            val affectedWordIds = linkedSetOf<String>().apply {
+                addAll(
+                    immersionQueries
+                        .selectImmersionWordIdsForSource(sourceUnitId.value)
+                        .executeAsList(),
+                )
+                addAll(words.map(IndexedWord::id))
+            }
+            val affectedCharacterCodePoints = linkedSetOf<Long>().apply {
+                addAll(
+                    immersionQueries
+                        .selectImmersionCharacterCodePointsForSource(sourceUnitId.value)
+                        .executeAsList(),
+                )
+                addAll(characters.map { it.codePoint.value.toLong() })
+            }
             immersionQueries.deleteImmersionWordOccurrencesForSource(sourceUnitId.value)
             immersionQueries.deleteImmersionCharacterOccurrencesForSource(sourceUnitId.value)
             words.forEach { word ->
@@ -401,10 +419,14 @@ class SqlDelightImmersionRepository(
                     firstOrdinal = character.firstOrdinal,
                 )
             }
-            immersionQueries.recomputeImmersionWordSeenTimes()
-            immersionQueries.recomputeImmersionCharacterSeenTimes()
-            immersionQueries.deleteOrphanImmersionWords()
-            immersionQueries.deleteOrphanImmersionCharacters()
+            affectedWordIds.chunked(IMMERSION_INDEX_ID_CHUNK_SIZE).forEach { wordIds ->
+                immersionQueries.recomputeImmersionWordSeenTimesByIds(wordIds)
+                immersionQueries.deleteOrphanImmersionWordsByIds(wordIds)
+            }
+            affectedCharacterCodePoints.chunked(IMMERSION_INDEX_ID_CHUNK_SIZE).forEach { codePoints ->
+                immersionQueries.recomputeImmersionCharacterSeenTimesByCodePoints(codePoints)
+                immersionQueries.deleteOrphanImmersionCharactersByCodePoints(codePoints)
+            }
             val characterTotals = if (terminalReason == IndexTerminalReason.RAW_TEXT_UNAVAILABLE) {
                 null
             } else {
@@ -589,10 +611,10 @@ class SqlDelightImmersionRepository(
         handler.await {
             val args = filter.sqlArgs()
             val range = filter.dateRange
-            immersionQueries.selectImmersionAnalyticsInventory(
-                filterDate = (range != null).toLong(),
-                startDate = range?.start?.epochDay ?: 0,
-                endDate = range?.endInclusive?.epochDay ?: 0,
+            val accumulator = MutableInventoryMetrics()
+            val query = immersionQueries.selectImmersionAnalyticsInventoryFacts(
+                startDate = range?.start?.epochDay ?: Long.MIN_VALUE,
+                endDate = range?.endInclusive?.epochDay ?: Long.MAX_VALUE,
                 filterMediaKinds = args.filterMediaKinds,
                 mediaKinds = args.mediaKinds,
                 filterProfileIds = args.filterProfileIds,
@@ -605,16 +627,98 @@ class SqlDelightImmersionRepository(
                 includeLegacy = filter.includeLegacyAggregates.toLong(),
                 filterProvenance = args.filterProvenance,
                 provenanceStates = args.provenanceStates,
-            ).executeAsOne().let { row ->
-                AnalyticsInventoryMetrics(
-                    distinctCharacters = row.distinct_characters,
-                    newCharacters = row.new_characters,
-                    uniqueWords = row.unique_words,
-                    newWords = row.new_words,
-                    charactersRepresentedInAnki = row.characters_in_anki,
-                )
+                filterMaturity = args.filterMaturity,
+                maturityTiers = args.maturityTiers,
+            )
+            query.execute { cursor ->
+                while (cursor.next().value) {
+                    val fact = query.mapper(cursor)
+                    accumulator.add(
+                        entityKind = fact.entity_kind,
+                        entityKey = fact.entity_key,
+                        globallyNew = fact.globally_new == 1L,
+                        representedInAnki = fact.represented_in_anki == 1L,
+                    )
+                }
+                QueryResult.Value(accumulator.toDomain())
+            }.value
+        }
+
+    override suspend fun bucketInventoryMetrics(
+        filter: StatsFilter,
+        buckets: List<LocalDateRange>,
+    ): List<AnalyticsBucketInventory> {
+        if (buckets.isEmpty()) return emptyList()
+        buckets.zipWithNext().forEach { (previous, next) ->
+            require(previous.endInclusive < next.start) {
+                "Inventory buckets must be ordered and non-overlapping"
             }
         }
+        return handler.await {
+            val args = filter.sqlArgs()
+            var bucketIndex = 0
+            var bucketAccumulator = MutableInventoryMetrics()
+            val cumulativeAccumulator = MutableInventoryMetrics()
+            val result = mutableListOf<AnalyticsBucketInventory>()
+            val query = immersionQueries.selectImmersionAnalyticsInventoryFacts(
+                startDate = buckets.first().start.epochDay,
+                endDate = buckets.last().endInclusive.epochDay,
+                filterMediaKinds = args.filterMediaKinds,
+                mediaKinds = args.mediaKinds,
+                filterProfileIds = args.filterProfileIds,
+                profileIds = args.profileIds,
+                filterLanguageTags = args.filterLanguageTags,
+                languageTags = args.languageTags,
+                filterTitleIds = args.filterTitleIds,
+                titleIds = args.titleIds,
+                includeRereads = filter.includeRereadsAndReplays.toLong(),
+                includeLegacy = filter.includeLegacyAggregates.toLong(),
+                filterProvenance = args.filterProvenance,
+                provenanceStates = args.provenanceStates,
+                filterMaturity = args.filterMaturity,
+                maturityTiers = args.maturityTiers,
+            )
+
+            fun finishBucket() {
+                result += AnalyticsBucketInventory(
+                    metrics = bucketAccumulator.toDomain(),
+                    cumulative = cumulativeAccumulator.toDomain(),
+                )
+                bucketAccumulator = MutableInventoryMetrics()
+                bucketIndex += 1
+            }
+
+            query.execute { cursor ->
+                while (cursor.next().value) {
+                    val fact = query.mapper(cursor)
+                    val date = ImmersionLocalDate(fact.local_date)
+                    while (
+                        bucketIndex < buckets.size &&
+                        date > buckets[bucketIndex].endInclusive
+                    ) {
+                        finishBucket()
+                    }
+                    if (bucketIndex >= buckets.size) break
+                    if (date < buckets[bucketIndex].start) continue
+
+                    bucketAccumulator.add(
+                        entityKind = fact.entity_kind,
+                        entityKey = fact.entity_key,
+                        globallyNew = fact.globally_new == 1L,
+                        representedInAnki = fact.represented_in_anki == 1L,
+                    )
+                    cumulativeAccumulator.add(
+                        entityKind = fact.entity_kind,
+                        entityKey = fact.entity_key,
+                        globallyNew = fact.globally_new == 1L,
+                        representedInAnki = fact.represented_in_anki == 1L,
+                    )
+                }
+                while (bucketIndex < buckets.size) finishBucket()
+                QueryResult.Value(result)
+            }.value
+        }
+    }
 
     override suspend fun titleInventoryMetrics(
         filter: StatsFilter,
@@ -622,10 +726,10 @@ class SqlDelightImmersionRepository(
         handler.await {
             val args = filter.sqlArgs()
             val range = filter.dateRange
-            immersionQueries.selectImmersionAnalyticsTitleInventory(
-                filterDate = (range != null).toLong(),
-                startDate = range?.start?.epochDay ?: 0,
-                endDate = range?.endInclusive?.epochDay ?: 0,
+            val accumulators = linkedMapOf<TitleId, MutableInventoryMetrics>()
+            val query = immersionQueries.selectImmersionAnalyticsInventoryFacts(
+                startDate = range?.start?.epochDay ?: Long.MIN_VALUE,
+                endDate = range?.endInclusive?.epochDay ?: Long.MAX_VALUE,
                 filterMediaKinds = args.filterMediaKinds,
                 mediaKinds = args.mediaKinds,
                 filterProfileIds = args.filterProfileIds,
@@ -638,15 +742,23 @@ class SqlDelightImmersionRepository(
                 includeLegacy = filter.includeLegacyAggregates.toLong(),
                 filterProvenance = args.filterProvenance,
                 provenanceStates = args.provenanceStates,
-            ).executeAsList().associate { row ->
-                TitleId(row.title_id) to AnalyticsInventoryMetrics(
-                    distinctCharacters = row.distinct_characters,
-                    newCharacters = row.new_characters,
-                    uniqueWords = row.unique_words,
-                    newWords = row.new_words,
-                    charactersRepresentedInAnki = row.characters_in_anki,
+                filterMaturity = args.filterMaturity,
+                maturityTiers = args.maturityTiers,
+            )
+            query.execute { cursor ->
+                while (cursor.next().value) {
+                    val fact = query.mapper(cursor)
+                    accumulators.getOrPut(TitleId(fact.title_id), ::MutableInventoryMetrics).add(
+                        entityKind = fact.entity_kind,
+                        entityKey = fact.entity_key,
+                        globallyNew = fact.globally_new == 1L,
+                        representedInAnki = fact.represented_in_anki == 1L,
+                    )
+                }
+                QueryResult.Value(
+                    accumulators.mapValues { (_, accumulator) -> accumulator.toDomain() },
                 )
-            }
+            }.value
         }
 
     override suspend fun titleMetadata(
@@ -1512,6 +1624,7 @@ class SqlDelightImmersionRepository(
             val sourceUnitIds = immersionQueries
                 .selectImmersionSourceIdsForSession(sessionId.value)
                 .executeAsList()
+            val boundarySnapshot = captureImmersionSourceBoundarySnapshot(sourceUnitIds)
             session?.let {
                 immersionQueries.upsertImmersionTombstone(
                     entityType = "SESSION",
@@ -1536,6 +1649,7 @@ class SqlDelightImmersionRepository(
                         )
                     }
                 }
+                canonicalizeImmersionSourceBoundaries(boundarySnapshot)
                 markRollupDirty(
                     session.started_at,
                     session.start_offset_seconds.toIntExact("session offset"),
@@ -1661,7 +1775,15 @@ class SqlDelightImmersionRepository(
         }
 
         val tombstones = rawHandler.awaitRawDriver { it.loadImmersionTombstones() }
+        val boundarySnapshot = handler.await {
+            captureImmersionSourceBoundarySnapshot(
+                sourceUnitIdsAffectedByTombstones(tombstones),
+            )
+        }
         rawHandler.awaitRawDriver(inTransaction = true) { it.applyImmersionTombstones(tombstones) }
+        handler.await(inTransaction = true) {
+            canonicalizeImmersionSourceBoundaries(boundarySnapshot)
+        }
 
         IMMERSION_PORTABLE_TABLES
             .asSequence()
@@ -1684,6 +1806,11 @@ class SqlDelightImmersionRepository(
                     quarantinedConflicts += result.conflicts
                 }
             }
+        handler.await(inTransaction = true) {
+            canonicalizeImmersionSourceBoundaries(boundarySnapshot)
+            immersionQueries.deleteOrphanImmersionWords()
+            immersionQueries.deleteOrphanImmersionCharacters()
+        }
         rawHandler.awaitRawDriver(inTransaction = true) { driver ->
             driver.repairLookupSuccessMetrics(mergedAtEpochMillis)
         }
@@ -1725,18 +1852,43 @@ class SqlDelightImmersionRepository(
         require(updatedAtEpochMillis >= 0)
         val rawHandler = handler.requireRawHandler()
         return rawHandler.awaitRawDriver(inTransaction = true) { driver ->
-            val clauses = buildList {
+            val sourceClauses = buildList {
                 if (titleId != null) add("title_id = ?")
                 if (beforeEpochMillis != null) add("last_exposed_at < ?")
                 add("raw_text IS NOT NULL")
             }
-            val sql = "UPDATE immersion_source_unit SET raw_text = NULL, raw_text_encoding = NULL " +
-                "WHERE ${clauses.joinToString(" AND ")}"
             var parameter = 0
-            val changed = driver.execute(
+            val sourceChanged = driver.execute(
                 identifier = null,
-                sql = sql,
-                parameters = clauses.size - 1,
+                sql = "UPDATE immersion_source_unit SET raw_text = NULL, raw_text_encoding = NULL " +
+                    "WHERE ${sourceClauses.joinToString(" AND ")}",
+                parameters = sourceClauses.size - 1,
+            ) {
+                titleId?.let { value -> bindString(parameter++, value.value) }
+                beforeEpochMillis?.let { value -> bindLong(parameter++, value) }
+            }.value
+            val lookupClauses = buildList {
+                if (titleId != null) {
+                    add(
+                        """
+                        EXISTS (
+                            SELECT 1
+                            FROM immersion_session AS session
+                            WHERE session.id = immersion_lookup.session_id
+                                AND session.title_id = ?
+                        )
+                        """.trimIndent(),
+                    )
+                }
+                if (beforeEpochMillis != null) add("occurred_at < ?")
+                add("raw_query IS NOT NULL")
+            }
+            parameter = 0
+            val lookupChanged = driver.execute(
+                identifier = null,
+                sql = "UPDATE immersion_lookup SET raw_query = NULL " +
+                    "WHERE ${lookupClauses.joinToString(" AND ")}",
+                parameters = lookupClauses.size - 1,
             ) {
                 titleId?.let { value -> bindString(parameter++, value.value) }
                 beforeEpochMillis?.let { value -> bindLong(parameter++, value) }
@@ -1762,8 +1914,8 @@ class SqlDelightImmersionRepository(
                 bindLong(0, updatedAtEpochMillis)
                 bindLong(1, updatedAtEpochMillis)
             }.value
-            driver.notifyListeners("immersion_source_unit", "immersion_source_fts")
-            changed
+            driver.notifyListeners("immersion_source_unit", "immersion_source_fts", "immersion_lookup")
+            sourceChanged + lookupChanged
         }
     }
 
@@ -1774,24 +1926,56 @@ class SqlDelightImmersionRepository(
         require(beforeEpochMillis == null || beforeEpochMillis >= 0)
         val rawHandler = handler.requireRawHandler()
         return rawHandler.awaitRawDriver { driver ->
-            val clauses = buildList {
+            val sourceClauses = buildList {
                 if (titleId != null) add("title_id = ?")
                 if (beforeEpochMillis != null) add("last_exposed_at < ?")
                 add("raw_text IS NOT NULL")
             }
             var parameter = 0
-            driver.executeQuery(
+            val sourceCount = driver.executeQuery(
                 identifier = null,
-                sql = "SELECT count(*) FROM immersion_source_unit WHERE ${clauses.joinToString(" AND ")}",
+                sql = "SELECT count(*) FROM immersion_source_unit " +
+                    "WHERE ${sourceClauses.joinToString(" AND ")}",
                 mapper = { cursor ->
                     check(cursor.next().value)
                     QueryResult.Value(checkNotNull(cursor.getLong(0)))
                 },
-                parameters = clauses.size - 1,
+                parameters = sourceClauses.size - 1,
             ) {
                 titleId?.let { value -> bindString(parameter++, value.value) }
                 beforeEpochMillis?.let { value -> bindLong(parameter++, value) }
             }.value
+            val lookupClauses = buildList {
+                if (titleId != null) {
+                    add(
+                        """
+                        EXISTS (
+                            SELECT 1
+                            FROM immersion_session AS session
+                            WHERE session.id = immersion_lookup.session_id
+                                AND session.title_id = ?
+                        )
+                        """.trimIndent(),
+                    )
+                }
+                if (beforeEpochMillis != null) add("occurred_at < ?")
+                add("raw_query IS NOT NULL")
+            }
+            parameter = 0
+            val lookupCount = driver.executeQuery(
+                identifier = null,
+                sql = "SELECT count(*) FROM immersion_lookup " +
+                    "WHERE ${lookupClauses.joinToString(" AND ")}",
+                mapper = { cursor ->
+                    check(cursor.next().value)
+                    QueryResult.Value(checkNotNull(cursor.getLong(0)))
+                },
+                parameters = lookupClauses.size - 1,
+            ) {
+                titleId?.let { value -> bindString(parameter++, value.value) }
+                beforeEpochMillis?.let { value -> bindLong(parameter++, value) }
+            }.value
+            sourceCount + lookupCount
         }
     }
 
@@ -2525,6 +2709,137 @@ class SqlDelightImmersionRepository(
                 .map(SelectLegacyImmersionAggregates::toDomain)
         }
 
+    private fun Database.sourceUnitIdsAffectedByTombstones(
+        tombstones: Set<Pair<String, String>>,
+    ): Set<String> {
+        val sessionIds = tombstones.asSequence()
+            .filter { (entityType, _) -> entityType == "SESSION" }
+            .map { (_, entityId) -> entityId }
+            .toList()
+        val eventIds = tombstones.asSequence()
+            .filter { (entityType, _) -> entityType == "EVENT" }
+            .map { (_, entityId) -> entityId }
+            .toList()
+        val sourceUnitIds = tombstones.asSequence()
+            .filter { (entityType, _) -> entityType == "SOURCE_UNIT" }
+            .map { (_, entityId) -> entityId }
+            .toList()
+        val titleIds = tombstones.asSequence()
+            .filter { (entityType, _) -> entityType == "TITLE" }
+            .map { (_, entityId) -> entityId }
+            .toList()
+        return buildSet {
+            addAll(sourceUnitIds)
+            sessionIds.chunked(IMMERSION_INDEX_ID_CHUNK_SIZE).forEach { ids ->
+                addAll(immersionQueries.selectImmersionSourceIdsForSessions(ids).executeAsList())
+            }
+            eventIds.chunked(IMMERSION_INDEX_ID_CHUNK_SIZE).forEach { ids ->
+                addAll(immersionQueries.selectImmersionSourceIdsForEvents(ids).executeAsList())
+            }
+            titleIds.chunked(IMMERSION_INDEX_ID_CHUNK_SIZE).forEach { ids ->
+                addAll(immersionQueries.selectImmersionSourceIdsForTitles(ids).executeAsList())
+            }
+        }
+    }
+
+    private fun Database.captureImmersionSourceBoundarySnapshot(
+        sourceUnitIds: Collection<String>,
+    ): ImmersionSourceBoundarySnapshot {
+        val boundaries = selectImmersionSourceExposureBounds(sourceUnitIds)
+        if (boundaries.isEmpty()) return ImmersionSourceBoundarySnapshot()
+        val boundedSourceIds = boundaries.keys
+        return ImmersionSourceBoundarySnapshot(
+            boundaries = boundaries,
+            wordIds = selectImmersionWordIdsForSources(boundedSourceIds),
+            characterCodePoints = selectImmersionCharacterCodePointsForSources(boundedSourceIds),
+        )
+    }
+
+    private fun Database.canonicalizeImmersionSourceBoundaries(
+        snapshot: ImmersionSourceBoundarySnapshot,
+    ) {
+        if (snapshot.boundaries.isEmpty()) return
+        val remainingBoundaries = selectImmersionSourceExposureBounds(snapshot.boundaries.keys)
+        remainingBoundaries.forEach { (sourceUnitId, remaining) ->
+            val previous = snapshot.boundaries.getValue(sourceUnitId)
+            val firstExposedAt = if (remaining.firstEventAt > previous.firstEventAt) {
+                remaining.firstEventAt
+            } else {
+                previous.firstExposedAt
+            }
+            val lastExposedAt = if (remaining.lastEventAt < previous.lastEventAt) {
+                remaining.lastEventAt
+            } else {
+                previous.lastExposedAt
+            }
+            if (
+                firstExposedAt != remaining.firstExposedAt ||
+                lastExposedAt != remaining.lastExposedAt
+            ) {
+                immersionQueries.updateImmersionSourceSeenTimesById(
+                    firstExposedAt = firstExposedAt,
+                    lastExposedAt = lastExposedAt,
+                    sourceUnitId = sourceUnitId,
+                )
+            }
+        }
+
+        val affectedWordIds = buildSet {
+            addAll(snapshot.wordIds)
+            addAll(selectImmersionWordIdsForSources(snapshot.boundaries.keys))
+        }
+        affectedWordIds.chunked(IMMERSION_INDEX_ID_CHUNK_SIZE).forEach { wordIds ->
+            immersionQueries.recomputeImmersionWordSeenTimesByIds(wordIds)
+            immersionQueries.deleteOrphanImmersionWordsByIds(wordIds)
+        }
+        val affectedCharacterCodePoints = buildSet {
+            addAll(snapshot.characterCodePoints)
+            addAll(selectImmersionCharacterCodePointsForSources(snapshot.boundaries.keys))
+        }
+        affectedCharacterCodePoints.chunked(IMMERSION_INDEX_ID_CHUNK_SIZE).forEach { codePoints ->
+            immersionQueries.recomputeImmersionCharacterSeenTimesByCodePoints(codePoints)
+            immersionQueries.deleteOrphanImmersionCharactersByCodePoints(codePoints)
+        }
+    }
+
+    private fun Database.selectImmersionSourceExposureBounds(
+        sourceUnitIds: Collection<String>,
+    ): Map<String, ImmersionSourceExposureBounds> =
+        sourceUnitIds
+            .distinct()
+            .chunked(IMMERSION_INDEX_ID_CHUNK_SIZE)
+            .flatMap { ids ->
+                immersionQueries.selectImmersionSourceExposureBoundsByIds(ids).executeAsList()
+            }
+            .associate { row ->
+                row.source_unit_id to ImmersionSourceExposureBounds(
+                    firstExposedAt = row.first_exposed_at,
+                    lastExposedAt = row.last_exposed_at,
+                    firstEventAt = checkNotNull(row.first_event_at),
+                    lastEventAt = checkNotNull(row.last_event_at),
+                )
+            }
+
+    private fun Database.selectImmersionWordIdsForSources(
+        sourceUnitIds: Collection<String>,
+    ): Set<String> =
+        sourceUnitIds
+            .distinct()
+            .chunked(IMMERSION_INDEX_ID_CHUNK_SIZE)
+            .flatMapTo(linkedSetOf()) { ids ->
+                immersionQueries.selectImmersionWordIdsForSources(ids).executeAsList()
+            }
+
+    private fun Database.selectImmersionCharacterCodePointsForSources(
+        sourceUnitIds: Collection<String>,
+    ): Set<Long> =
+        sourceUnitIds
+            .distinct()
+            .chunked(IMMERSION_INDEX_ID_CHUNK_SIZE)
+            .flatMapTo(linkedSetOf()) { ids ->
+                immersionQueries.selectImmersionCharacterCodePointsForSources(ids).executeAsList()
+            }
+
     private fun Database.upsertTitleInDatabase(title: ImmersionTitle): PersistenceResult {
         val existing = immersionQueries.selectImmersionTitleById(title.id.value).executeAsOneOrNull()
         if (
@@ -2982,6 +3297,56 @@ private class MutableRollup {
     val distinctCharacterIds = mutableSetOf<Long>()
     val newCharacterIds = mutableSetOf<Long>()
 }
+
+private class MutableInventoryMetrics {
+    private val wordIds = mutableSetOf<String>()
+    private val newWordIds = mutableSetOf<String>()
+    private val characterIds = mutableSetOf<String>()
+    private val newCharacterIds = mutableSetOf<String>()
+    private val representedCharacterIds = mutableSetOf<String>()
+
+    fun add(
+        entityKind: String,
+        entityKey: String,
+        globallyNew: Boolean,
+        representedInAnki: Boolean,
+    ) {
+        when (entityKind) {
+            "WORD" -> {
+                wordIds += entityKey
+                if (globallyNew) newWordIds += entityKey
+            }
+            "CHARACTER" -> {
+                characterIds += entityKey
+                if (globallyNew) newCharacterIds += entityKey
+                if (representedInAnki) representedCharacterIds += entityKey
+            }
+            else -> error("Unknown analytics inventory entity kind: $entityKind")
+        }
+    }
+
+    fun toDomain(): AnalyticsInventoryMetrics =
+        AnalyticsInventoryMetrics(
+            distinctCharacters = characterIds.size.toLong(),
+            newCharacters = newCharacterIds.size.toLong(),
+            uniqueWords = wordIds.size.toLong(),
+            newWords = newWordIds.size.toLong(),
+            charactersRepresentedInAnki = representedCharacterIds.size.toLong(),
+        )
+}
+
+private data class ImmersionSourceBoundarySnapshot(
+    val boundaries: Map<String, ImmersionSourceExposureBounds> = emptyMap(),
+    val wordIds: Set<String> = emptySet(),
+    val characterCodePoints: Set<Long> = emptySet(),
+)
+
+private data class ImmersionSourceExposureBounds(
+    val firstExposedAt: Long,
+    val lastExposedAt: Long,
+    val firstEventAt: Long,
+    val lastEventAt: Long,
+)
 
 private data class AnalyticsSqlArgs(
     val filterMediaKinds: Long,
@@ -4176,6 +4541,7 @@ private const val MAX_PAGE_SIZE = 500
 private const val SOURCE_EXCERPT_LENGTH = 240
 private const val IMMERSION_PORTABLE_FORMAT_VERSION = 1
 private const val IMMERSION_PORTABLE_MERGE_CHUNK_SIZE = 500
+private const val IMMERSION_INDEX_ID_CHUNK_SIZE = 500
 private const val IMMERSION_TITLE_EXCLUSION_TYPE = "TITLE"
 private const val IMMERSION_CAPTURE_EXCLUSION_SCOPE = "capture"
 private const val MILLIS_PER_DAY = 86_400_000L

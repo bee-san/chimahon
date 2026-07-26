@@ -73,7 +73,7 @@ class StatsMaintenanceScreenModel(
     }
 
     fun setRetention(retention: RawTextRetention) {
-        preferences.rawTextRetention().set(retention)
+        preferences.acknowledgeRawTextDisclosure(retention)
         mutableState.update { it.copy(retention = retention) }
     }
 

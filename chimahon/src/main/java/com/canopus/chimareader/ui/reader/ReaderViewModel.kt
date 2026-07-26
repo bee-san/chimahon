@@ -323,7 +323,7 @@ class ReaderViewModel(
                     profileId = settingsNamespace,
                 ),
                 recorder = Injekt.get<ImmersionRecorder>(),
-                rawTextRetention = { preferences.rawTextRetention().get() },
+                rawTextRetention = preferences::effectiveRawTextRetention,
                 idleTimeoutMillis = preferences.readerIdleTimeoutSeconds().get() * 1_000L,
             )
         }.getOrNull()

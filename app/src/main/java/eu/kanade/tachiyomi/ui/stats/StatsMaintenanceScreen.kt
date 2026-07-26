@@ -135,6 +135,7 @@ class StatsMaintenanceScreen : Screen() {
                 onDismiss = { showRetentionDialog = false },
                 onSelect = {
                     screenModel.setRetention(it)
+                    mihon.feature.stats.retention.ImmersionRetentionJob.start(context)
                     showRetentionDialog = false
                 },
             )

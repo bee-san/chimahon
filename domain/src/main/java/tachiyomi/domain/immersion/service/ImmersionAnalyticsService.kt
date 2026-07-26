@@ -69,9 +69,15 @@ class ImmersionAnalyticsService(
                 .filter(previousFilter::matches)
                 .sumMetrics()
                 .withInventory(analyticsRepository.inventoryMetrics(previousFilter))
-            val activeDates = currentRows
-                .filter { it.metrics.hasActivity() }
-                .mapTo(sortedSetOf()) { it.date }
+            val historyFilter = filter.copy(dateRange = null, comparisonRange = null)
+            val activeDates = analyticsRepository.availableDateRange(historyFilter)
+                ?.let { historyRange ->
+                    analyticsRepository.dailyRollups(historyRange)
+                        .filter(historyFilter::matches)
+                        .filter { it.metrics.hasActivity() }
+                        .mapTo(sortedSetOf()) { it.date }
+                }
+                .orEmpty()
             AnalyticsOverview(
                 period = AnalyticsPeriod(
                     range = range,
@@ -90,7 +96,10 @@ class ImmersionAnalyticsService(
                         previous.characters.gross.value,
                     ),
                 ),
-                streak = streak(activeDates, range.endInclusive),
+                streak = streak(
+                    dates = activeDates,
+                    periodEnd = calendar.localDate(clock(), currentOffsetSeconds()),
+                ),
             ) to currentRows.size
         }
 
@@ -101,13 +110,25 @@ class ImmersionAnalyticsService(
         measured(AnalyticsQueryFamily.TRENDS, filter) {
             val range = effectiveRange(filter)
             val rows = analyticsRepository.dailyRollups(range).filter(filter::matches)
+            val buckets = calendar.buckets(range, scale)
+            val inventories = analyticsRepository.bucketInventoryMetrics(
+                filter.copy(dateRange = range, comparisonRange = null),
+                buckets,
+            )
+            check(inventories.size == buckets.size) {
+                "Bucket inventory results must align with requested buckets"
+            }
             var cumulative = ReadingMetrics()
-            val points = calendar.buckets(range, scale).map { bucket ->
+            val points = buckets.mapIndexed { index, bucket ->
                 val metrics = rows.filter {
                     it.date >= bucket.start && it.date <= bucket.endInclusive
                 }.sumMetrics()
                 cumulative += metrics
-                AnalyticsTrendPoint(bucket, metrics, cumulative)
+                AnalyticsTrendPoint(
+                    range = bucket,
+                    metrics = metrics.withInventory(inventories[index].metrics),
+                    cumulativeMetrics = cumulative.withInventory(inventories[index].cumulative),
+                )
             }
             AnalyticsTrends(scale, points) to rows.size
         }
@@ -231,12 +252,68 @@ class ImmersionAnalyticsService(
 
     suspend fun goals(filter: StatsFilter): AnalyticsResult<List<AnalyticsGoalProgress>> =
         measured(AnalyticsQueryFamily.GOALS, filter) {
-            val range = effectiveRange(filter)
-            val rows = analyticsRepository.dailyRollups(range).filter(filter::matches)
+            val today = calendar.localDate(clock(), currentOffsetSeconds())
             val goals = goalRepository.getGoals().filter { it.state != "ARCHIVED" }
+            val ranges = goals.associateWith { goal ->
+                val start = goal.startDate ?: calendar.localDate(
+                    goal.createdAtEpochMillis,
+                    currentOffsetSeconds(),
+                )
+                val end = minOf(goal.endDate ?: today, today)
+                if (start <= end) {
+                    LocalDateRange(start, end)
+                } else {
+                    LocalDateRange(today, today)
+                }
+            }
+            val rows = ranges.values
+                .takeIf { it.isNotEmpty() }
+                ?.let { goalRanges ->
+                    analyticsRepository.dailyRollups(
+                        LocalDateRange(
+                            goalRanges.minOf(LocalDateRange::start),
+                            goalRanges.maxOf(LocalDateRange::endInclusive),
+                        ),
+                    )
+                }
+                .orEmpty()
+            val inventoryCache =
+                mutableMapOf<StatsFilter, Map<ImmersionLocalDate, AnalyticsInventoryMetrics>>()
             val progress = goals.map { goal ->
+                val range = ranges.getValue(goal)
+                val goalFilter = goal.statsFilter(filter, range)
+                val scopeMatchesDashboard = goal.matchesDashboardScope(filter)
+                val scopedRows = if (scopeMatchesDashboard) {
+                    rows.filter(goalFilter::matches)
+                } else {
+                    emptyList()
+                }
                 val checkIns = goalRepository.getCheckIns(goal.id)
-                goal.progress(rows, range, checkIns)
+                val inventoryByDate = if (
+                    scopeMatchesDashboard &&
+                    goal.metric in INVENTORY_GOAL_METRICS
+                ) {
+                    inventoryCache.getOrPut(goalFilter) {
+                        val buckets = range.dailyBuckets()
+                        val inventories =
+                            analyticsRepository.bucketInventoryMetrics(goalFilter, buckets)
+                        check(inventories.size == buckets.size) {
+                            "Bucket inventory results must align with requested buckets"
+                        }
+                        buckets.zip(inventories).associate { (bucket, inventory) ->
+                            bucket.start to inventory.metrics
+                        }
+                    }
+                } else {
+                    emptyMap()
+                }
+                goal.progress(
+                    rows = scopedRows,
+                    range = range,
+                    checkIns = checkIns,
+                    inventoryByDate = inventoryByDate,
+                    today = today,
+                )
             }
             progress.forEach { item ->
                 recordNewMilestones(item)
@@ -374,6 +451,7 @@ class ImmersionAnalyticsService(
         }
         var current = 0
         var cursor = periodEnd.epochDay
+        if (periodEnd !in dates) cursor--
         while (ImmersionLocalDate(cursor) in dates) {
             current++
             cursor--
@@ -396,6 +474,7 @@ private fun StatsFilter.matches(row: ImmersionDailyRollup): Boolean =
 
 private fun List<ImmersionDailyRollup>.sumMetrics(): ReadingMetrics =
     fold(ReadingMetrics()) { total, row -> total + row.metrics }
+        .withInventory(AnalyticsInventoryMetrics())
 
 private fun ReadingMetrics.withInventory(inventory: AnalyticsInventoryMetrics): ReadingMetrics =
     copy(
@@ -472,13 +551,9 @@ private fun ImmersionGoal.progress(
     rows: List<ImmersionDailyRollup>,
     range: LocalDateRange,
     checkIns: List<ImmersionGoalCheckIn>,
+    inventoryByDate: Map<ImmersionLocalDate, AnalyticsInventoryMetrics>,
+    today: ImmersionLocalDate,
 ): AnalyticsGoalProgress {
-    val matchingRows = rows.filter {
-        (mediaKind == null || it.mediaKind == mediaKind) &&
-            (profileId == null || it.profileId == profileId) &&
-            (languageTag == null || it.languageTag == languageTag) &&
-            (titleId == null || it.titleId == titleId)
-    }
     val effectiveStart = maxOf(range.start, startDate ?: range.start)
     val effectiveEnd = minOf(range.endInclusive, endDate ?: range.endInclusive)
     if (effectiveStart > effectiveEnd) {
@@ -491,6 +566,13 @@ private fun ImmersionGoal.progress(
             achievedAtEpochMillis = null,
         )
     }
+    val matchingRows = rows.filter {
+        it.date in effectiveStart..effectiveEnd &&
+            (mediaKind == null || it.mediaKind == mediaKind) &&
+            (profileId == null || it.profileId == profileId) &&
+            (languageTag == null || it.languageTag == languageTag) &&
+            (titleId == null || it.titleId == titleId)
+    }
 
     val multipliers = weekdayMultipliers.parseWeekdayMultipliers()
     val rowsByDate = matchingRows.groupBy(ImmersionDailyRollup::date)
@@ -500,7 +582,11 @@ private fun ImmersionGoal.progress(
         if (type == "MANUAL" || metric == "manual") {
             if (checkInsByDate[date]?.status == "COMPLETED") 1.0 else 0.0
         } else {
-            rowsByDate[date].orEmpty().sumOf { it.metrics.valueForGoal(metric) }
+            when (metric) {
+                "new_words" -> inventoryByDate[date]?.newWords?.toDouble() ?: 0.0
+                "new_characters" -> inventoryByDate[date]?.newCharacters?.toDouble() ?: 0.0
+                else -> rowsByDate[date].orEmpty().sumOf { it.metrics.valueForGoal(metric) }
+            }
         }
     }
     val achieved = achievedByDate.values.sum()
@@ -509,6 +595,15 @@ private fun ImmersionGoal.progress(
         dates.sumOf { target * multipliers.multiplier(it) }
     } else {
         target
+    }
+    val achievedAtDate = if (targetToDate > 0 && achieved >= targetToDate) {
+        var cumulative = 0.0
+        dates.firstOrNull { date ->
+            cumulative += achievedByDate.getValue(date)
+            cumulative >= targetToDate
+        }
+    } else {
+        null
     }
     val activeDates = dates.filter { multipliers.multiplier(it) > 0.0 }
     val pace = if (activeDates.isEmpty()) null else achieved / activeDates.size
@@ -542,7 +637,13 @@ private fun ImmersionGoal.progress(
         ?.takeIf { it > 0 }
         ?.let { remaining / it }
     val (currentStreak, longestStreak) = if (dailyGoal) {
-        dailyGoalStreaks(achievedByDate, target, multipliers, effectiveEnd)
+        dailyGoalStreaks(
+            achievedByDate = achievedByDate,
+            target = target,
+            multipliers = multipliers,
+            end = effectiveEnd,
+            forgiveIncompleteEndDay = effectiveEnd == today,
+        )
     } else {
         0 to 0
     }
@@ -552,16 +653,10 @@ private fun ImmersionGoal.progress(
         target = target,
         pacePerDay = pace,
         projectedCompletionDate = projected,
-        achievedAtEpochMillis = if (targetToDate > 0 && achieved >= targetToDate) {
-            matchingRows.maxOfOrNull { it.date.epochDay }?.let {
-                ImmersionLocalDate(it).toLocalDate()
-                    .atStartOfDay(java.time.ZoneOffset.UTC)
-                    .toInstant()
-                    .toEpochMilli()
-            }
-        } else {
-            null
-        },
+        achievedAtEpochMillis = achievedAtDate?.toLocalDate()
+            ?.atStartOfDay(java.time.ZoneOffset.UTC)
+            ?.toInstant()
+            ?.toEpochMilli(),
         targetToDate = targetToDate,
         requiredPacePerActiveDay = requiredPace,
         rollingSevenDayPace = rollingSeven,
@@ -632,6 +727,7 @@ private fun dailyGoalStreaks(
     target: Double,
     multipliers: Map<DayOfWeek, Double>,
     end: ImmersionLocalDate,
+    forgiveIncompleteEndDay: Boolean,
 ): Pair<Int, Int> {
     val sortedDates = achievedByDate.keys.sorted()
     var longest = 0
@@ -648,7 +744,8 @@ private fun dailyGoalStreaks(
     }
     var current = 0
     var cursor = end
-    var firstActiveDay = true
+    var mayForgiveIncompleteDay =
+        forgiveIncompleteEndDay && multipliers.multiplier(end) > 0.0
     while (cursor in achievedByDate) {
         val multiplier = multipliers.multiplier(cursor)
         if (multiplier == 0.0) {
@@ -656,18 +753,49 @@ private fun dailyGoalStreaks(
             continue
         }
         val met = achievedByDate.getValue(cursor) >= target * multiplier
-        if (!met && firstActiveDay) {
-            firstActiveDay = false
+        if (!met && mayForgiveIncompleteDay) {
+            mayForgiveIncompleteDay = false
             cursor = ImmersionLocalDate(cursor.epochDay - 1)
             continue
         }
         if (!met) break
         current++
-        firstActiveDay = false
+        mayForgiveIncompleteDay = false
         cursor = ImmersionLocalDate(cursor.epochDay - 1)
     }
     return current to longest
 }
+
+private fun ImmersionGoal.statsFilter(
+    base: StatsFilter,
+    range: LocalDateRange,
+): StatsFilter =
+    StatsFilter(
+        dateRange = range,
+        mediaKinds = mediaKind?.let(::setOf) ?: base.mediaKinds,
+        profileIds = profileId?.let(::setOf) ?: base.profileIds,
+        languageTags = languageTag?.let(::setOf) ?: base.languageTags,
+        titleIds = titleId?.let(::setOf) ?: base.titleIds,
+        includeLegacyAggregates = base.includeLegacyAggregates,
+        characterMetric = base.characterMetric,
+        includeRereadsAndReplays = base.includeRereadsAndReplays,
+        maturityTiers = base.maturityTiers,
+        provenanceStates = base.provenanceStates,
+    )
+
+private fun ImmersionGoal.matchesDashboardScope(base: StatsFilter): Boolean =
+    (mediaKind == null || base.mediaKinds.isEmpty() || mediaKind in base.mediaKinds) &&
+        (profileId == null || base.profileIds.isEmpty() || profileId in base.profileIds) &&
+        (languageTag == null || base.languageTags.isEmpty() || languageTag in base.languageTags) &&
+        (titleId == null || base.titleIds.isEmpty() || titleId in base.titleIds)
+
+private fun LocalDateRange.dailyBuckets(): List<LocalDateRange> =
+    (start.epochDay..endInclusive.epochDay).map { epochDay ->
+        val date = ImmersionLocalDate(epochDay)
+        LocalDateRange(date, date)
+    }
+
+private val INVENTORY_GOAL_METRICS = setOf("new_words", "new_characters")
 
 private fun StatsFilter.stableHash(): String {
     val value = listOf(

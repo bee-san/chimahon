@@ -263,6 +263,12 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
         ImmersionRollupJob.setupTask(this)
         ImmersionRollupJob.start(this)
         mihon.feature.stats.retention.ImmersionRetentionJob.setupTask(this)
+        if (
+            immersionStatsPreferences.effectiveRawTextRetention() ==
+            tachiyomi.domain.immersion.model.RawTextRetention.NEVER
+        ) {
+            mihon.feature.stats.retention.ImmersionRetentionJob.start(this)
+        }
         // Chimahon <--
     }
 
