@@ -7,6 +7,7 @@ import mihon.feature.stats.indexing.ImmersionIndexJob
 import mihon.feature.stats.indexing.SqlImmersionIndexExclusionPolicy
 import mihon.feature.stats.legacy.LegacyStatsImporter
 import mihon.feature.stats.recorder.ImmersionRecorderLifecycleCoordinator
+import mihon.feature.stats.repair.ImmersionRepairJob
 import mihon.feature.stats.rollup.ImmersionRollupJob
 import tachiyomi.data.immersion.SqlDelightImmersionRepository
 import tachiyomi.data.libraryUpdateError.LibraryUpdateErrorRepositoryImpl
@@ -44,6 +45,7 @@ import tachiyomi.domain.immersion.service.ImmersionIndexingEngine
 import tachiyomi.domain.immersion.service.ImmersionRecorder
 import tachiyomi.domain.immersion.service.ImmersionRecorderConfiguration
 import tachiyomi.domain.immersion.service.ImmersionReindexController
+import tachiyomi.domain.immersion.service.ImmersionRepairScheduler
 import tachiyomi.domain.immersion.service.ImmersionShadowMonitor
 import tachiyomi.domain.immersion.service.ImmersionStatsDiagnosticsStore
 import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
@@ -134,6 +136,9 @@ class KMKDomainModule : InjektModule {
                 deviceIdProvider = ImmersionDeviceIdProvider { get<eu.kanade.domain.sync.SyncPreferences>().uniqueDeviceID() },
                 captureEnabled = { preferences.captureEnabled().get() },
                 diagnostics = get(),
+                repairScheduler = ImmersionRepairScheduler { sessionId, reason ->
+                    ImmersionRepairJob.start(get(), sessionId, reason)
+                },
                 eventPersistenceObserver = ImmersionEventPersistenceObserver { events ->
                     events.filterIsInstance<AnkiOperationEvent>().forEach {
                         ankiRepairStore.remove(it.operationId)
@@ -151,6 +156,9 @@ class KMKDomainModule : InjektModule {
                 configuration = ImmersionRecorderConfiguration(
                     idleTimeoutMillis = preferences.readerIdleTimeoutSeconds().get() * 1_000L,
                 ),
+                idleTimeoutMillis = {
+                    preferences.readerIdleTimeoutSeconds().get().toLong().coerceAtLeast(1L) * 1_000L
+                },
             )
         }
         addSingletonFactory<LookupTelemetry> {

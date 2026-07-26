@@ -28,6 +28,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import mihon.feature.stats.indexing.ImmersionIndexJob
 import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
 import tachiyomi.i18n.MR
@@ -489,6 +490,7 @@ class BackupRestorer(
                 report.quarantinedConflicts,
             )
         }
+        ImmersionIndexJob.start(context)
         restoreProgress += 1
         with(notifier) {
             showRestoreProgress(

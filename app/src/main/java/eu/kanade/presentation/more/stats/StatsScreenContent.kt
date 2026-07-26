@@ -96,6 +96,7 @@ import eu.kanade.tachiyomi.ui.stats.activeTimeComparison
 import eu.kanade.tachiyomi.ui.stats.ankiPresentationCapabilityState
 import eu.kanade.tachiyomi.ui.stats.durationMillis
 import eu.kanade.tachiyomi.ui.stats.enabledStatsTabs
+import eu.kanade.tachiyomi.ui.stats.overviewIndexedGrowthMetricValue
 import eu.kanade.tachiyomi.ui.stats.statsDurationParts
 import eu.kanade.tachiyomi.ui.stats.statsGoalDisplayValue
 import eu.kanade.tachiyomi.ui.stats.statsGoalForecastPresentation
@@ -692,13 +693,17 @@ private fun OverviewSummary(
                 StatsTab.ANKI,
             ),
             DashboardMetric(
-                formatCount(metrics.newWords.value),
+                overviewIndexedGrowthMetricValue(metrics.newWords.value, result.quality)
+                    ?.let(::formatCount)
+                    ?: stringResource(KMR.strings.stats_unavailable),
                 stringResource(KMR.strings.stats_new_words),
                 Icons.Outlined.Translate,
                 StatsTab.VOCABULARY,
             ),
             DashboardMetric(
-                formatCount(metrics.newCharacters.value),
+                overviewIndexedGrowthMetricValue(metrics.newCharacters.value, result.quality)
+                    ?.let(::formatCount)
+                    ?: stringResource(KMR.strings.stats_unavailable),
                 stringResource(KMR.strings.stats_new_characters),
                 Icons.Outlined.TextFields,
                 StatsTab.CHARACTERS,
@@ -2150,7 +2155,9 @@ private fun SessionDetail(
         TextButton(onClick = { confirmDelete = true }) {
             Text(stringResource(KMR.strings.stats_delete_session))
         }
-        if (session.legacyImport) NoticeCard(stringResource(KMR.strings.stats_legacy))
+        if (session.legacyImport) {
+            NoticeCard(stringResource(KMR.strings.stats_legacy_session_detail))
+        }
         detail.value?.value?.let { value ->
             SectionTitle(stringResource(KMR.strings.stats_session_timeline))
             TimelineSummary(value)
@@ -2372,6 +2379,14 @@ private fun GoalCard(
                 Text(
                     stringResource(
                         KMR.strings.stats_goal_rolling_seven,
+                        formatGoalValue(goal.goal.metric, it),
+                    ),
+                )
+            }
+            goal.rollingThirtyDayPace?.let {
+                Text(
+                    stringResource(
+                        KMR.strings.stats_goal_rolling_thirty,
                         formatGoalValue(goal.goal.metric, it),
                     ),
                 )

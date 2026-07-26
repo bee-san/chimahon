@@ -70,6 +70,7 @@ import logcat.LogPriority
 import mihon.feature.animemigration.dialog.MigrateAnimeDialog
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.core.common.util.lang.withIOContext
+import tachiyomi.core.common.util.lang.withUIContext
 import tachiyomi.core.common.util.system.logcat
 import tachiyomi.domain.entries.anime.model.Anime
 import tachiyomi.domain.episode.model.Episode
@@ -439,19 +440,24 @@ class AnimeScreen(
     }
 
     private suspend fun openEpisode(context: Context, episode: Episode, useExternalPlayer: Boolean) {
-        withIOContext {
-            if (useExternalPlayer) {
-                try {
-                    val intent = ExternalIntents().getExternalIntent(context, episode.animeId, episode.id, null)
-                    if (intent != null) {
-                        context.startActivity(intent)
-                        context.toast(KMR.strings.stats_external_player_not_captured)
-                        return@withIOContext
-                    }
-                } catch (e: Throwable) {
-                    context.toast(e.message)
+        if (useExternalPlayer) {
+            val intent = try {
+                withIOContext {
+                    ExternalIntents().getExternalIntent(context, episode.animeId, episode.id, null)
                 }
+            } catch (e: Throwable) {
+                withUIContext { context.toast(e.message) }
+                null
             }
+            if (intent != null) {
+                withUIContext {
+                    context.startActivity(intent)
+                    context.toast(KMR.strings.stats_external_player_not_captured)
+                }
+                return
+            }
+        }
+        withUIContext {
             context.startActivity(PlayerActivity.newIntent(context, episode.animeId, episode.id))
         }
     }

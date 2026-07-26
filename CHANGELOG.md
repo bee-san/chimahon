@@ -15,7 +15,8 @@ The format follows a Keep a Changelog style and uses Semantic Versioning.
 - Animated WebP scene mining for video Anki cards
 
 ### Changed
-- New statistics are authoritative and legacy novel, manga, and Anki JSON stores are read-only
+- Event-backed capture and indexing now run in a safe-shadow rollout, while the new dashboard, Anki inventory, and goals remain opt-in previews
+- Legacy novel, manga, and Anki JSON writes remain active as the rollback path while parity and release-device validation continue
 - Existing aggregate history is imported deterministically and remains available with explicit provenance
 - Statistics strings now live in Komikku base resources for Weblate translation
 - Original immersion-statistics contributions are available under the MIT license; inherited code keeps its existing license

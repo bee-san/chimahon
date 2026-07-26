@@ -15,12 +15,16 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import chimahon.widget.ImmersionWidgetSignals
 import exh.log.xLogE
 import kotlinx.coroutines.CancellationException
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
 import tachiyomi.domain.immersion.model.LocalDateRange
 import tachiyomi.domain.immersion.repository.ImmersionAnalyticsRepository
 import tachiyomi.domain.immersion.service.ImmersionAnalyticsService
+import tachiyomi.domain.immersion.service.ImmersionDiagnosticErrorCode
+import tachiyomi.domain.immersion.service.ImmersionDiagnosticStage
+import tachiyomi.domain.immersion.service.ImmersionStatsDiagnosticsStore
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.util.concurrent.TimeUnit
@@ -29,6 +33,7 @@ class ImmersionRollupJob(
     context: Context,
     workerParameters: WorkerParameters,
 ) : CoroutineWorker(context, workerParameters) {
+    private val diagnostics: ImmersionStatsDiagnosticsStore = Injekt.get()
     private val service: ImmersionAnalyticsService = Injekt.get()
     private val repository: ImmersionAnalyticsRepository = Injekt.get()
 
@@ -46,10 +51,14 @@ class ImmersionRollupJob(
                 "rows" to results.sumOf { it.rowCount },
                 "events" to results.sumOf { it.eventCount },
             )
+            if (results.isNotEmpty()) {
+                ImmersionWidgetSignals.notifyStatsChanged()
+            }
             if (remaining) Result.retry() else Result.success(output)
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
+            recordImmersionRollupFailure(diagnostics)
             xLogE("Immersion rollup repair failed", error)
             Result.retry()
         }
@@ -121,4 +130,11 @@ class ImmersionRollupJob(
             ImmersionLocalDate(getLong(END_DATE, 0)),
         )
     }
+}
+
+internal fun recordImmersionRollupFailure(diagnostics: ImmersionStatsDiagnosticsStore) {
+    diagnostics.recordError(
+        ImmersionDiagnosticStage.ROLLUP,
+        ImmersionDiagnosticErrorCode.ROLLUP_FAILED,
+    )
 }

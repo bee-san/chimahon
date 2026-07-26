@@ -190,6 +190,29 @@ class DefaultImmersionRecorderTest {
     }
 
     @Test
+    fun `idle timeout provider applies preference changes without recreating recorder`() = runTest {
+        var idleTimeoutMillis = 2_000L
+        val fixture = recorderFixture(
+            idleTimeoutMillisProvider = { idleTimeoutMillis },
+        )
+        fixture.recorder.startSession(fixture.context)
+
+        fixture.clock.advance(1_000)
+        idleTimeoutMillis = 5_000
+        fixture.clock.advance(3_000)
+        fixture.recorder.record(fixture.exposure())
+        fixture.recorder.finalize(FinalizeReason.NORMAL)
+
+        fixture.repository.session().activeDuration shouldBe MillisecondDuration(4_000)
+        fixture.repository.events.map { it.type } shouldContainExactly listOf(
+            EventType.SESSION_STARTED,
+            EventType.HEARTBEAT,
+            EventType.EXPOSURE,
+            EventType.SESSION_FINALIZED,
+        )
+    }
+
+    @Test
     fun `incognito blocks before insertion and finalizes an existing session before future commands`() = runTest {
         val fixture = recorderFixture()
         fixture.recorder.setIncognito(true)
@@ -418,6 +441,7 @@ class DefaultImmersionRecorderTest {
 
     private fun TestScope.recorderFixture(
         idleTimeoutMillis: Long = 120_000,
+        idleTimeoutMillisProvider: (() -> Long)? = null,
         queueCapacity: Int = 256,
         batchSize: Int = 32,
     ): RecorderFixture {
@@ -442,6 +466,7 @@ class DefaultImmersionRecorderTest {
                 idleTimeoutMillis = idleTimeoutMillis,
                 retryBackoffMillis = listOf(1, 2, 3),
             ),
+            idleTimeoutMillis = idleTimeoutMillisProvider ?: { idleTimeoutMillis },
             externalScope = backgroundScope,
         )
         return RecorderFixture(

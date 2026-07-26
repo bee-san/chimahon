@@ -117,6 +117,96 @@ class MangaCaptureAdapterTest {
     }
 
     @Test
+    fun `two-page spread exposes both simultaneously visible pages and their OCR`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+        val left = page(index = 4)
+        val right = page(index = 5)
+
+        adapter.onOcrResult(left.key, MangaOcrAvailability.AVAILABLE, listOf(block("左")))
+        adapter.onOcrResult(right.key, MangaOcrAvailability.AVAILABLE, listOf(block("右")))
+        adapter.onVisiblePages(listOf(left, right))
+        adapter.finalize(legacy(characters = 2, equivalent = false)).await()
+
+        val pageExposures = recorder.exposures(SourceKind.MANGA_PAGE)
+        pageExposures shouldHaveSize 2
+        pageExposures.map { it.source.id }.distinct() shouldHaveSize 2
+
+        val ocrExposures = recorder.exposures(SourceKind.MANGA_OCR_BLOCK)
+        ocrExposures shouldHaveSize 2
+        ocrExposures.map { it.source.id }.distinct() shouldHaveSize 2
+        ocrExposures.map { it.grossCharacters.value } shouldBe listOf(1L, 1L)
+        ocrExposures.map { it.uniqueSourceCharacters.value } shouldBe listOf(1L, 1L)
+        adapter.coverage.value shouldBe MangaOcrCoverageSnapshot(
+            viewedPages = 2,
+            ocrCoveredPages = 2,
+            unavailablePages = 0,
+        )
+    }
+
+    @Test
+    fun `rapid flips resume from idle and ignore pages reported while backgrounded`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+
+        repeat(4) { index ->
+            adapter.onVisiblePages(listOf(page(index = index)))
+            runCurrent()
+        }
+        recorder.enterIdle()
+        adapter.onVisiblePages(listOf(page(index = 4)))
+        runCurrent()
+
+        adapter.setBackgrounded(true)
+        runCurrent()
+        repeat(4) { index ->
+            adapter.onVisiblePages(listOf(page(index = index + 5)))
+            runCurrent()
+        }
+        adapter.setBackgrounded(false)
+        runCurrent()
+        adapter.onVisiblePages(listOf(page(index = 9)))
+        adapter.finalize(legacy(equivalent = false)).await()
+
+        val pageExposures = recorder.exposures(SourceKind.MANGA_PAGE)
+        pageExposures shouldHaveSize 6
+        pageExposures.map { it.source.id }.distinct() shouldHaveSize 6
+        pageExposures.all { it.grossCharacters == NonNegativeCounter.ZERO } shouldBe true
+        recorder.idleResumptions shouldBe 1
+        recorder.pauses shouldBe listOf(PauseReason.BACKGROUND)
+        recorder.resumes shouldBe listOf(ResumeReason.FOREGROUND)
+    }
+
+    @Test
+    fun `adapter recreation retains page identity without repeating unique OCR`() = runTest {
+        val persistedSourceIds = mutableSetOf<SourceUnitId>()
+        val visible = page(chapter = 10, index = 3)
+        val text = block("再読")
+
+        val firstRecorder = FakeRecorder(persistedSourceIds = persistedSourceIds)
+        val firstAdapter = adapter(firstRecorder)
+        firstAdapter.onOcrResult(visible.key, MangaOcrAvailability.AVAILABLE, listOf(text))
+        firstAdapter.onVisiblePages(listOf(visible))
+        firstAdapter.finalize(legacy(characters = 2)).await()
+
+        val secondRecorder = FakeRecorder(persistedSourceIds = persistedSourceIds)
+        val recreatedAdapter = adapter(secondRecorder)
+        recreatedAdapter.onOcrResult(visible.key, MangaOcrAvailability.AVAILABLE, listOf(text))
+        recreatedAdapter.onVisiblePages(listOf(visible))
+        recreatedAdapter.finalize(legacy(characters = 2, equivalent = false)).await()
+
+        firstRecorder.exposures(SourceKind.MANGA_PAGE).single().source.id shouldBe
+            secondRecorder.exposures(SourceKind.MANGA_PAGE).single().source.id
+        val firstOcr = firstRecorder.exposures(SourceKind.MANGA_OCR_BLOCK).single()
+        val recreatedOcr = secondRecorder.exposures(SourceKind.MANGA_OCR_BLOCK).single()
+        recreatedOcr.source.id shouldBe firstOcr.source.id
+        firstOcr.grossCharacters shouldBe NonNegativeCounter(2)
+        firstOcr.uniqueSourceCharacters shouldBe NonNegativeCounter(2)
+        recreatedOcr.grossCharacters shouldBe NonNegativeCounter(2)
+        recreatedOcr.uniqueSourceCharacters shouldBe NonNegativeCounter.ZERO
+    }
+
+    @Test
     fun `webtoon block exposure follows repeated partial visibility threshold`() = runTest {
         val recorder = FakeRecorder()
         val adapter = adapter(recorder)
@@ -554,6 +644,7 @@ class MangaCaptureAdapterTest {
         private val suppressStart: Boolean = false,
         private val activeMillis: Long = 1_000,
         private val rejectOcrExposures: Boolean = false,
+        private val persistedSourceIds: MutableSet<SourceUnitId> = mutableSetOf(),
         private var recordFailuresRemaining: Int = 0,
         private var finalizeFailuresRemaining: Int = 0,
     ) : ImmersionRecorder {
@@ -564,11 +655,17 @@ class MangaCaptureAdapterTest {
         val resumes = mutableListOf<ResumeReason>()
         var startedSessionId: SessionId? = null
             private set
+        var idleResumptions: Int = 0
+            private set
         private var context: SessionContext? = null
         private var handle: SessionHandle? = null
 
         fun exposures(kind: SourceKind) = commands.filterIsInstance<CaptureCommand.Exposure>()
             .filter { it.source.sourceKind == kind }
+
+        fun enterIdle() {
+            mutableState.value = mutableState.value.copy(state = ImmersionSessionState.IDLE)
+        }
 
         override suspend fun startSession(context: SessionContext): SessionStartResult {
             if (suppressStart || context.incognito) {
@@ -578,6 +675,10 @@ class MangaCaptureAdapterTest {
             this.context = context
             this.handle = handle
             startedSessionId = handle.sessionId
+            mutableState.value = ImmersionRecorderSnapshot(
+                sessionId = handle.sessionId,
+                state = ImmersionSessionState.ACTIVE,
+            )
             return SessionStartResult.Started(handle)
         }
 
@@ -598,7 +699,14 @@ class MangaCaptureAdapterTest {
             ) {
                 return RecordResult.Rejected(ImmersionSessionState.ACTIVE)
             }
+            if (mutableState.value.state == ImmersionSessionState.IDLE) {
+                idleResumptions += 1
+                mutableState.value = mutableState.value.copy(state = ImmersionSessionState.ACTIVE)
+            }
             commands += command
+            if (command is CaptureCommand.Exposure) {
+                persistedSourceIds += command.source.id
+            }
             return RecordResult.Enqueued(1)
         }
 
@@ -644,7 +752,8 @@ class MangaCaptureAdapterTest {
 
         override suspend fun recoverAbandonedSessions(): Long = 0
 
-        override suspend fun hasSeenSource(sourceUnitId: SourceUnitId): Boolean = false
+        override suspend fun hasSeenSource(sourceUnitId: SourceUnitId): Boolean =
+            sourceUnitId in persistedSourceIds
     }
 }
 

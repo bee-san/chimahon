@@ -479,12 +479,25 @@ class SqlDelightImmersionRepository(
                 id = sourceUnitId.value,
             )
             checkExactlyOneChange("marking source unit indexed")
-            markRollupDirty(
-                source.first_exposed_at,
-                0,
-                source.title_id,
-                "INDEX",
-            )
+            val affectedDates = buildSet {
+                addAll(selectImmersionExposureDatesForSources(listOf(sourceUnitId.value)))
+                addAll(
+                    selectImmersionInventoryExposureDates(
+                        ImmersionSourceBoundarySnapshot(
+                            wordIds = affectedWordIds,
+                            characterCodePoints = affectedCharacterCodePoints,
+                        ),
+                    ),
+                )
+            }
+            affectedDates.forEach { date ->
+                immersionQueries.upsertImmersionRollupDirty(
+                    localDate = date.epochDay,
+                    titleId = source.title_id,
+                    reason = "INDEX",
+                    updatedAt = indexedAtEpochMillis,
+                )
+            }
             immersionQueries.incrementImmersionRevision(indexedAtEpochMillis)
         }
     }
@@ -1839,6 +1852,38 @@ class SqlDelightImmersionRepository(
                     rollupVersionMismatches = NonNegativeCounter(row.rollup_version_mismatches),
                 )
             }
+        }
+    }
+
+    override suspend fun repairSessionCounters(
+        sessionId: SessionId,
+        repairedAtEpochMillis: Long,
+    ): Boolean {
+        require(repairedAtEpochMillis >= 0) { "Repair timestamp cannot be negative" }
+        return handler.await(inTransaction = true) {
+            val session = immersionQueries.selectImmersionSessionById(sessionId.value).executeAsOneOrNull()
+                ?: return@await false
+            immersionQueries.repairImmersionSessionCounters(sessionId.value)
+            if (immersionQueries.selectImmersionChanges().executeAsOne() != 1L) {
+                return@await false
+            }
+            val offsetSeconds = session.start_offset_seconds.toIntExact("session offset")
+            markRollupDirty(
+                session.started_at,
+                offsetSeconds,
+                session.title_id,
+                "SESSION_COUNTER_REPAIR",
+            )
+            session.ended_at?.let { endedAt ->
+                markRollupDirty(
+                    endedAt,
+                    offsetSeconds,
+                    session.title_id,
+                    "SESSION_COUNTER_REPAIR",
+                )
+            }
+            immersionQueries.incrementImmersionRevision(repairedAtEpochMillis)
+            true
         }
     }
 

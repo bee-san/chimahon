@@ -70,6 +70,7 @@ class StatsMaintenanceScreen(
         var showRawTextDeleteConfirmation by remember { mutableStateOf(false) }
         var showFullResetConfirmation by remember { mutableStateOf(false) }
         var showRetentionDialog by remember { mutableStateOf(false) }
+        var showReaderIdleTimeoutDialog by remember { mutableStateOf(false) }
         var showScopedDeletionDialog by remember { mutableStateOf(false) }
         var showAnkiCacheDeletionDialog by remember { mutableStateOf(false) }
 
@@ -103,6 +104,7 @@ class StatsMaintenanceScreen(
                 onDeleteScopedStats = { showScopedDeletionDialog = true },
                 onDeleteAnkiCache = { showAnkiCacheDeletionDialog = true },
                 onCaptureEnabledChange = screenModel::setCaptureEnabled,
+                onReaderIdleTimeout = { showReaderIdleTimeoutDialog = true },
                 onIndexingEnabledChange = {
                     screenModel.setIndexingEnabled(it)
                     ImmersionIndexJob.setEnabled(context, it)
@@ -169,6 +171,16 @@ class StatsMaintenanceScreen(
                 },
             )
         }
+        if (showReaderIdleTimeoutDialog) {
+            ReaderIdleTimeoutDialog(
+                selectedSeconds = state.readerIdleTimeoutSeconds,
+                onDismiss = { showReaderIdleTimeoutDialog = false },
+                onSelect = {
+                    screenModel.setReaderIdleTimeoutSeconds(it)
+                    showReaderIdleTimeoutDialog = false
+                },
+            )
+        }
         if (showFullResetConfirmation) {
             val preview = state.deletionPreview
             ConfirmationDialog(
@@ -224,6 +236,7 @@ private fun StatsMaintenanceContent(
     onDeleteScopedStats: () -> Unit,
     onDeleteAnkiCache: () -> Unit,
     onCaptureEnabledChange: (Boolean) -> Unit,
+    onReaderIdleTimeout: () -> Unit,
     onIndexingEnabledChange: (Boolean) -> Unit,
     onUiEnabledChange: (Boolean) -> Unit,
     onAnkiSyncEnabledChange: (Boolean) -> Unit,
@@ -322,6 +335,17 @@ private fun StatsMaintenanceContent(
                 subtitle = stringResource(KMR.strings.stats_capture_enabled_summary),
                 checked = state.captureEnabled,
                 onCheckedChanged = onCaptureEnabledChange,
+            )
+        }
+        item {
+            MaintenanceAction(
+                title = stringResource(KMR.strings.stats_reader_idle_timeout),
+                description = stringResource(
+                    KMR.strings.stats_reader_idle_timeout_summary,
+                    readerIdleTimeoutLabel(state.readerIdleTimeoutSeconds),
+                ),
+                enabled = !state.busy,
+                onClick = onReaderIdleTimeout,
             )
         }
         item {
@@ -490,7 +514,7 @@ private fun ExportDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(KMR.strings.stats_export_data)) },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 StatsExportKind.entries.forEach { kind ->
                     TextButton(onClick = { onSelect(kind) }) {
                         Text(exportLabel(kind))
@@ -724,6 +748,50 @@ private fun RetentionDialog(
 }
 
 @Composable
+private fun ReaderIdleTimeoutDialog(
+    selectedSeconds: Int,
+    onDismiss: () -> Unit,
+    onSelect: (Int) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(KMR.strings.stats_reader_idle_timeout)) },
+        text = {
+            Column {
+                STATS_READER_IDLE_TIMEOUT_SECONDS.forEach { seconds ->
+                    TextButton(onClick = { onSelect(seconds) }) {
+                        RadioButton(
+                            selected = seconds == selectedSeconds,
+                            onClick = null,
+                        )
+                        Text(readerIdleTimeoutLabel(seconds))
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(KMR.strings.stats_close))
+            }
+        },
+    )
+}
+
+@Composable
+private fun readerIdleTimeoutLabel(seconds: Int): String {
+    val display = statsReaderIdleTimeoutDisplay(seconds)
+    return pluralStringResource(
+        when (display.unit) {
+            StatsReaderIdleTimeoutUnit.SECONDS -> KMR.plurals.stats_duration_seconds
+            StatsReaderIdleTimeoutUnit.MINUTES -> KMR.plurals.stats_duration_minutes
+        },
+        display.amount,
+        display.amount,
+    )
+}
+
+@Composable
 private fun retentionLabel(retention: RawTextRetention): String =
     stringResource(
         when (retention) {
@@ -744,6 +812,7 @@ private fun exportLabel(kind: StatsExportKind): String =
             StatsExportKind.EVENT_JSON_WITH_RAW_TEXT -> KMR.strings.stats_export_raw_text
             StatsExportKind.VOCABULARY_CSV -> KMR.strings.stats_export_vocabulary_csv
             StatsExportKind.CHARACTERS_CSV -> KMR.strings.stats_export_characters_csv
+            StatsExportKind.HEALTH_PARITY_JSON -> KMR.strings.stats_export_health_parity_json
         },
     )
 

@@ -446,6 +446,52 @@ class SqlDelightImmersionRepositoryTest {
     }
 
     @Test
+    fun `session counter repair reconstructs event-backed counters`() = runTest {
+        prepareSession()
+        repository.appendExposure(exposure(sequence = 1, eventNumber = 2)) shouldBe PersistenceResult.Applied
+        driver.execute(
+            null,
+            """
+            UPDATE immersion_session
+            SET
+                active_duration_ms = 9,
+                gross_characters = 9,
+                unique_source_characters = 9,
+                net_characters = 9,
+                source_unit_count = 9,
+                lookup_count = 9,
+                cards_created = 9,
+                cards_updated = 9,
+                last_sequence = 9
+            WHERE id = '${SESSION_ID.value}'
+            """.trimIndent(),
+            0,
+        ).value
+
+        repository.repairSessionCounters(SESSION_ID, 2_000) shouldBe true
+
+        repository.getSession(SESSION_ID)?.let { session ->
+            session.activeDuration shouldBe MillisecondDuration(1_000)
+            session.grossCharacters shouldBe NonNegativeCounter(100)
+            session.uniqueSourceCharacters shouldBe NonNegativeCounter(90)
+            session.netCharacters shouldBe NetCharacterProgress(80)
+            session.sourceUnitCount shouldBe NonNegativeCounter(1)
+            session.lastSequence shouldBe 1
+        } shouldNotBe null
+        queryLong("SELECT lookup_count FROM immersion_session WHERE id = '${SESSION_ID.value}'") shouldBe 0
+        queryLong("SELECT cards_created FROM immersion_session WHERE id = '${SESSION_ID.value}'") shouldBe 0
+        queryLong("SELECT cards_updated FROM immersion_session WHERE id = '${SESSION_ID.value}'") shouldBe 0
+        queryLong(
+            "SELECT count(*) FROM immersion_rollup_dirty WHERE reason = 'SESSION_COUNTER_REPAIR'",
+        ) shouldBe 1
+    }
+
+    @Test
+    fun `session counter repair ignores unknown sessions`() = runTest {
+        repository.repairSessionCounters(sessionId(404), 2_000) shouldBe false
+    }
+
+    @Test
     fun `ordered lifecycle batch is atomic idempotent and advances active time and signed net progress`() = runTest {
         prepareSession()
         val batch = listOf(
@@ -1378,6 +1424,80 @@ class SqlDelightImmersionRepositoryTest {
     }
 
     @Test
+    fun `stale completed index is claimable by a newer index version`() = runTest {
+        prepareSession()
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = 810).let {
+                it.copy(source = it.source.copy(rawText = "猫"))
+            },
+        )
+        storeClaimedIndexResult(
+            sourceUnitId = SOURCE_ID,
+            tokenizerId = "test-v1",
+            tokenizerVersion = 1,
+            normalizationVersion = 1,
+            indexedVersion = 1,
+            indexedAtEpochMillis = 2_000,
+            tokenizationConfidence = 1.0,
+            terminalReason = null,
+            words = listOf(indexedWord("word-stale-index", "猫", ordinal = 0)),
+            characters = listOf(indexedCharacter('猫', 1)),
+        )
+
+        repository.pendingCount(targetVersion = 1) shouldBe 0
+        repository.pendingCount(targetVersion = 2) shouldBe 1
+        repository.claimWork(
+            targetVersion = 2,
+            limit = 10,
+            nowEpochMillis = 3_000,
+        ).single().sourceUnitId shouldBe SOURCE_ID
+    }
+
+    @Test
+    fun `index completion dirties every local exposure date`() = runTest {
+        prepareSession()
+        val dayMillis = 86_400_000L
+        listOf(1L, 2L).forEach { localDay ->
+            val occurredAt = localDay * dayMillis - 3_600_000L
+            repository.appendExposure(
+                exposure(sequence = localDay, eventNumber = 820 + localDay.toInt()).let { event ->
+                    event.copy(
+                        occurredAtEpochMillis = occurredAt,
+                        timezoneOffsetSeconds = 7_200,
+                        source = event.source.copy(
+                            rawText = "猫",
+                            lastExposedAtEpochMillis = occurredAt,
+                        ),
+                    )
+                },
+            ) shouldBe PersistenceResult.Applied
+        }
+
+        storeClaimedIndexResult(
+            sourceUnitId = SOURCE_ID,
+            tokenizerId = "fixture",
+            tokenizerVersion = 1,
+            normalizationVersion = 1,
+            indexedVersion = 1,
+            indexedAtEpochMillis = 3 * dayMillis,
+            tokenizationConfidence = 1.0,
+            terminalReason = null,
+            words = listOf(indexedWord("word-index-dates", "猫", ordinal = 0)),
+            characters = listOf(indexedCharacter('猫', 1)),
+        )
+
+        queryLong(
+            "SELECT count(*) FROM immersion_rollup_dirty WHERE reason = 'INDEX'",
+        ) shouldBe 2
+        queryLong(
+            "SELECT min(local_date) FROM immersion_rollup_dirty WHERE reason = 'INDEX'",
+        ) shouldBe 1
+        queryLong(
+            "SELECT max(local_date) FROM immersion_rollup_dirty WHERE reason = 'INDEX'",
+        ) shouldBe 2
+    }
+
+    @Test
     fun `stale index claim cannot complete or fail work reclaimed by a newer owner`() = runTest {
         prepareSession()
         repository.appendExposure(
@@ -1507,6 +1627,111 @@ class SqlDelightImmersionRepositoryTest {
         queryStrings("SELECT tokenizer_id FROM immersion_source_unit") shouldContainExactly listOf("test-v2")
         queryLong("SELECT countable_characters FROM immersion_source_unit") shouldBe 2
         queryLong("SELECT han_characters FROM immersion_source_unit") shouldBe 2
+    }
+
+    @Test
+    fun `reindex dirties dates whose shared inventory first seen boundary moves`() = runTest {
+        val dayMillis = 86_400_000L
+        val firstAt = 1_100L
+        val secondAt = 2 * dayMillis + 1_100
+        val secondSession = sessionId(822)
+        val secondSource = SourceUnitId("00000000-0000-0000-0000-000000000822")
+        val range = LocalDateRange(ImmersionLocalDate(0), ImmersionLocalDate(2))
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        repository.createSession(sessionStart(startedAt = 1_000)) shouldBe PersistenceResult.Applied
+        repository.createSession(
+            sessionStart(id = secondSession, startedAt = secondAt - 100),
+        ) shouldBe PersistenceResult.Applied
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = 823).copy(
+                occurredAtEpochMillis = firstAt,
+                source = source(firstAt).copy(
+                    rawText = "猫",
+                    firstExposedAtEpochMillis = firstAt,
+                ),
+            ),
+        ) shouldBe PersistenceResult.Applied
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = 824).copy(
+                sessionId = secondSession,
+                occurredAtEpochMillis = secondAt,
+                source = source(secondAt).copy(
+                    id = secondSource,
+                    canonicalLocator = "novel:test:chapter-2:0-100",
+                    chapterOrSectionId = "chapter-2",
+                    normalizedTextHash = "sha256:second-reindex-source",
+                    rawText = "猫",
+                    firstExposedAtEpochMillis = secondAt,
+                ),
+            ),
+        ) shouldBe PersistenceResult.Applied
+        listOf(SOURCE_ID, secondSource).forEach { sourceUnitId ->
+            storeClaimedIndexResult(
+                sourceUnitId = sourceUnitId,
+                tokenizerId = "test-v1",
+                tokenizerVersion = 1,
+                normalizationVersion = 1,
+                indexedVersion = 1,
+                indexedAtEpochMillis = secondAt + 100,
+                tokenizationConfidence = 1.0,
+                terminalReason = null,
+                words = listOf(indexedWord("word-reindex-shared", "猫", ordinal = 0)),
+                characters = listOf(indexedCharacter('猫', 1)),
+            )
+        }
+        repository.finalizeSession(
+            SESSION_ID,
+            SessionStatus.COMPLETED,
+            firstAt + 100,
+            MillisecondDuration(200),
+        )
+        repository.finalizeSession(
+            secondSession,
+            SessionStatus.COMPLETED,
+            secondAt + 100,
+            MillisecondDuration(200),
+        )
+        repository.rebuildRollups(range, 2, secondAt + 200)
+        repository.dailyRollups(range).associateBy { it.date }.let { rows ->
+            rows.getValue(ImmersionLocalDate(0)).metrics.newWords shouldBe NonNegativeCounter(1)
+            rows.getValue(ImmersionLocalDate(0)).metrics.newCharacters shouldBe NonNegativeCounter(1)
+            rows.getValue(ImmersionLocalDate(2)).metrics.newWords shouldBe NonNegativeCounter.ZERO
+            rows.getValue(ImmersionLocalDate(2)).metrics.newCharacters shouldBe NonNegativeCounter.ZERO
+        }
+
+        repository.requeue(
+            ImmersionReindexRequest(exposedUntilEpochMillis = dayMillis),
+            targetVersion = 2,
+        ) shouldBe 1
+        storeClaimedIndexResult(
+            sourceUnitId = SOURCE_ID,
+            tokenizerId = "test-v2",
+            tokenizerVersion = 2,
+            normalizationVersion = 1,
+            indexedVersion = 2,
+            indexedAtEpochMillis = secondAt + 300,
+            tokenizationConfidence = 1.0,
+            terminalReason = null,
+            words = emptyList(),
+            characters = emptyList(),
+        )
+
+        val dirtyRanges = repository.dirtyRollupRanges(20)
+        dirtyRanges.map { it.start }.toSet() shouldBe
+            setOf(ImmersionLocalDate(0), ImmersionLocalDate(2))
+        dirtyRanges.forEach { dirty ->
+            repository.rebuildRollups(
+                LocalDateRange(dirty.start, dirty.endInclusive),
+                2,
+                secondAt + 400,
+            )
+        }
+        repository.dailyRollups(range).associateBy { it.date }.let { rows ->
+            rows.getValue(ImmersionLocalDate(0)).metrics.newWords shouldBe NonNegativeCounter.ZERO
+            rows.getValue(ImmersionLocalDate(0)).metrics.newCharacters shouldBe NonNegativeCounter.ZERO
+            rows.getValue(ImmersionLocalDate(2)).metrics.newWords shouldBe NonNegativeCounter(1)
+            rows.getValue(ImmersionLocalDate(2)).metrics.newCharacters shouldBe NonNegativeCounter(1)
+        }
     }
 
     @Test
@@ -4005,6 +4230,18 @@ class SqlDelightImmersionRepositoryTest {
         ) shouldBe 1
         queryLong("SELECT count(*) FROM immersion_word_occurrence WHERE source_unit_id = '${SOURCE_ID.value}'") shouldBe 1
         queryLong("SELECT count(*) FROM immersion_character WHERE rendered = '猫'") shouldBe 1
+        queryLong(
+            "SELECT count(*) FROM immersion_character_occurrence WHERE source_unit_id = '${SOURCE_ID.value}'",
+        ) shouldBe 1
+        repository.pendingCount(targetVersion = 2) shouldBe 0
+        repository.claimWork(
+            targetVersion = 2,
+            limit = 10,
+            nowEpochMillis = 3_500,
+        ) shouldBe emptyList()
+        queryLong(
+            "SELECT count(*) FROM immersion_word_occurrence WHERE source_unit_id = '${SOURCE_ID.value}'",
+        ) shouldBe 1
         queryLong(
             "SELECT count(*) FROM immersion_character_occurrence WHERE source_unit_id = '${SOURCE_ID.value}'",
         ) shouldBe 1

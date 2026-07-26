@@ -14,7 +14,10 @@ import androidx.work.WorkerParameters
 import exh.log.xLogE
 import kotlinx.coroutines.CancellationException
 import mihon.feature.stats.rollup.ImmersionRollupJob
+import tachiyomi.domain.immersion.service.ImmersionDiagnosticErrorCode
+import tachiyomi.domain.immersion.service.ImmersionDiagnosticStage
 import tachiyomi.domain.immersion.service.ImmersionIndexingEngine
+import tachiyomi.domain.immersion.service.ImmersionStatsDiagnosticsStore
 import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
@@ -25,6 +28,7 @@ class ImmersionIndexJob(
     workerParameters: WorkerParameters,
 ) : CoroutineWorker(context, workerParameters) {
     private val engine: ImmersionIndexingEngine = Injekt.get()
+    private val diagnostics: ImmersionStatsDiagnosticsStore = Injekt.get()
     private val preferences: ImmersionStatsPreferences = Injekt.get()
 
     override suspend fun doWork(): Result {
@@ -36,20 +40,35 @@ class ImmersionIndexJob(
                 val batch = engine.processBatch()
                 processed += batch.claimed
                 failures += batch.failed
-                if (batch.claimed < ImmersionIndexingEngine.DEFAULT_BATCH_SIZE) {
-                    ImmersionRollupJob.start(applicationContext)
-                    return Result.success(
-                        androidx.work.workDataOf(
-                            "processed" to processed,
-                            "failures" to failures,
-                        ),
+                recordImmersionIndexFailure(diagnostics, batch.failed)
+                when (
+                    decideImmersionIndexBatch(
+                        claimed = batch.claimed,
+                        failures = failures,
+                        batchSize = ImmersionIndexingEngine.DEFAULT_BATCH_SIZE,
                     )
+                ) {
+                    ImmersionIndexBatchDecision.CONTINUE -> Unit
+                    ImmersionIndexBatchDecision.RETRY -> {
+                        ImmersionRollupJob.start(applicationContext)
+                        return Result.retry()
+                    }
+                    ImmersionIndexBatchDecision.SUCCESS -> {
+                        ImmersionRollupJob.start(applicationContext)
+                        return Result.success(
+                            androidx.work.workDataOf(
+                                "processed" to processed,
+                                "failures" to failures,
+                            ),
+                        )
+                    }
                 }
             }
             Result.retry()
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
+            recordImmersionIndexFailure(diagnostics)
             xLogE("Immersion indexing failed", error)
             Result.retry()
         }
@@ -92,5 +111,39 @@ class ImmersionIndexJob(
         fun cancel(context: Context) {
             WorkManager.getInstance(context).cancelUniqueWork(UNIQUE_WORK_NAME)
         }
+    }
+}
+
+internal fun recordImmersionIndexFailure(
+    diagnostics: ImmersionStatsDiagnosticsStore,
+    failureCount: Int = 1,
+) {
+    require(failureCount >= 0)
+    if (failureCount > 0) {
+        diagnostics.recordError(
+            ImmersionDiagnosticStage.INDEX,
+            ImmersionDiagnosticErrorCode.INDEXING_FAILED,
+        )
+    }
+}
+
+internal enum class ImmersionIndexBatchDecision {
+    CONTINUE,
+    SUCCESS,
+    RETRY,
+}
+
+internal fun decideImmersionIndexBatch(
+    claimed: Int,
+    failures: Int,
+    batchSize: Int,
+): ImmersionIndexBatchDecision {
+    require(batchSize > 0)
+    require(claimed in 0..batchSize)
+    require(failures >= 0)
+    return when {
+        claimed == batchSize -> ImmersionIndexBatchDecision.CONTINUE
+        failures > 0 -> ImmersionIndexBatchDecision.RETRY
+        else -> ImmersionIndexBatchDecision.SUCCESS
     }
 }

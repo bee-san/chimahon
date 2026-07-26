@@ -75,6 +75,7 @@ class DefaultImmersionRecorder(
     private val eventPersistenceObserver: ImmersionEventPersistenceObserver =
         ImmersionEventPersistenceObserver { },
     private val configuration: ImmersionRecorderConfiguration = ImmersionRecorderConfiguration(),
+    private val idleTimeoutMillis: () -> Long = { configuration.idleTimeoutMillis },
     dispatcher: CoroutineDispatcher = Dispatchers.IO,
     externalScope: CoroutineScope? = null,
 ) : ImmersionRecorder {
@@ -539,7 +540,7 @@ class DefaultImmersionRecorder(
         if (active.state != ImmersionSessionState.ACTIVE) return emptyList()
         val elapsedNanos = (now.monotonicNanos - active.lastBoundary.monotonicNanos).coerceAtLeast(0)
         val activeDeadline = active.lastActivityMonotonicNanos +
-            configuration.idleTimeoutMillis * NANOS_PER_MILLISECOND
+            idleTimeoutMillis().coerceAtLeast(1L) * NANOS_PER_MILLISECOND
         val countedEndNanos = minOf(now.monotonicNanos, activeDeadline)
         val countedNanos = (countedEndNanos - active.lastBoundary.monotonicNanos)
             .coerceIn(0, elapsedNanos)
