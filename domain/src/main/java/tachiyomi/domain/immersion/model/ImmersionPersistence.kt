@@ -308,13 +308,15 @@ data class ImmersionIntegrityReport(
     val duplicateSessionSequences: NonNegativeCounter,
     val negativeCounters: NonNegativeCounter,
     val rollupVersionMismatches: NonNegativeCounter,
+    val foreignKeyViolations: NonNegativeCounter = NonNegativeCounter.ZERO,
 ) {
     val isHealthy: Boolean
         get() = orphanedEvents == NonNegativeCounter.ZERO &&
             orphanedOccurrences == NonNegativeCounter.ZERO &&
             duplicateSessionSequences == NonNegativeCounter.ZERO &&
             negativeCounters == NonNegativeCounter.ZERO &&
-            rollupVersionMismatches == NonNegativeCounter.ZERO
+            rollupVersionMismatches == NonNegativeCounter.ZERO &&
+            foreignKeyViolations == NonNegativeCounter.ZERO
 }
 
 @Serializable

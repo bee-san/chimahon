@@ -52,6 +52,7 @@ import tachiyomi.domain.immersion.model.ImmersionDataException
 import tachiyomi.domain.immersion.model.ImmersionGoal
 import tachiyomi.domain.immersion.model.ImmersionGoalCheckIn
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
+import tachiyomi.domain.immersion.model.ImmersionMergeDisposition
 import tachiyomi.domain.immersion.model.ImmersionPortableCell
 import tachiyomi.domain.immersion.model.ImmersionPortableCellKind
 import tachiyomi.domain.immersion.model.ImmersionPortableRow
@@ -157,6 +158,7 @@ class SqlDelightImmersionRepositoryTest {
             "immersion_sync_peer",
             "immersion_tombstone",
             "immersion_merge_conflict",
+            "immersion_portable_merge_checkpoint",
             "immersion_exclusion",
             "immersion_retention_state",
         )
@@ -306,7 +308,7 @@ class SqlDelightImmersionRepositoryTest {
         Database.Schema.migrate(
             driver = driver,
             oldVersion = 58,
-            newVersion = Database.Schema.version,
+            newVersion = 59,
         ).value
 
         queryStrings(
@@ -3383,18 +3385,20 @@ class SqlDelightImmersionRepositoryTest {
                 ),
             )
 
-            target.mergePortableArchive(privateArchive, 4_000).let {
+            val firstPrivateMerge = target.mergePortableArchive(privateArchive, 4_000).also {
                 it.insertedRows shouldNotBe 0
                 it.quarantinedConflicts shouldBe 0
+                it.disposition shouldBe ImmersionMergeDisposition.COMPLETED
+                it.verification.isHealthy shouldBe true
             }
             target.overview().let {
                 it.sessions shouldBe NonNegativeCounter(1)
                 it.grossCharacters shouldBe NonNegativeCounter(100)
             }
             target.mergePortableArchive(privateArchive, 4_001).let {
-                it.insertedRows shouldBe 0
-                it.quarantinedConflicts shouldBe 0
-                it.unchangedRows shouldNotBe 0
+                it shouldBe firstPrivateMerge.copy(
+                    disposition = ImmersionMergeDisposition.ALREADY_COMPLETE,
+                )
             }
             target.mergePortableArchive(fullArchive, 4_002).quarantinedConflicts shouldBe 0
             target.exportPortableArchive(true, 4_003)
@@ -3442,6 +3446,111 @@ class SqlDelightImmersionRepositoryTest {
                     val noteIndex = table.columns.indexOfFirst { it.name == "note" }
                     table.rows.single().cells[noteIndex].textValue shouldBe "private check-in note"
                 }
+        } finally {
+            targetDriver.close()
+        }
+    }
+
+    @Test
+    fun `portable merge resumes after a committed chunk and reuses completed verification`() = runTest {
+        driver.execute(
+            identifier = null,
+            sql = """
+                WITH RECURSIVE sequence(value) AS (
+                    SELECT 1
+                    UNION ALL
+                    SELECT value + 1 FROM sequence WHERE value < 501
+                )
+                INSERT INTO immersion_title(
+                    id,
+                    media_kind,
+                    source_key,
+                    profile_id,
+                    language_tag,
+                    display_title,
+                    created_at,
+                    updated_at
+                )
+                SELECT
+                    printf('00000000-0000-0000-0003-%012d', value),
+                    'NOVEL',
+                    'resume:' || value,
+                    '',
+                    'ja',
+                    'Resume title ' || value,
+                    1000,
+                    1000
+                FROM sequence
+            """.trimIndent(),
+            parameters = 0,
+        ).value
+        val archive = repository.exportPortableArchive(
+            includeRawText = false,
+            createdAtEpochMillis = 3_000,
+        )
+
+        val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        try {
+            Database.Schema.create(targetDriver).value
+            targetDriver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+            val targetHandler = AndroidDatabaseHandler(
+                createDatabase(targetDriver),
+                targetDriver,
+                databaseDispatcher,
+                databaseDispatcher,
+            )
+            var simulatedCrashPending = true
+            val interrupted = SqlDelightImmersionRepository(
+                handler = targetHandler,
+                portableMergeCheckpointObserver = { _, tableName, nextRowOffset ->
+                    if (
+                        simulatedCrashPending &&
+                        tableName == "immersion_title" &&
+                        nextRowOffset == 500
+                    ) {
+                        simulatedCrashPending = false
+                        error("simulated process interruption")
+                    }
+                },
+            )
+
+            runCatching {
+                interrupted.mergePortableArchive(archive, 4_000)
+            }.exceptionOrNull() shouldNotBe null
+            queryLong(
+                targetDriver,
+                """
+                    SELECT next_row_offset
+                    FROM immersion_portable_merge_checkpoint
+                    WHERE stage = 'TABLES'
+                """.trimIndent(),
+            ) shouldBe 500
+            queryLong(targetDriver, "SELECT count(*) FROM immersion_title") shouldBe 500
+
+            val resumed = SqlDelightImmersionRepository(targetHandler)
+            val report = resumed.mergePortableArchive(archive, 4_100)
+            report.disposition shouldBe ImmersionMergeDisposition.RESUMED
+            report.insertedRows shouldBe 501
+            report.verification.eligibleRows shouldBe report.verification.accountedRows
+            report.verification.entityCounts.titles shouldBe 501
+            report.verification.isHealthy shouldBe true
+            queryLong(
+                targetDriver,
+                """
+                    SELECT count(*)
+                    FROM immersion_portable_merge_checkpoint
+                    WHERE stage = 'COMPLETE'
+                        AND verification_json IS NOT NULL
+                        AND completed_at IS NOT NULL
+                """.trimIndent(),
+            ) shouldBe 1
+
+            resumed.mergePortableArchive(archive, 4_200).let { repeated ->
+                repeated shouldBe report.copy(
+                    disposition = ImmersionMergeDisposition.ALREADY_COMPLETE,
+                )
+            }
+            queryLong(targetDriver, "SELECT count(*) FROM immersion_portable_merge_checkpoint") shouldBe 1
         } finally {
             targetDriver.close()
         }
@@ -3535,7 +3644,7 @@ class SqlDelightImmersionRepositoryTest {
             queryLong(targetDriver, "SELECT sum(lookups) FROM immersion_lifetime_rollup") shouldBe 1
 
             target.mergePortableArchive(historicalArchive, 4_001).let { report ->
-                report.insertedRows shouldBe 0
+                report.disposition shouldBe ImmersionMergeDisposition.ALREADY_COMPLETE
                 report.quarantinedConflicts shouldBe 0
             }
             target.overview().lookups shouldBe NonNegativeCounter(1)
@@ -3855,7 +3964,7 @@ class SqlDelightImmersionRepositoryTest {
                     sharedTarget.mergePortableArchive(deviceADeletionArchive, 6_000)
                         .quarantinedConflicts shouldBe 0
                     sharedTarget.mergePortableArchive(deviceAOldArchive, 6_500).let { report ->
-                        report.skippedByTombstoneRows shouldNotBe 0
+                        report.disposition shouldBe ImmersionMergeDisposition.ALREADY_COMPLETE
                         report.quarantinedConflicts shouldBe 0
                     }
 

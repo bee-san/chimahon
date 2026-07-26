@@ -6,6 +6,11 @@ import app.cash.sqldelight.db.QueryResult
 import app.cash.sqldelight.db.SqlDriver
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import tachiyomi.data.AndroidDatabaseHandler
 import tachiyomi.data.Database
 import tachiyomi.data.DatabaseHandler
@@ -59,7 +64,10 @@ import tachiyomi.domain.immersion.model.ImmersionGoalCheckIn
 import tachiyomi.domain.immersion.model.ImmersionIntegrityReport
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
 import tachiyomi.domain.immersion.model.ImmersionMaintenanceSummary
+import tachiyomi.domain.immersion.model.ImmersionMergeDisposition
+import tachiyomi.domain.immersion.model.ImmersionMergeEntityCounts
 import tachiyomi.domain.immersion.model.ImmersionMergeReport
+import tachiyomi.domain.immersion.model.ImmersionMergeVerification
 import tachiyomi.domain.immersion.model.ImmersionOverview
 import tachiyomi.domain.immersion.model.ImmersionPortableAffinity
 import tachiyomi.domain.immersion.model.ImmersionPortableArchive
@@ -136,6 +144,11 @@ class SqlDelightImmersionRepository(
     private val handler: DatabaseHandler,
     private val onAllStatsReset: () -> Unit = {},
     private val onSessionDeleted: (SessionId) -> Unit = {},
+    private val portableMergeCheckpointObserver: suspend (
+        archiveId: String,
+        tableName: String,
+        nextRowOffset: Int,
+    ) -> Unit = { _, _, _ -> },
 ) : ImmersionRecorderRepository,
     ImmersionIndexRepository,
     ImmersionStatsRepository,
@@ -144,6 +157,8 @@ class SqlDelightImmersionRepository(
     ImmersionGoalRepository,
     ImmersionAnkiRepository,
     ImmersionLegacyImportRepository {
+
+    private val portableMergeMutex = Mutex()
 
     override suspend fun isTitleCaptureExcluded(titleId: TitleId): Boolean =
         handler.await {
@@ -1839,19 +1854,33 @@ class SqlDelightImmersionRepository(
 
     override suspend fun validateInvariants(expectedRollupVersion: Int): ImmersionIntegrityReport {
         require(expectedRollupVersion > 0) { "Rollup version must be positive" }
+        val rawHandler = handler.requireRawHandler()
         return handler.await {
-            val row = immersionQueries
-                .selectImmersionIntegrityReport(expectedRollupVersion.toLong())
-                .executeAsOne()
-            mapCorruption("immersion integrity report") {
-                ImmersionIntegrityReport(
-                    orphanedEvents = NonNegativeCounter(row.orphaned_events),
-                    orphanedOccurrences = NonNegativeCounter(row.orphaned_occurrences),
-                    duplicateSessionSequences = NonNegativeCounter(row.duplicate_session_sequences),
-                    negativeCounters = NonNegativeCounter(row.negative_counters),
-                    rollupVersionMismatches = NonNegativeCounter(row.rollup_version_mismatches),
-                )
-            }
+            selectImmersionIntegrityReportInDatabase(
+                expectedRollupVersion = expectedRollupVersion,
+                foreignKeyViolations = rawHandler.awaitRawDriver {
+                    it.foreignKeyViolationCount()
+                },
+            )
+        }
+    }
+
+    private fun Database.selectImmersionIntegrityReportInDatabase(
+        expectedRollupVersion: Int,
+        foreignKeyViolations: Long,
+    ): ImmersionIntegrityReport {
+        val row = immersionQueries
+            .selectImmersionIntegrityReport(expectedRollupVersion.toLong())
+            .executeAsOne()
+        return mapCorruption("immersion integrity report") {
+            ImmersionIntegrityReport(
+                orphanedEvents = NonNegativeCounter(row.orphaned_events),
+                orphanedOccurrences = NonNegativeCounter(row.orphaned_occurrences),
+                duplicateSessionSequences = NonNegativeCounter(row.duplicate_session_sequences),
+                negativeCounters = NonNegativeCounter(row.negative_counters),
+                rollupVersionMismatches = NonNegativeCounter(row.rollup_version_mismatches),
+                foreignKeyViolations = NonNegativeCounter(foreignKeyViolations),
+            )
         }
     }
 
@@ -2191,32 +2220,10 @@ class SqlDelightImmersionRepository(
         require(rollupVersion > 0) { "Rollup version must be positive" }
         require(updatedAtEpochMillis >= 0) { "Repair timestamp cannot be negative" }
         handler.await(inTransaction = true) {
-            val sessions = immersionQueries
-                .selectImmersionRollupSessions(0, Long.MAX_VALUE)
-                .executeAsList()
-            immersionQueries.clearImmersionRollups()
-            immersionQueries.clearImmersionLifetimeRollups()
-            immersionQueries.clearImmersionAppliedEvents()
-            sessions.forEach {
-                markRollupDirty(
-                    it.started_at,
-                    it.start_offset_seconds.toIntExact("session offset"),
-                    it.title_id,
-                    "FULL_REBUILD",
-                )
-                it.ended_at?.let { endedAt ->
-                    markRollupDirty(
-                        endedAt,
-                        it.start_offset_seconds.toIntExact("session offset"),
-                        it.title_id,
-                        "FULL_REBUILD",
-                    )
-                }
-            }
-            immersionQueries.updateImmersionRepairState(
-                rollupVersion = rollupVersion.toLong(),
+            beginRollupRebuildInDatabase(
+                rollupVersion = rollupVersion,
                 repairCursor = repairCursor,
-                updatedAt = updatedAtEpochMillis,
+                updatedAtEpochMillis = updatedAtEpochMillis,
             )
         }
     }
@@ -2245,118 +2252,367 @@ class SqlDelightImmersionRepository(
         archive: ImmersionPortableArchive,
         mergedAtEpochMillis: Long,
     ): ImmersionMergeReport {
-        require(mergedAtEpochMillis >= 0)
-        require(archive.formatVersion <= IMMERSION_PORTABLE_FORMAT_VERSION) {
-            "Immersion backup format ${archive.formatVersion} is newer than supported " +
-                "$IMMERSION_PORTABLE_FORMAT_VERSION"
-        }
-        require(archive.sourceSchemaVersion <= ImmersionStatsVersions.SCHEMA) {
-            "Immersion schema ${archive.sourceSchemaVersion} is newer than supported " +
-                "${ImmersionStatsVersions.SCHEMA}"
-        }
-        require(archive.tables.all { it.name in IMMERSION_PORTABLE_TABLES }) {
-            "Immersion backup contains an unknown table"
-        }
-        val incoming = archive
-            .withoutUnlinkedAnkiOperations()
-            .canonicalizeLookupSuccessMetrics()
-            .tables
-            .associateBy { it.name }
-        val touchedSourceUnitIds = incoming.touchedSourceUnitIds()
-        val rawHandler = handler.requireRawHandler()
-        var insertedRows = 0L
-        var unchangedRows = 0L
-        var skippedByTombstoneRows = 0L
-        var quarantinedConflicts = 0L
+        return portableMergeMutex.withLock {
+            require(mergedAtEpochMillis >= 0)
+            require(archive.formatVersion <= IMMERSION_PORTABLE_FORMAT_VERSION) {
+                "Immersion backup format ${archive.formatVersion} is newer than supported " +
+                    "$IMMERSION_PORTABLE_FORMAT_VERSION"
+            }
+            require(archive.sourceSchemaVersion <= ImmersionStatsVersions.SCHEMA) {
+                "Immersion schema ${archive.sourceSchemaVersion} is newer than supported " +
+                    "${ImmersionStatsVersions.SCHEMA}"
+            }
+            require(archive.tables.all { it.name in IMMERSION_PORTABLE_TABLES }) {
+                "Immersion backup contains an unknown table"
+            }
 
-        incoming["immersion_tombstone"]?.let { table ->
-            table.rows.chunked(IMMERSION_PORTABLE_MERGE_CHUNK_SIZE).forEach { rows ->
-                val result = rawHandler.awaitRawDriver(inTransaction = true) { driver ->
-                    driver.mergePortableTable(
-                        table = table.copy(rows = rows),
-                        archiveIncludesRawText = archive.includesRawText,
-                        tombstones = emptySet(),
-                        mergedAtEpochMillis = mergedAtEpochMillis,
-                        tombstoneMetadataOnly = true,
+            val effectiveArchive = archive
+                .withoutUnlinkedAnkiOperations()
+                .canonicalizeLookupSuccessMetrics()
+                .canonicalizePortableOrder()
+            val incoming = effectiveArchive.tables.associateBy { it.name }
+            val touchedSourceUnitIds = incoming.touchedSourceUnitIds()
+            val eligibleRowCount = effectiveArchive.tables.sumOf { it.rows.size.toLong() }
+            val archiveDigest = effectiveArchive.portableMergeDigest()
+            val rawHandler = handler.requireRawHandler()
+            val initialCheckpoint = PortableMergeCheckpoint(
+                archiveDigest = archiveDigest,
+                protocolVersion = IMMERSION_PORTABLE_MERGE_PROTOCOL_VERSION,
+                archiveCreatedAt = effectiveArchive.createdAtEpochMillis,
+                archiveFormatVersion = effectiveArchive.formatVersion,
+                archiveSchemaVersion = effectiveArchive.sourceSchemaVersion,
+                includesRawText = effectiveArchive.includesRawText,
+                stage = PortableMergeStage.TOMBSTONES,
+                tableOrdinal = 0,
+                nextRowOffset = 0,
+                eligibleRowCount = eligibleRowCount,
+                insertedRows = 0,
+                unchangedRows = 0,
+                skippedByTombstoneRows = 0,
+                quarantinedConflicts = 0,
+                rebuiltRollupRows = 0,
+                verificationJson = null,
+                lastErrorCode = null,
+                startedAt = mergedAtEpochMillis,
+                updatedAt = mergedAtEpochMillis,
+                completedAt = null,
+            )
+            val initialization = rawHandler.awaitRawDriver(inTransaction = true) { driver ->
+                val existing = driver.loadPortableMergeCheckpoint(archiveDigest)
+                if (existing != null) {
+                    PortableMergeInitialization(existing, wasExisting = true)
+                } else {
+                    val inserted = driver.insertPortableMergeCheckpoint(initialCheckpoint)
+                    PortableMergeInitialization(
+                        checkpoint = checkNotNull(
+                            driver.loadPortableMergeCheckpoint(archiveDigest),
+                        ),
+                        wasExisting = !inserted,
                     )
                 }
-                insertedRows += result.inserted
-                unchangedRows += result.unchanged
-                quarantinedConflicts += result.conflicts
             }
-        }
+            var checkpoint = initialization.checkpoint
+            checkpoint.requireArchiveIdentity(effectiveArchive, eligibleRowCount)
+            if (checkpoint.stage == PortableMergeStage.COMPLETE) {
+                return@withLock checkpoint.toReport(ImmersionMergeDisposition.ALREADY_COMPLETE)
+            }
+            val completionDisposition = if (initialization.wasExisting) {
+                ImmersionMergeDisposition.RESUMED
+            } else {
+                ImmersionMergeDisposition.COMPLETED
+            }
+            val mergeTableNames = IMMERSION_PORTABLE_TABLES.filterNot {
+                it == IMMERSION_TOMBSTONE_TABLE
+            }
 
-        val tombstones = rawHandler.awaitRawDriver { it.loadImmersionTombstones() }
-        val boundarySnapshot = handler.await {
-            captureImmersionSourceBoundarySnapshot(
-                sourceUnitIdsAffectedByTombstones(tombstones),
-            )
-        }
-        rawHandler.awaitRawDriver(inTransaction = true) { it.applyImmersionTombstones(tombstones) }
-        handler.await(inTransaction = true) {
-            canonicalizeImmersionSourceBoundaries(boundarySnapshot)
-        }
+            while (true) {
+                checkpoint = checkNotNull(
+                    rawHandler.awaitRawDriver {
+                        it.loadPortableMergeCheckpoint(archiveDigest)
+                    },
+                )
+                when (checkpoint.stage) {
+                    PortableMergeStage.TOMBSTONES -> {
+                        val table = incoming[IMMERSION_TOMBSTONE_TABLE]
+                        val rows = table?.rows.orEmpty()
+                        if (checkpoint.nextRowOffset < rows.size) {
+                            val nextOffset = minOf(
+                                checkpoint.nextRowOffset + IMMERSION_PORTABLE_MERGE_CHUNK_SIZE,
+                                rows.size,
+                            )
+                            checkpoint = rawHandler.awaitRawDriver(inTransaction = true) { driver ->
+                                val latest = checkNotNull(
+                                    driver.loadPortableMergeCheckpoint(archiveDigest),
+                                )
+                                check(
+                                    latest.stage == PortableMergeStage.TOMBSTONES &&
+                                        latest.nextRowOffset == checkpoint.nextRowOffset,
+                                ) {
+                                    "Portable merge checkpoint moved while applying tombstones"
+                                }
+                                val result = driver.mergePortableTable(
+                                    table = checkNotNull(table).copy(
+                                        rows = rows.subList(latest.nextRowOffset, nextOffset),
+                                    ),
+                                    archiveIncludesRawText = effectiveArchive.includesRawText,
+                                    tombstones = emptySet(),
+                                    mergedAtEpochMillis = mergedAtEpochMillis,
+                                    tombstoneMetadataOnly = true,
+                                )
+                                latest.withCounts(result).copy(
+                                    nextRowOffset = nextOffset,
+                                    updatedAt = mergedAtEpochMillis,
+                                    lastErrorCode = null,
+                                ).also(driver::updatePortableMergeCheckpoint)
+                            }
+                            portableMergeCheckpointObserver(
+                                archiveDigest,
+                                IMMERSION_TOMBSTONE_TABLE,
+                                nextOffset,
+                            )
+                        } else {
+                            checkpoint = handler.await(inTransaction = true) {
+                                val latest = checkNotNull(
+                                    rawHandler.awaitRawDriver {
+                                        it.loadPortableMergeCheckpoint(archiveDigest)
+                                    },
+                                )
+                                val tombstones = rawHandler.awaitRawDriver {
+                                    it.loadImmersionTombstones()
+                                }
+                                val boundarySnapshot = captureImmersionSourceBoundarySnapshot(
+                                    sourceUnitIdsAffectedByTombstones(tombstones),
+                                )
+                                rawHandler.awaitRawDriver {
+                                    it.applyImmersionTombstones(tombstones)
+                                }
+                                canonicalizeImmersionSourceBoundaries(boundarySnapshot)
+                                latest.copy(
+                                    stage = PortableMergeStage.TABLES,
+                                    tableOrdinal = 0,
+                                    nextRowOffset = 0,
+                                    updatedAt = mergedAtEpochMillis,
+                                    lastErrorCode = null,
+                                ).also { updated ->
+                                    rawHandler.awaitRawDriver {
+                                        it.updatePortableMergeCheckpoint(updated)
+                                    }
+                                }
+                            }
+                        }
+                    }
 
-        IMMERSION_PORTABLE_TABLES
-            .asSequence()
-            .filterNot { it == "immersion_tombstone" }
-            .mapNotNull(incoming::get)
-            .forEach { table ->
-                table.rows.chunked(IMMERSION_PORTABLE_MERGE_CHUNK_SIZE).forEach { rows ->
-                    val result = rawHandler.awaitRawDriver(inTransaction = true) { driver ->
-                        driver.mergePortableTable(
-                            table = table.copy(rows = rows),
-                            archiveIncludesRawText = archive.includesRawText,
-                            tombstones = tombstones,
-                            mergedAtEpochMillis = mergedAtEpochMillis,
-                            tombstoneMetadataOnly = false,
+                    PortableMergeStage.TABLES -> {
+                        if (checkpoint.tableOrdinal >= mergeTableNames.size) {
+                            checkpoint = rawHandler.awaitRawDriver(inTransaction = true) { driver ->
+                                checkpoint.copy(
+                                    stage = PortableMergeStage.FINALIZE,
+                                    tableOrdinal = mergeTableNames.size,
+                                    nextRowOffset = 0,
+                                    updatedAt = mergedAtEpochMillis,
+                                    lastErrorCode = null,
+                                ).also(driver::updatePortableMergeCheckpoint)
+                            }
+                            continue
+                        }
+                        val tableName = mergeTableNames[checkpoint.tableOrdinal]
+                        val table = incoming[tableName]
+                        val rows = table?.rows.orEmpty()
+                        if (checkpoint.nextRowOffset >= rows.size) {
+                            checkpoint = rawHandler.awaitRawDriver(inTransaction = true) { driver ->
+                                checkpoint.copy(
+                                    tableOrdinal = checkpoint.tableOrdinal + 1,
+                                    nextRowOffset = 0,
+                                    updatedAt = mergedAtEpochMillis,
+                                    lastErrorCode = null,
+                                ).also(driver::updatePortableMergeCheckpoint)
+                            }
+                            continue
+                        }
+                        val nextOffset = minOf(
+                            checkpoint.nextRowOffset + IMMERSION_PORTABLE_MERGE_CHUNK_SIZE,
+                            rows.size,
+                        )
+                        checkpoint = rawHandler.awaitRawDriver(inTransaction = true) { driver ->
+                            val latest = checkNotNull(
+                                driver.loadPortableMergeCheckpoint(archiveDigest),
+                            )
+                            check(
+                                latest.stage == PortableMergeStage.TABLES &&
+                                    latest.tableOrdinal == checkpoint.tableOrdinal &&
+                                    latest.nextRowOffset == checkpoint.nextRowOffset,
+                            ) {
+                                "Portable merge checkpoint moved while applying $tableName"
+                            }
+                            val tombstones = driver.loadImmersionTombstones()
+                            val result = driver.mergePortableTable(
+                                table = checkNotNull(table).copy(
+                                    rows = rows.subList(latest.nextRowOffset, nextOffset),
+                                ),
+                                archiveIncludesRawText = effectiveArchive.includesRawText,
+                                tombstones = tombstones,
+                                mergedAtEpochMillis = mergedAtEpochMillis,
+                                tombstoneMetadataOnly = false,
+                            )
+                            latest.withCounts(result).copy(
+                                nextRowOffset = nextOffset,
+                                updatedAt = mergedAtEpochMillis,
+                                lastErrorCode = null,
+                            ).also(driver::updatePortableMergeCheckpoint)
+                        }
+                        portableMergeCheckpointObserver(
+                            archiveDigest,
+                            tableName,
+                            nextOffset,
                         )
                     }
-                    insertedRows += result.inserted
-                    unchangedRows += result.unchanged
-                    skippedByTombstoneRows += result.skippedByTombstone
-                    quarantinedConflicts += result.conflicts
+
+                    PortableMergeStage.FINALIZE -> {
+                        checkpoint = handler.await(inTransaction = true) {
+                            val latest = checkNotNull(
+                                rawHandler.awaitRawDriver {
+                                    it.loadPortableMergeCheckpoint(archiveDigest)
+                                },
+                            )
+                            immersionQueries.deleteOrphanImmersionSourceUnits()
+                            canonicalizeMergedImmersionSourceBoundaries(touchedSourceUnitIds)
+                            immersionQueries.recomputeImmersionSourceSeenTimes()
+                            immersionQueries.recomputeImmersionWordSeenTimes()
+                            immersionQueries.recomputeImmersionCharacterSeenTimes()
+                            immersionQueries.deleteOrphanImmersionWords()
+                            immersionQueries.deleteOrphanImmersionCharacters()
+                            rawHandler.awaitRawDriver {
+                                it.repairLookupSuccessMetrics(mergedAtEpochMillis)
+                            }
+                            latest.copy(
+                                stage = PortableMergeStage.SEARCH,
+                                updatedAt = mergedAtEpochMillis,
+                                lastErrorCode = null,
+                            ).also { updated ->
+                                rawHandler.awaitRawDriver {
+                                    it.updatePortableMergeCheckpoint(updated)
+                                }
+                            }
+                        }
+                    }
+
+                    PortableMergeStage.SEARCH -> {
+                        checkpoint = rawHandler.awaitRawDriver(inTransaction = true) { driver ->
+                            driver.rebuildImmersionSourceSearchIndex()
+                            checkpoint.copy(
+                                stage = PortableMergeStage.ROLLUP_VALIDATE,
+                                updatedAt = mergedAtEpochMillis,
+                                lastErrorCode = null,
+                            ).also(driver::updatePortableMergeCheckpoint)
+                        }
+                    }
+
+                    PortableMergeStage.ROLLUP_VALIDATE,
+                    PortableMergeStage.VALIDATION_FAILED,
+                    -> {
+                        val validation = handler.await(inTransaction = true) {
+                            val latest = checkNotNull(
+                                rawHandler.awaitRawDriver {
+                                    it.loadPortableMergeCheckpoint(archiveDigest)
+                                },
+                            )
+                            val repairCursor =
+                                "portable-merge:${effectiveArchive.createdAtEpochMillis}:$archiveDigest"
+                            beginRollupRebuildInDatabase(
+                                rollupVersion = ImmersionStatsVersions.ROLLUP,
+                                repairCursor = repairCursor,
+                                updatedAtEpochMillis = mergedAtEpochMillis,
+                            )
+                            val range = rawHandler.awaitRawDriver {
+                                it.immersionSourceDateRange()
+                            }
+                            val rebuiltRows = range?.let {
+                                rebuildRollupsInDatabase(
+                                    range = it,
+                                    rollupVersion = ImmersionStatsVersions.ROLLUP,
+                                    nowEpochMillis = mergedAtEpochMillis,
+                                ).rowCount
+                            } ?: 0
+                            val firstFingerprint = rawHandler.awaitRawDriver {
+                                it.immersionRollupFingerprint()
+                            }
+
+                            beginRollupRebuildInDatabase(
+                                rollupVersion = ImmersionStatsVersions.ROLLUP,
+                                repairCursor = repairCursor,
+                                updatedAtEpochMillis = mergedAtEpochMillis,
+                            )
+                            range?.let {
+                                rebuildRollupsInDatabase(
+                                    range = it,
+                                    rollupVersion = ImmersionStatsVersions.ROLLUP,
+                                    nowEpochMillis = mergedAtEpochMillis,
+                                )
+                            }
+                            val secondFingerprint = rawHandler.awaitRawDriver {
+                                it.immersionRollupFingerprint()
+                            }
+                            val integrity = selectImmersionIntegrityReportInDatabase(
+                                expectedRollupVersion = ImmersionStatsVersions.ROLLUP,
+                                foreignKeyViolations = rawHandler.awaitRawDriver {
+                                    it.foreignKeyViolationCount()
+                                },
+                            )
+                            val entityCounts = rawHandler.awaitRawDriver {
+                                it.immersionMergeEntityCounts()
+                            }
+                            val accountedRows = latest.accountedRows
+                            val verification = ImmersionMergeVerification(
+                                archiveDigest = archiveDigest,
+                                eligibleRows = latest.eligibleRowCount,
+                                accountedRows = accountedRows,
+                                firstRollupRows = firstFingerprint.rowCount,
+                                secondRollupRows = secondFingerprint.rowCount,
+                                firstRollupDigest = firstFingerprint.digest,
+                                secondRollupDigest = secondFingerprint.digest,
+                                entityCounts = entityCounts,
+                                integrity = integrity,
+                            )
+                            val verificationJson = Json.encodeToString(verification)
+                            val updated = latest.copy(
+                                stage = if (verification.isHealthy) {
+                                    PortableMergeStage.COMPLETE
+                                } else {
+                                    PortableMergeStage.VALIDATION_FAILED
+                                },
+                                rebuiltRollupRows = rebuiltRows,
+                                verificationJson = verificationJson,
+                                lastErrorCode = verification.failureCode(),
+                                updatedAt = mergedAtEpochMillis,
+                                completedAt = mergedAtEpochMillis.takeIf {
+                                    verification.isHealthy
+                                },
+                            )
+                            rawHandler.awaitRawDriver {
+                                it.updatePortableMergeCheckpoint(updated)
+                            }
+                            PortableMergeValidation(updated, verification)
+                        }
+                        checkpoint = validation.checkpoint
+                        check(validation.verification.isHealthy) {
+                            "Portable immersion merge failed verification: " +
+                                checkNotNull(checkpoint.lastErrorCode)
+                        }
+                        rawHandler.awaitRawDriver {
+                            it.notifyListeners(*IMMERSION_PORTABLE_TABLES.toTypedArray())
+                        }
+                        return@withLock checkpoint.toReport(completionDisposition)
+                    }
+
+                    PortableMergeStage.COMPLETE -> {
+                        return@withLock checkpoint.toReport(
+                            ImmersionMergeDisposition.ALREADY_COMPLETE,
+                        )
+                    }
                 }
             }
-        handler.await(inTransaction = true) {
-            immersionQueries.deleteOrphanImmersionSourceUnits()
-            canonicalizeImmersionSourceBoundaries(boundarySnapshot)
-            canonicalizeMergedImmersionSourceBoundaries(
-                touchedSourceUnitIds + boundarySnapshot.boundaries.keys,
-            )
-            immersionQueries.deleteOrphanImmersionWords()
-            immersionQueries.deleteOrphanImmersionCharacters()
+            error("Portable merge state machine terminated unexpectedly")
         }
-        rawHandler.awaitRawDriver(inTransaction = true) { driver ->
-            driver.repairLookupSuccessMetrics(mergedAtEpochMillis)
-        }
-        rawHandler.awaitRawDriver(inTransaction = true) { it.rebuildImmersionSourceSearchIndex() }
-
-        beginRollupRebuild(
-            rollupVersion = ImmersionStatsVersions.ROLLUP,
-            repairCursor = "portable-merge:${archive.createdAtEpochMillis}",
-            updatedAtEpochMillis = mergedAtEpochMillis,
-        )
-        val range = rawHandler.awaitRawDriver { it.immersionSourceDateRange() }
-        val rebuiltRows = if (range == null) {
-            0L
-        } else {
-            rebuildRollups(
-                range = range,
-                rollupVersion = ImmersionStatsVersions.ROLLUP,
-                nowEpochMillis = mergedAtEpochMillis,
-            ).rowCount
-        }
-        rawHandler.awaitRawDriver {
-            it.notifyListeners(*IMMERSION_PORTABLE_TABLES.toTypedArray())
-        }
-        return ImmersionMergeReport(
-            insertedRows = insertedRows,
-            unchangedRows = unchangedRows,
-            skippedByTombstoneRows = skippedByTombstoneRows,
-            quarantinedConflicts = quarantinedConflicts,
-            rebuiltRollupRows = rebuiltRows,
-        )
     }
 
     override suspend fun deleteRawText(
@@ -2816,6 +3072,41 @@ class SqlDelightImmersionRepository(
             immersionQueries.incrementImmersionRevision(System.currentTimeMillis())
             deleted
         }
+
+    private fun Database.beginRollupRebuildInDatabase(
+        rollupVersion: Int,
+        repairCursor: String?,
+        updatedAtEpochMillis: Long,
+    ) {
+        val sessions = immersionQueries
+            .selectImmersionRollupSessions(0, Long.MAX_VALUE)
+            .executeAsList()
+        immersionQueries.clearImmersionRollups()
+        immersionQueries.clearImmersionLifetimeRollups()
+        immersionQueries.clearImmersionAppliedEvents()
+        immersionQueries.clearImmersionRollupDirty()
+        sessions.forEach {
+            markRollupDirty(
+                it.started_at,
+                it.start_offset_seconds.toIntExact("session offset"),
+                it.title_id,
+                "FULL_REBUILD",
+            )
+            it.ended_at?.let { endedAt ->
+                markRollupDirty(
+                    endedAt,
+                    it.start_offset_seconds.toIntExact("session offset"),
+                    it.title_id,
+                    "FULL_REBUILD",
+                )
+            }
+        }
+        immersionQueries.updateImmersionRepairState(
+            rollupVersion = rollupVersion.toLong(),
+            repairCursor = repairCursor,
+            updatedAt = updatedAtEpochMillis,
+        )
+    }
 
     private fun Database.rebuildRollupsInDatabase(
         range: tachiyomi.domain.immersion.model.LocalDateRange,
@@ -4454,6 +4745,455 @@ private data class PortableMergeCounts(
     )
 }
 
+private enum class PortableMergeStage {
+    TOMBSTONES,
+    TABLES,
+    FINALIZE,
+    SEARCH,
+    ROLLUP_VALIDATE,
+    VALIDATION_FAILED,
+    COMPLETE,
+}
+
+private data class PortableMergeCheckpoint(
+    val archiveDigest: String,
+    val protocolVersion: Int,
+    val archiveCreatedAt: Long,
+    val archiveFormatVersion: Int,
+    val archiveSchemaVersion: Int,
+    val includesRawText: Boolean,
+    val stage: PortableMergeStage,
+    val tableOrdinal: Int,
+    val nextRowOffset: Int,
+    val eligibleRowCount: Long,
+    val insertedRows: Long,
+    val unchangedRows: Long,
+    val skippedByTombstoneRows: Long,
+    val quarantinedConflicts: Long,
+    val rebuiltRollupRows: Long,
+    val verificationJson: String?,
+    val lastErrorCode: String?,
+    val startedAt: Long,
+    val updatedAt: Long,
+    val completedAt: Long?,
+) {
+    val accountedRows: Long
+        get() = listOf(
+            insertedRows,
+            unchangedRows,
+            skippedByTombstoneRows,
+            quarantinedConflicts,
+        ).fold(0L, Math::addExact)
+
+    fun withCounts(counts: PortableMergeCounts): PortableMergeCheckpoint =
+        copy(
+            insertedRows = Math.addExact(insertedRows, counts.inserted),
+            unchangedRows = Math.addExact(unchangedRows, counts.unchanged),
+            skippedByTombstoneRows = Math.addExact(
+                skippedByTombstoneRows,
+                counts.skippedByTombstone,
+            ),
+            quarantinedConflicts = Math.addExact(
+                quarantinedConflicts,
+                counts.conflicts,
+            ),
+        )
+
+    fun requireArchiveIdentity(
+        archive: ImmersionPortableArchive,
+        expectedEligibleRows: Long,
+    ) {
+        require(protocolVersion == IMMERSION_PORTABLE_MERGE_PROTOCOL_VERSION) {
+            "Portable merge checkpoint protocol is unsupported"
+        }
+        require(archiveCreatedAt == archive.createdAtEpochMillis)
+        require(archiveFormatVersion == archive.formatVersion)
+        require(archiveSchemaVersion == archive.sourceSchemaVersion)
+        require(includesRawText == archive.includesRawText)
+        require(eligibleRowCount == expectedEligibleRows)
+    }
+
+    fun toReport(disposition: ImmersionMergeDisposition): ImmersionMergeReport {
+        val verification = Json.decodeFromString<ImmersionMergeVerification>(
+            checkNotNull(verificationJson) {
+                "Completed portable merge checkpoint has no verification evidence"
+            },
+        )
+        check(verification.isHealthy) {
+            "Completed portable merge checkpoint contains unhealthy verification evidence"
+        }
+        return ImmersionMergeReport(
+            insertedRows = insertedRows,
+            unchangedRows = unchangedRows,
+            skippedByTombstoneRows = skippedByTombstoneRows,
+            quarantinedConflicts = quarantinedConflicts,
+            rebuiltRollupRows = rebuiltRollupRows,
+            disposition = disposition,
+            verification = verification,
+        )
+    }
+}
+
+private data class PortableMergeInitialization(
+    val checkpoint: PortableMergeCheckpoint,
+    val wasExisting: Boolean,
+)
+
+private data class PortableMergeValidation(
+    val checkpoint: PortableMergeCheckpoint,
+    val verification: ImmersionMergeVerification,
+)
+
+private data class PortableContentFingerprint(
+    val rowCount: Long,
+    val digest: String,
+)
+
+private fun ImmersionMergeVerification.failureCode(): String? =
+    buildList {
+        if (eligibleRows != accountedRows) add("ROW_ACCOUNTING_MISMATCH")
+        if (firstRollupRows != secondRollupRows || firstRollupDigest != secondRollupDigest) {
+            add("ROLLUP_MISMATCH")
+        }
+        if (!integrity.isHealthy) add("INTEGRITY_FAILURE")
+    }.takeIf { it.isNotEmpty() }?.joinToString("+")
+
+private fun ImmersionPortableArchive.canonicalizePortableOrder(): ImmersionPortableArchive {
+    val tablesByName = tables.associateBy { it.name }
+    return copy(
+        tables = IMMERSION_PORTABLE_TABLES.mapNotNull { tableName ->
+            tablesByName[tableName]?.let { table ->
+                table.copy(
+                    rows = table.rows.sortedWith(
+                        compareBy<ImmersionPortableRow>(
+                            { table.primaryKeySortKey(it) },
+                            ImmersionPortableRow::portableHash,
+                        ),
+                    ),
+                )
+            }
+        },
+    )
+}
+
+private fun ImmersionPortableArchive.portableMergeDigest(): String {
+    val output = ByteArrayOutputStream()
+    output.writeLong(IMMERSION_PORTABLE_MERGE_PROTOCOL_VERSION.toLong())
+    output.writeLong(formatVersion.toLong())
+    output.writeLong(sourceSchemaVersion.toLong())
+    output.writeLong(createdAtEpochMillis)
+    output.writeLong(includesRawText.toLong())
+    output.writeLong(tables.size.toLong())
+    tables.forEach { table ->
+        output.writeField(table.name)
+        output.writeLong(table.columns.size.toLong())
+        table.columns.forEach { column ->
+            output.writeField(column.name)
+            output.writeField(column.affinity.name)
+            output.writeLong(column.primaryKeyPosition.toLong())
+        }
+        output.writeLong(table.rows.size.toLong())
+        table.rows.forEach { row ->
+            output.writeField(row.portableHash())
+        }
+    }
+    return output.sha256()
+}
+
+private fun ImmersionPortableTable.primaryKeySortKey(row: ImmersionPortableRow): String {
+    val output = ByteArrayOutputStream()
+    columns
+        .withIndex()
+        .filter { it.value.primaryKeyPosition > 0 }
+        .sortedBy { it.value.primaryKeyPosition }
+        .forEach { indexedColumn ->
+            val cell = row.cells[indexedColumn.index]
+            output.writeField(cell.kind.name)
+            output.writeField(cell.portableIdentityValue())
+        }
+    return output.toByteArray().joinToString("") { "%02x".format(it) }
+}
+
+private fun SqlDriver.loadPortableMergeCheckpoint(
+    archiveDigest: String,
+): PortableMergeCheckpoint? =
+    executeQuery(
+        identifier = null,
+        sql = """
+            SELECT
+                archive_digest,
+                protocol_version,
+                archive_created_at,
+                archive_format_version,
+                archive_schema_version,
+                includes_raw_text,
+                stage,
+                table_ordinal,
+                next_row_offset,
+                eligible_row_count,
+                inserted_rows,
+                unchanged_rows,
+                skipped_by_tombstone_rows,
+                quarantined_conflicts,
+                rebuilt_rollup_rows,
+                verification_json,
+                last_error_code,
+                started_at,
+                updated_at,
+                completed_at
+            FROM immersion_portable_merge_checkpoint
+            WHERE archive_digest = ?
+        """.trimIndent(),
+        mapper = { cursor ->
+            QueryResult.Value(
+                if (cursor.next().value) {
+                    PortableMergeCheckpoint(
+                        archiveDigest = checkNotNull(cursor.getString(0)),
+                        protocolVersion = checkNotNull(cursor.getLong(1))
+                            .toIntExact("merge protocol version"),
+                        archiveCreatedAt = checkNotNull(cursor.getLong(2)),
+                        archiveFormatVersion = checkNotNull(cursor.getLong(3))
+                            .toIntExact("archive format version"),
+                        archiveSchemaVersion = checkNotNull(cursor.getLong(4))
+                            .toIntExact("archive schema version"),
+                        includesRawText = checkNotNull(cursor.getLong(5))
+                            .toBooleanExact("archive raw-text flag"),
+                        stage = PortableMergeStage.valueOf(checkNotNull(cursor.getString(6))),
+                        tableOrdinal = checkNotNull(cursor.getLong(7))
+                            .toIntExact("merge table ordinal"),
+                        nextRowOffset = checkNotNull(cursor.getLong(8))
+                            .toIntExact("merge row offset"),
+                        eligibleRowCount = checkNotNull(cursor.getLong(9)),
+                        insertedRows = checkNotNull(cursor.getLong(10)),
+                        unchangedRows = checkNotNull(cursor.getLong(11)),
+                        skippedByTombstoneRows = checkNotNull(cursor.getLong(12)),
+                        quarantinedConflicts = checkNotNull(cursor.getLong(13)),
+                        rebuiltRollupRows = checkNotNull(cursor.getLong(14)),
+                        verificationJson = cursor.getString(15),
+                        lastErrorCode = cursor.getString(16),
+                        startedAt = checkNotNull(cursor.getLong(17)),
+                        updatedAt = checkNotNull(cursor.getLong(18)),
+                        completedAt = cursor.getLong(19),
+                    )
+                } else {
+                    null
+                },
+            )
+        },
+        parameters = 1,
+    ) {
+        bindString(0, archiveDigest)
+    }.value
+
+private fun SqlDriver.insertPortableMergeCheckpoint(
+    checkpoint: PortableMergeCheckpoint,
+): Boolean =
+    execute(
+        identifier = null,
+        sql = """
+            INSERT OR IGNORE INTO immersion_portable_merge_checkpoint(
+                archive_digest,
+                protocol_version,
+                archive_created_at,
+                archive_format_version,
+                archive_schema_version,
+                includes_raw_text,
+                stage,
+                table_ordinal,
+                next_row_offset,
+                eligible_row_count,
+                inserted_rows,
+                unchanged_rows,
+                skipped_by_tombstone_rows,
+                quarantined_conflicts,
+                rebuilt_rollup_rows,
+                verification_json,
+                last_error_code,
+                started_at,
+                updated_at,
+                completed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """.trimIndent(),
+        parameters = 20,
+    ) {
+        bindPortableMergeCheckpoint(checkpoint)
+    }.value == 1L
+
+private fun SqlDriver.updatePortableMergeCheckpoint(checkpoint: PortableMergeCheckpoint) {
+    val changed = execute(
+        identifier = null,
+        sql = """
+            UPDATE immersion_portable_merge_checkpoint
+            SET
+                protocol_version = ?,
+                archive_created_at = ?,
+                archive_format_version = ?,
+                archive_schema_version = ?,
+                includes_raw_text = ?,
+                stage = ?,
+                table_ordinal = ?,
+                next_row_offset = ?,
+                eligible_row_count = ?,
+                inserted_rows = ?,
+                unchanged_rows = ?,
+                skipped_by_tombstone_rows = ?,
+                quarantined_conflicts = ?,
+                rebuilt_rollup_rows = ?,
+                verification_json = ?,
+                last_error_code = ?,
+                started_at = ?,
+                updated_at = ?,
+                completed_at = ?
+            WHERE archive_digest = ?
+        """.trimIndent(),
+        parameters = 20,
+    ) {
+        bindLong(0, checkpoint.protocolVersion.toLong())
+        bindLong(1, checkpoint.archiveCreatedAt)
+        bindLong(2, checkpoint.archiveFormatVersion.toLong())
+        bindLong(3, checkpoint.archiveSchemaVersion.toLong())
+        bindLong(4, checkpoint.includesRawText.toLong())
+        bindString(5, checkpoint.stage.name)
+        bindLong(6, checkpoint.tableOrdinal.toLong())
+        bindLong(7, checkpoint.nextRowOffset.toLong())
+        bindLong(8, checkpoint.eligibleRowCount)
+        bindLong(9, checkpoint.insertedRows)
+        bindLong(10, checkpoint.unchangedRows)
+        bindLong(11, checkpoint.skippedByTombstoneRows)
+        bindLong(12, checkpoint.quarantinedConflicts)
+        bindLong(13, checkpoint.rebuiltRollupRows)
+        bindString(14, checkpoint.verificationJson)
+        bindString(15, checkpoint.lastErrorCode)
+        bindLong(16, checkpoint.startedAt)
+        bindLong(17, checkpoint.updatedAt)
+        bindLong(18, checkpoint.completedAt)
+        bindString(19, checkpoint.archiveDigest)
+    }.value
+    check(changed == 1L) { "Portable merge checkpoint disappeared" }
+}
+
+private fun app.cash.sqldelight.db.SqlPreparedStatement.bindPortableMergeCheckpoint(
+    checkpoint: PortableMergeCheckpoint,
+) {
+    bindString(0, checkpoint.archiveDigest)
+    bindLong(1, checkpoint.protocolVersion.toLong())
+    bindLong(2, checkpoint.archiveCreatedAt)
+    bindLong(3, checkpoint.archiveFormatVersion.toLong())
+    bindLong(4, checkpoint.archiveSchemaVersion.toLong())
+    bindLong(5, checkpoint.includesRawText.toLong())
+    bindString(6, checkpoint.stage.name)
+    bindLong(7, checkpoint.tableOrdinal.toLong())
+    bindLong(8, checkpoint.nextRowOffset.toLong())
+    bindLong(9, checkpoint.eligibleRowCount)
+    bindLong(10, checkpoint.insertedRows)
+    bindLong(11, checkpoint.unchangedRows)
+    bindLong(12, checkpoint.skippedByTombstoneRows)
+    bindLong(13, checkpoint.quarantinedConflicts)
+    bindLong(14, checkpoint.rebuiltRollupRows)
+    bindString(15, checkpoint.verificationJson)
+    bindString(16, checkpoint.lastErrorCode)
+    bindLong(17, checkpoint.startedAt)
+    bindLong(18, checkpoint.updatedAt)
+    bindLong(19, checkpoint.completedAt)
+}
+
+private fun SqlDriver.immersionRollupFingerprint(): PortableContentFingerprint {
+    val daily = tableContentFingerprint("immersion_daily_rollup")
+    val lifetime = tableContentFingerprint("immersion_lifetime_rollup")
+    val output = ByteArrayOutputStream()
+    output.writeField(daily.digest)
+    output.writeLong(daily.rowCount)
+    output.writeField(lifetime.digest)
+    output.writeLong(lifetime.rowCount)
+    return PortableContentFingerprint(
+        rowCount = Math.addExact(daily.rowCount, lifetime.rowCount),
+        digest = output.sha256(),
+    )
+}
+
+private fun SqlDriver.tableContentFingerprint(tableName: String): PortableContentFingerprint {
+    require(tableName in IMMERSION_ROLLUP_FINGERPRINT_TABLES)
+    val columns = portableColumns(tableName)
+    val projection = columns.joinToString(", ") { it.name.quotedIdentifier() }
+    val primaryKeyOrder = columns
+        .filter { it.primaryKeyPosition > 0 }
+        .sortedBy { it.primaryKeyPosition }
+        .joinToString(", ") { it.name.quotedIdentifier() }
+    return executeQuery(
+        identifier = null,
+        sql = "SELECT $projection FROM ${tableName.quotedIdentifier()} ORDER BY $primaryKeyOrder",
+        mapper = { cursor ->
+            var rowCount = 0L
+            val output = ByteArrayOutputStream()
+            output.writeField(tableName)
+            while (cursor.next().value) {
+                val row = cursor.readPortableRow(
+                    tableName = tableName,
+                    columns = columns,
+                    includePrivateText = true,
+                )
+                output.writeField(row.portableHash())
+                rowCount = Math.addExact(rowCount, 1)
+            }
+            QueryResult.Value(
+                PortableContentFingerprint(
+                    rowCount = rowCount,
+                    digest = output.sha256(),
+                ),
+            )
+        },
+        parameters = 0,
+    ).value
+}
+
+private fun SqlDriver.immersionMergeEntityCounts(): ImmersionMergeEntityCounts =
+    executeQuery(
+        identifier = null,
+        sql = """
+            SELECT
+                (SELECT count(*) FROM immersion_title),
+                (SELECT count(*) FROM immersion_session),
+                (SELECT count(*) FROM immersion_event),
+                (SELECT count(*) FROM immersion_source_unit),
+                (SELECT count(*) FROM immersion_word),
+                (SELECT count(*) FROM immersion_character),
+                (SELECT count(*) FROM immersion_lookup),
+                (SELECT count(*) FROM immersion_anki_operation),
+                (SELECT count(*) FROM immersion_goal)
+        """.trimIndent(),
+        mapper = { cursor ->
+            check(cursor.next().value)
+            QueryResult.Value(
+                ImmersionMergeEntityCounts(
+                    titles = checkNotNull(cursor.getLong(0)),
+                    sessions = checkNotNull(cursor.getLong(1)),
+                    events = checkNotNull(cursor.getLong(2)),
+                    sourceUnits = checkNotNull(cursor.getLong(3)),
+                    words = checkNotNull(cursor.getLong(4)),
+                    characters = checkNotNull(cursor.getLong(5)),
+                    lookups = checkNotNull(cursor.getLong(6)),
+                    ankiOperations = checkNotNull(cursor.getLong(7)),
+                    goals = checkNotNull(cursor.getLong(8)),
+                ),
+            )
+        },
+        parameters = 0,
+    ).value
+
+private fun SqlDriver.foreignKeyViolationCount(): Long =
+    executeQuery(
+        identifier = null,
+        sql = "PRAGMA foreign_key_check",
+        mapper = { cursor ->
+            var count = 0L
+            while (cursor.next().value) {
+                count = Math.addExact(count, 1)
+            }
+            QueryResult.Value(count)
+        },
+        parameters = 0,
+    ).value
+
 private fun ImmersionPortableArchive.withoutUnlinkedAnkiOperations(): ImmersionPortableArchive =
     copy(
         tables = tables.map { table ->
@@ -5281,8 +6021,10 @@ private const val SQLITE_BIND_BATCH_SIZE = 400
 private const val MAX_TITLE_TREND_SERIES = 20
 private const val SOURCE_EXCERPT_LENGTH = 240
 private const val IMMERSION_PORTABLE_FORMAT_VERSION = 1
+private const val IMMERSION_PORTABLE_MERGE_PROTOCOL_VERSION = 1
 private const val IMMERSION_PORTABLE_MERGE_CHUNK_SIZE = 500
 private const val IMMERSION_INDEX_ID_CHUNK_SIZE = 500
+private const val IMMERSION_TOMBSTONE_TABLE = "immersion_tombstone"
 private const val IMMERSION_TITLE_EXCLUSION_TYPE = "TITLE"
 private const val IMMERSION_CAPTURE_EXCLUSION_SCOPE = "capture"
 private const val MILLIS_PER_DAY = 86_400_000L
@@ -5323,6 +6065,11 @@ private val IMMERSION_PRIVATE_TEXT_COLUMNS = setOf(
     "immersion_source_unit" to "raw_text_encoding",
     "immersion_lookup" to "raw_query",
     "immersion_goal_check_in" to "note",
+)
+
+private val IMMERSION_ROLLUP_FINGERPRINT_TABLES = setOf(
+    "immersion_daily_rollup",
+    "immersion_lifetime_rollup",
 )
 
 private val IMMERSION_SOURCE_IDENTITY_COLUMNS = setOf(
@@ -5395,4 +6142,5 @@ private val IMMERSION_RESET_DERIVED_TABLES = listOf(
     "immersion_exclusion",
     "immersion_retention_state",
     "immersion_merge_conflict",
+    "immersion_portable_merge_checkpoint",
 )
