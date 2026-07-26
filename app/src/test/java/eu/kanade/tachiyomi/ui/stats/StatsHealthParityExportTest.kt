@@ -11,9 +11,14 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import mihon.feature.stats.capture.MangaReconciliationEntry
 import mihon.feature.stats.capture.MangaReconciliationReport
 import mihon.feature.stats.capture.MangaReconciliationScope
+import mihon.feature.stats.capture.VideoReconciliationComparability
+import mihon.feature.stats.capture.VideoReconciliationEntry
+import mihon.feature.stats.capture.VideoReconciliationReport
+import mihon.feature.stats.capture.VideoReconciliationScope
 import org.junit.jupiter.api.Test
 import tachiyomi.domain.immersion.model.EventId
 import tachiyomi.domain.immersion.model.NonNegativeCounter
@@ -34,6 +39,7 @@ class StatsHealthParityExportTest {
             rollupBacklogEventCount = 11,
             novelReport = novelReport(),
             mangaReport = mangaReport(),
+            videoReport = videoReport(),
             createdAtEpochMillis = 123,
         )
 
@@ -46,6 +52,7 @@ class StatsHealthParityExportTest {
                 matched = 1,
                 diverged = 1,
                 nonComparable = 0,
+                nonComparableReasons = emptyList(),
             ),
             StatsParityAggregateExport(
                 media = StatsParityMedia.NOVEL,
@@ -55,6 +62,12 @@ class StatsHealthParityExportTest {
                 matched = 0,
                 diverged = 0,
                 nonComparable = 1,
+                nonComparableReasons = listOf(
+                    StatsParityNonComparableReasonExport(
+                        reason = StatsParityNonComparableReason.LEGACY_POLICY_NOT_EQUIVALENT,
+                        observations = 1,
+                    ),
+                ),
             ),
             StatsParityAggregateExport(
                 media = StatsParityMedia.MANGA,
@@ -64,6 +77,12 @@ class StatsHealthParityExportTest {
                 matched = 0,
                 diverged = 0,
                 nonComparable = 1,
+                nonComparableReasons = listOf(
+                    StatsParityNonComparableReasonExport(
+                        reason = StatsParityNonComparableReason.LEGACY_POLICY_NOT_EQUIVALENT,
+                        observations = 1,
+                    ),
+                ),
             ),
             StatsParityAggregateExport(
                 media = StatsParityMedia.MANGA,
@@ -73,24 +92,37 @@ class StatsHealthParityExportTest {
                 matched = 1,
                 diverged = 0,
                 nonComparable = 0,
+                nonComparableReasons = emptyList(),
             ),
             StatsParityAggregateExport(
                 media = StatsParityMedia.VIDEO,
                 scope = StatsParityScope.SESSION,
-                observations = 0,
-                evidenceAvailable = false,
+                observations = 1,
+                evidenceAvailable = true,
                 matched = 0,
                 diverged = 0,
-                nonComparable = 0,
+                nonComparable = 1,
+                nonComparableReasons = listOf(
+                    StatsParityNonComparableReasonExport(
+                        reason = StatsParityNonComparableReason.NO_LEGACY_VIDEO_SESSION_OR_DAY_TOTALS,
+                        observations = 1,
+                    ),
+                ),
             ),
             StatsParityAggregateExport(
                 media = StatsParityMedia.VIDEO,
                 scope = StatsParityScope.DAY,
-                observations = 0,
-                evidenceAvailable = false,
+                observations = 1,
+                evidenceAvailable = true,
                 matched = 0,
                 diverged = 0,
-                nonComparable = 0,
+                nonComparable = 1,
+                nonComparableReasons = listOf(
+                    StatsParityNonComparableReasonExport(
+                        reason = StatsParityNonComparableReason.NO_LEGACY_VIDEO_SESSION_OR_DAY_TOTALS,
+                        observations = 1,
+                    ),
+                ),
             ),
         )
         export.diagnostics.droppedCommandCount shouldBe 2
@@ -120,6 +152,28 @@ class StatsHealthParityExportTest {
     }
 
     @Test
+    fun `empty video report remains explicit no evidence rather than a parity result`() {
+        val export = statsHealthParityExport(
+            diagnostics = diagnostics(),
+            rollupBacklogRangeCount = 0,
+            rollupBacklogEventCount = 0,
+            novelReport = NovelReconciliationReport(),
+            mangaReport = MangaReconciliationReport(),
+            videoReport = VideoReconciliationReport(),
+            createdAtEpochMillis = 123,
+        )
+
+        export.parity.filter { it.media == StatsParityMedia.VIDEO }.forEach { aggregate ->
+            aggregate.observations shouldBe 0
+            aggregate.evidenceAvailable shouldBe false
+            aggregate.matched shouldBe 0
+            aggregate.diverged shouldBe 0
+            aggregate.nonComparable shouldBe 0
+            aggregate.nonComparableReasons shouldBe emptyList()
+        }
+    }
+
+    @Test
     fun `health JSON is deterministic and omits report keys and identifiers`() {
         val first = healthDocument()
         val second = healthDocument()
@@ -128,6 +182,7 @@ class StatsHealthParityExportTest {
         first.fileName shouldBe "chimahon-stats-health-parity.json"
         first.mimeType shouldBe "application/json"
         first.bytes.contentEquals(second.bytes) shouldBe true
+        Json.parseToJsonElement(encoded).jsonObject["schemaVersion"]?.toString() shouldBe "4"
         PRIVATE_VALUES.forEach { privateValue ->
             encoded.contains(privateValue) shouldBe false
         }
@@ -141,6 +196,7 @@ class StatsHealthParityExportTest {
         rollupBacklogEventCount = 11,
         novelReport = novelReport(),
         mangaReport = mangaReport(),
+        videoReport = videoReport(),
         createdAtEpochMillis = 123,
     )
 
@@ -204,6 +260,19 @@ class StatsHealthParityExportTest {
                 key = PRIVATE_MANGA_DAY_KEY,
                 legacyComparable = true,
                 result = ImmersionShadowResult.Matched,
+            ),
+        ),
+    )
+
+    private fun videoReport() = VideoReconciliationReport(
+        entries = listOf(
+            VideoReconciliationEntry(
+                scope = VideoReconciliationScope.SESSION,
+                comparability = VideoReconciliationComparability.NO_LEGACY_VIDEO_SESSION_OR_DAY_TOTALS,
+            ),
+            VideoReconciliationEntry(
+                scope = VideoReconciliationScope.DAY,
+                comparability = VideoReconciliationComparability.NO_LEGACY_VIDEO_SESSION_OR_DAY_TOTALS,
             ),
         ),
     )

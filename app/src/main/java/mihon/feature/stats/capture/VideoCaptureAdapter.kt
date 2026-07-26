@@ -19,6 +19,7 @@ import tachiyomi.domain.immersion.model.CapabilityState
 import tachiyomi.domain.immersion.model.CharacterVolume
 import tachiyomi.domain.immersion.model.ContentHash
 import tachiyomi.domain.immersion.model.EventType
+import tachiyomi.domain.immersion.model.ImmersionSession
 import tachiyomi.domain.immersion.model.ImmersionSourceUnit
 import tachiyomi.domain.immersion.model.ImmersionTitle
 import tachiyomi.domain.immersion.model.LanguageTag
@@ -47,6 +48,8 @@ import tachiyomi.domain.immersion.service.SessionStartResult
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.text.Normalizer
+import java.time.Instant
+import java.time.ZoneId
 import java.util.Locale
 import java.util.UUID
 import kotlin.math.abs
@@ -206,6 +209,87 @@ data class VideoInteractionCaptureContext(
     }
 }
 
+enum class VideoReconciliationScope {
+    SESSION,
+    DAY,
+}
+
+/**
+ * VIDEO has no legacy session/day tracker in Chimahon. Reporting that limitation explicitly keeps
+ * a finalized capture from being mistaken for either a parity match or missing evidence.
+ */
+enum class VideoReconciliationComparability {
+    NO_LEGACY_VIDEO_SESSION_OR_DAY_TOTALS,
+}
+
+data class VideoReconciliationEntry(
+    val scope: VideoReconciliationScope,
+    val comparability: VideoReconciliationComparability,
+)
+
+data class VideoReconciliationReport(
+    val entries: List<VideoReconciliationEntry> = emptyList(),
+)
+
+/**
+ * Process-local rollout evidence only. Internal keys prevent duplicate observations, but the
+ * published report intentionally contains no title, locator, raw text, media ID, or session ID.
+ */
+object VideoCaptureReconciliationReporter {
+    private const val MAX_REPORT_ENTRIES = 100
+    private val mutableReport = MutableStateFlow(VideoReconciliationReport())
+    private val observations = ArrayDeque<TrackedObservation>()
+    val report: StateFlow<VideoReconciliationReport> = mutableReport.asStateFlow()
+
+    @Synchronized
+    fun record(
+        session: ImmersionSession,
+        zoneId: ZoneId,
+    ) {
+        val day = Instant.ofEpochMilli(session.endedAtEpochMillis ?: session.startedAtEpochMillis)
+            .atZone(zoneId)
+            .toLocalDate()
+            .toString()
+        record(
+            key = "session:${session.id.value}",
+            entry = VideoReconciliationEntry(
+                scope = VideoReconciliationScope.SESSION,
+                comparability = VideoReconciliationComparability.NO_LEGACY_VIDEO_SESSION_OR_DAY_TOTALS,
+            ),
+        )
+        record(
+            key = "day:$day",
+            entry = VideoReconciliationEntry(
+                scope = VideoReconciliationScope.DAY,
+                comparability = VideoReconciliationComparability.NO_LEGACY_VIDEO_SESSION_OR_DAY_TOTALS,
+            ),
+        )
+        mutableReport.value = VideoReconciliationReport(observations.map(TrackedObservation::entry))
+    }
+
+    @Synchronized
+    fun resetForTest() {
+        observations.clear()
+        mutableReport.value = VideoReconciliationReport()
+    }
+
+    private fun record(
+        key: String,
+        entry: VideoReconciliationEntry,
+    ) {
+        observations.removeAll { it.key == key }
+        observations.addFirst(TrackedObservation(key, entry))
+        while (observations.size > MAX_REPORT_ENTRIES) {
+            observations.removeLast()
+        }
+    }
+
+    private data class TrackedObservation(
+        val key: String,
+        val entry: VideoReconciliationEntry,
+    )
+}
+
 /**
  * Converts live player callbacks into event-backed immersion data.
  *
@@ -222,6 +306,7 @@ class VideoCaptureAdapter(
     private val bufferingGraceMillis: Long,
     private val incognito: Boolean,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val zoneId: () -> ZoneId = ZoneId::systemDefault,
     workerScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     diagnostics: ImmersionStatsDiagnosticsStore? = null,
 ) {
@@ -756,7 +841,11 @@ class VideoCaptureAdapter(
         reason: FinalizeReason,
     ) {
         state.finalized = true
-        state.handle?.let { recorder.finalize(it, reason) }
+        state.handle?.let { handle ->
+            recorder.finalize(handle, reason)?.let { session ->
+                VideoCaptureReconciliationReporter.record(session, zoneId())
+            }
+        }
         state.handle = null
         state.subtitleLookupSources = persistentMapOf()
         state.ocrLookupSources = persistentMapOf()
