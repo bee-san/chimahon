@@ -329,6 +329,7 @@ class SqlDelightImmersionRepository(
         targetVersion: Int,
         limit: Int,
         nowEpochMillis: Long,
+        request: ImmersionReindexRequest,
     ): List<IndexWorkItem> {
         require(targetVersion > 0) { "Target version must be positive" }
         require(limit in 1..MAX_PAGE_SIZE) { "Index claim limit must be between 1 and $MAX_PAGE_SIZE" }
@@ -338,6 +339,10 @@ class SqlDelightImmersionRepository(
                 .selectImmersionIndexWork(
                     targetVersion = targetVersion.toLong(),
                     nowEpochMillis = nowEpochMillis,
+                    titleId = request.titleId?.value,
+                    exposedFrom = request.exposedFromEpochMillis,
+                    exposedUntil = request.exposedUntilEpochMillis,
+                    languageTag = request.languageTag?.value,
                     limit = limit.toLong(),
                 )
                 .executeAsList()
@@ -348,6 +353,18 @@ class SqlDelightImmersionRepository(
                 )
             }
             rows.map(SelectImmersionIndexWork::toDomain)
+        }
+    }
+
+    override suspend fun releaseClaims(work: List<IndexWorkItem>) {
+        if (work.isEmpty()) return
+        handler.await(inTransaction = true) {
+            work.forEach { item ->
+                immersionQueries.releaseImmersionSourceIndexClaim(
+                    id = item.sourceUnitId.value,
+                    claimGeneration = item.claimGeneration.toLong(),
+                )
+            }
         }
     }
 
@@ -553,10 +570,19 @@ class SqlDelightImmersionRepository(
         }
     }
 
-    override suspend fun pendingCount(targetVersion: Int): Long {
+    override suspend fun pendingCount(
+        targetVersion: Int,
+        request: ImmersionReindexRequest,
+    ): Long {
         require(targetVersion > 0) { "Target version must be positive" }
         return handler.await {
-            immersionQueries.countPendingImmersionSourceUnits(targetVersion.toLong()).executeAsOne()
+            immersionQueries.countPendingImmersionSourceUnits(
+                targetVersion = targetVersion.toLong(),
+                titleId = request.titleId?.value,
+                exposedFrom = request.exposedFromEpochMillis,
+                exposedUntil = request.exposedUntilEpochMillis,
+                languageTag = request.languageTag?.value,
+            ).executeAsOne()
         }
     }
 

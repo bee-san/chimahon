@@ -6,6 +6,7 @@ import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.longs.shouldBeLessThan
 import io.kotest.matchers.shouldBe
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import tachiyomi.domain.immersion.model.ImmersionReindexRequest
@@ -132,6 +133,57 @@ class ImmersionIndexingTest {
     }
 
     @Test
+    fun `normalization failure is distinguished from tokenizer failure`() = runTest {
+        val repository = FakeIndexRepository(
+            work = mutableListOf(workItem(rawText = "読む", language = "ja")),
+        )
+        val normalizer = object : SourceTextNormalizer {
+            override val version = 1
+
+            override fun normalize(
+                input: String,
+                language: LanguageTag,
+            ): NormalizedText = error("normalizer unavailable")
+        }
+        val engine = ImmersionIndexingEngine(
+            repository = repository,
+            normalizer = normalizer,
+            tokenizers = listOf(FixedTokenizer(emptyList())),
+            clock = { 10_000 },
+        )
+
+        engine.processBatch().failed shouldBe 1
+
+        repository.failures.single().errorCode shouldBe
+            ImmersionIndexingEngine.NORMALIZATION_FAILURE
+    }
+
+    @Test
+    fun `coroutine cancellation releases the claimed batch and is rethrown`() = runTest {
+        val claimedWork = List(2) { workItem(rawText = "読む", language = "ja") }
+        val repository = FakeIndexRepository(work = claimedWork.toMutableList())
+        val tokenizer = object : ImmersionTokenizer {
+            override val id = "cancelled"
+            override val version = 1
+            override fun supports(language: LanguageTag) = true
+            override suspend fun tokenize(text: NormalizedText): TokenizationResult =
+                throw CancellationException("test cancellation")
+        }
+        var cancellation: CancellationException? = null
+
+        try {
+            engine(repository, tokenizer).processBatch(limit = claimedWork.size)
+        } catch (error: CancellationException) {
+            cancellation = error
+        }
+
+        cancellation?.message shouldBe "test cancellation"
+        repository.failures shouldBe emptyList()
+        repository.released.map(IndexWorkItem::sourceUnitId) shouldContainExactly
+            claimedWork.map(IndexWorkItem::sourceUnitId)
+    }
+
+    @Test
     fun `exclusions apply after normalization and before persisted denominators`() = runTest {
         val excludedCharacter = UnicodeCodePoint('外'.code)
         val policy = object : ImmersionIndexExclusionPolicy {
@@ -201,6 +253,8 @@ class ImmersionIndexingTest {
         )
 
         repository.lastReindexRequest shouldBe ImmersionReindexRequest(languageTag = LanguageTag("en"))
+        repository.claimRequests.all { it == repository.lastReindexRequest } shouldBe true
+        repository.pendingRequests.all { it == repository.lastReindexRequest } shouldBe true
         progress.single().processed shouldBe 1
         result.cancelled shouldBe true
         result.remaining shouldBe 2
@@ -248,14 +302,24 @@ class ImmersionIndexingTest {
     ) : ImmersionIndexRepository {
         val stored = mutableListOf<StoredResult>()
         val failures = mutableListOf<Failure>()
+        val released = mutableListOf<IndexWorkItem>()
+        val claimRequests = mutableListOf<ImmersionReindexRequest>()
+        val pendingRequests = mutableListOf<ImmersionReindexRequest>()
         var lastReindexRequest: ImmersionReindexRequest? = null
 
         override suspend fun claimWork(
             targetVersion: Int,
             limit: Int,
             nowEpochMillis: Long,
-        ): List<IndexWorkItem> =
-            work.take(limit).also { claimed -> work.removeAll(claimed.toSet()) }
+            request: ImmersionReindexRequest,
+        ): List<IndexWorkItem> {
+            claimRequests += request
+            return work.take(limit).also { claimed -> work.removeAll(claimed.toSet()) }
+        }
+
+        override suspend fun releaseClaims(work: List<IndexWorkItem>) {
+            released += work
+        }
 
         override suspend fun storeIndexResult(
             sourceUnitId: SourceUnitId,
@@ -297,7 +361,13 @@ class ImmersionIndexingTest {
             return requeued
         }
 
-        override suspend fun pendingCount(targetVersion: Int): Long = work.size.toLong()
+        override suspend fun pendingCount(
+            targetVersion: Int,
+            request: ImmersionReindexRequest,
+        ): Long {
+            pendingRequests += request
+            return work.size.toLong()
+        }
     }
 
     private companion object {

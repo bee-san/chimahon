@@ -1494,6 +1494,10 @@ JOIN immersion_title AS title ON title.id = source.title_id
 WHERE
     source.indexed_version < :targetVersion
     AND source.indexing_terminal_reason IS NULL
+    AND (:titleId IS NULL OR source.title_id = :titleId)
+    AND (:exposedFrom IS NULL OR source.last_exposed_at >= :exposedFrom)
+    AND (:exposedUntil IS NULL OR source.first_exposed_at <= :exposedUntil)
+    AND (:languageTag IS NULL OR title.language_tag = :languageTag)
     AND (
         (
             (
@@ -1525,6 +1529,17 @@ SET
     next_index_attempt_at = :leaseExpiresAt,
     index_attempt_count = index_attempt_count + 1
 WHERE id IN :ids;
+
+releaseImmersionSourceIndexClaim:
+UPDATE immersion_source_unit
+SET
+    indexing_status = 'PENDING',
+    index_error_code = NULL,
+    next_index_attempt_at = NULL
+WHERE
+    id = :id
+    AND indexing_status = 'IN_PROGRESS'
+    AND index_attempt_count = :claimGeneration;
 
 markImmersionSourceIndexed:
 UPDATE immersion_source_unit
@@ -1821,17 +1836,22 @@ WHERE
 
 countPendingImmersionSourceUnits:
 SELECT count(*)
-FROM immersion_source_unit
+FROM immersion_source_unit AS source
+JOIN immersion_title AS title ON title.id = source.title_id
 WHERE
-    indexed_version < :targetVersion
+    source.indexed_version < :targetVersion
+    AND (:titleId IS NULL OR source.title_id = :titleId)
+    AND (:exposedFrom IS NULL OR source.last_exposed_at >= :exposedFrom)
+    AND (:exposedUntil IS NULL OR source.first_exposed_at <= :exposedUntil)
+    AND (:languageTag IS NULL OR title.language_tag = :languageTag)
     AND (
-        indexing_status IN ('PENDING', 'FAILED', 'IN_PROGRESS')
+        source.indexing_status IN ('PENDING', 'FAILED', 'IN_PROGRESS')
         OR (
-            indexing_status = 'INDEXED'
-            AND raw_text IS NOT NULL
+            source.indexing_status = 'INDEXED'
+            AND source.raw_text IS NOT NULL
         )
     )
-    AND indexing_terminal_reason IS NULL;
+    AND source.indexing_terminal_reason IS NULL;
 
 isImmersionIndexEntityExcluded:
 SELECT count(*)
