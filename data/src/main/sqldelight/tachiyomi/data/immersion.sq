@@ -2785,6 +2785,55 @@ WHERE
     AND session.status != 'DELETED'
 ORDER BY event.occurred_at, event.id;
 
+selectImmersionRollupRebuildBounds:
+WITH rollup_instants(epoch_millis, offset_seconds, local_date_override) AS (
+    SELECT started_at, start_offset_seconds, legacy_local_date
+    FROM immersion_session
+    WHERE status != 'DELETED'
+    UNION ALL
+    SELECT ended_at, start_offset_seconds, NULL
+    FROM immersion_session
+    WHERE status != 'DELETED' AND ended_at IS NOT NULL
+    UNION ALL
+    SELECT event.occurred_at, event.timezone_offset_seconds, NULL
+    FROM immersion_event AS event
+    JOIN immersion_session AS session ON session.id = event.session_id
+    WHERE session.status != 'DELETED'
+    UNION ALL
+    SELECT
+        max(0, event.occurred_at - event.active_duration_delta_ms),
+        event.timezone_offset_seconds,
+        NULL
+    FROM immersion_event AS event
+    JOIN immersion_session AS session ON session.id = event.session_id
+    WHERE session.status != 'DELETED' AND event.active_duration_delta_ms > 0
+),
+rollup_dates(local_date) AS (
+    SELECT
+        coalesce(
+            local_date_override,
+            CASE
+                WHEN epoch_millis + offset_seconds * 1000 >= 0 THEN
+                    CAST(
+                        (epoch_millis + offset_seconds * 1000) / 86400000
+                        AS INTEGER
+                    )
+                ELSE
+                    -CAST(
+                        (
+                            -(epoch_millis + offset_seconds * 1000) + 86399999
+                        ) / 86400000
+                        AS INTEGER
+                    )
+            END
+        )
+    FROM rollup_instants
+)
+SELECT
+    min(local_date) AS first_date,
+    max(local_date) AS last_date
+FROM rollup_dates;
+
 selectImmersionRollupSessions:
 SELECT *
 FROM immersion_session
@@ -2978,6 +3027,78 @@ SELECT
     :updatedAt
 FROM immersion_daily_rollup
 GROUP BY profile_id, language_tag, media_kind, title_id, provenance_state, replay_state;
+
+accumulateImmersionLifetimeRollups:
+INSERT INTO immersion_lifetime_rollup(
+    scope_key,
+    profile_id,
+    language_tag,
+    media_kind,
+    title_id,
+    active_duration_ms,
+    gross_characters,
+    unique_source_characters,
+    net_characters,
+    source_units,
+    words,
+    unique_words,
+    distinct_characters,
+    sessions,
+    lookups,
+    cards_created,
+    cards_updated,
+    provenance_state,
+    replay_state,
+    rollup_version,
+    updated_at
+)
+SELECT
+    profile_id || char(31) || language_tag || char(31) || media_kind ||
+        char(31) || title_id || char(31) || provenance_state ||
+        char(31) || replay_state,
+    profile_id,
+    language_tag,
+    media_kind,
+    title_id,
+    sum(active_duration_ms),
+    sum(gross_characters),
+    sum(unique_source_characters),
+    sum(net_characters),
+    sum(source_units),
+    sum(words),
+    sum(unique_words),
+    sum(distinct_characters),
+    sum(sessions),
+    sum(lookups),
+    sum(cards_created),
+    sum(cards_updated),
+    provenance_state,
+    replay_state,
+    :rollupVersion,
+    :updatedAt
+FROM immersion_daily_rollup
+WHERE local_date BETWEEN :startDate AND :endDate
+GROUP BY profile_id, language_tag, media_kind, title_id, provenance_state, replay_state
+ON CONFLICT(scope_key) DO UPDATE SET
+    active_duration_ms =
+        immersion_lifetime_rollup.active_duration_ms + excluded.active_duration_ms,
+    gross_characters =
+        immersion_lifetime_rollup.gross_characters + excluded.gross_characters,
+    unique_source_characters =
+        immersion_lifetime_rollup.unique_source_characters + excluded.unique_source_characters,
+    net_characters =
+        immersion_lifetime_rollup.net_characters + excluded.net_characters,
+    source_units = immersion_lifetime_rollup.source_units + excluded.source_units,
+    words = immersion_lifetime_rollup.words + excluded.words,
+    unique_words = immersion_lifetime_rollup.unique_words + excluded.unique_words,
+    distinct_characters =
+        immersion_lifetime_rollup.distinct_characters + excluded.distinct_characters,
+    sessions = immersion_lifetime_rollup.sessions + excluded.sessions,
+    lookups = immersion_lifetime_rollup.lookups + excluded.lookups,
+    cards_created = immersion_lifetime_rollup.cards_created + excluded.cards_created,
+    cards_updated = immersion_lifetime_rollup.cards_updated + excluded.cards_updated,
+    rollup_version = excluded.rollup_version,
+    updated_at = excluded.updated_at;
 
 insertImmersionAppliedEvent:
 INSERT OR REPLACE INTO immersion_applied_event(event_id, rollup_version, applied_at)
