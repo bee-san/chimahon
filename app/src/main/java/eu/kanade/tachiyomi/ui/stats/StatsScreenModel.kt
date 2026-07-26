@@ -11,6 +11,7 @@ import eu.kanade.presentation.more.stats.StatsSections
 import eu.kanade.presentation.more.stats.StatsSelection
 import eu.kanade.presentation.more.stats.StatsTab
 import eu.kanade.presentation.more.stats.StatsTrendMetric
+import eu.kanade.presentation.more.stats.decodePersistedStatsFilterSelection
 import eu.kanade.tachiyomi.ui.dictionary.DictionaryPreferences
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -96,8 +97,10 @@ class StatsScreenModel(
             characterMetric = preferences.dashboardCharacterMetric().get(),
             includeLegacy = preferences.includeLegacyAggregates().get(),
             includeRereadsAndReplays = preferences.dashboardIncludeRereads().get(),
-            maturityTiers = preferences.dashboardMaturityTiers().get().enumSet(),
-            provenanceStates = preferences.dashboardProvenanceStates().get().enumSet(),
+            maturityTiers = preferences.dashboardMaturityTiers().get()
+                .decodePersistedStatsFilterSelection(MaturityTier.UNAVAILABLE),
+            provenanceStates = preferences.dashboardProvenanceStates().get()
+                .decodePersistedStatsFilterSelection(ProvenanceState.UNAVAILABLE),
             titleId = selectedTitleId?.value,
         )
         mutableState.value = StatsScreenState.Success(
@@ -1508,9 +1511,6 @@ private inline fun <reified T : Enum<T>> String.enumOrNull(): T? =
 
 private inline fun <reified T : Enum<T>> String.enumOrDefault(default: T): T =
     enumOrNull() ?: default
-
-private inline fun <reified T : Enum<T>> Set<String>.enumSet(): Set<T> =
-    mapNotNullTo(linkedSetOf()) { it.enumOrNull<T>() }
 
 private fun String.toImmersionLocalDateOrNull(): ImmersionLocalDate? =
     takeIf(String::isNotBlank)

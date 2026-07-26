@@ -468,7 +468,7 @@ private fun FilterSummary(
                             ),
                         ),
                         selected = state.filter.maturityTiers,
-                        options = MaturityTier.entries,
+                        options = statsMaturityFilterOptions,
                         optionLabel = { maturityLabel(it) },
                         onSelectionChange = onMaturityTiersSelect,
                     )
@@ -481,7 +481,7 @@ private fun FilterSummary(
                             ),
                         ),
                         selected = state.filter.provenanceStates,
-                        options = ProvenanceState.entries,
+                        options = statsProvenanceFilterOptions,
                         optionLabel = { provenanceLabel(it) },
                         onSelectionChange = onProvenanceStatesSelect,
                     )
@@ -2762,37 +2762,59 @@ private fun <T> MultiSelectFilterMenuChip(
     onSelectionChange: (Set<T>) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    var pendingSelection by remember { mutableStateOf(selected) }
+
+    fun applyAndDismiss() {
+        expanded = false
+        if (pendingSelection != selected) {
+            onSelectionChange(pendingSelection)
+        }
+    }
+
     Box {
         FilterChip(
             selected = selected.isNotEmpty(),
-            onClick = { expanded = true },
+            onClick = {
+                pendingSelection = selected
+                expanded = true
+            },
             label = { Text(label) },
             trailingIcon = { Icon(Icons.Outlined.ArrowDropDown, contentDescription = null) },
         )
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        DropdownMenu(expanded = expanded, onDismissRequest = ::applyAndDismiss) {
             DropdownMenuItem(
                 text = { Text(stringResource(KMR.strings.stats_filter_all)) },
                 leadingIcon = {
                     Checkbox(
-                        checked = selected.isEmpty(),
-                        onCheckedChange = { onSelectionChange(emptySet()) },
+                        checked = pendingSelection.isEmpty(),
+                        onCheckedChange = null,
                     )
                 },
-                onClick = { onSelectionChange(emptySet()) },
+                onClick = { pendingSelection = emptySet() },
             )
             options.forEach { option ->
-                val next = toggleStatsFilterSelection(selected, option, options)
                 DropdownMenuItem(
                     text = { Text(optionLabel(option)) },
                     leadingIcon = {
                         Checkbox(
-                            checked = option in selected,
-                            onCheckedChange = { onSelectionChange(next) },
+                            checked = option in pendingSelection,
+                            onCheckedChange = null,
                         )
                     },
-                    onClick = { onSelectionChange(next) },
+                    onClick = {
+                        pendingSelection = toggleStatsFilterSelection(
+                            selected = pendingSelection,
+                            option = option,
+                            options = options,
+                        )
+                    },
                 )
             }
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text(stringResource(KMR.strings.stats_apply)) },
+                onClick = ::applyAndDismiss,
+            )
         }
     }
 }

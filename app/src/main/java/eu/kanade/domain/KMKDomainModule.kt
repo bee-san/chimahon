@@ -2,6 +2,7 @@ package eu.kanade.domain
 
 import chimahon.anki.AnkiDroidInventoryProvider
 import eu.kanade.domain.base.BasePreferences
+import mihon.feature.stats.capture.clearStatsCaptureReconciliationReports
 import mihon.feature.stats.indexing.DictionaryBackedJapaneseTokenizer
 import mihon.feature.stats.indexing.ImmersionIndexJob
 import mihon.feature.stats.indexing.SqlImmersionIndexExclusionPolicy
@@ -85,6 +86,7 @@ class KMKDomainModule : InjektModule {
                 onAllStatsReset = {
                     get<PreferenceAnkiOperationRepairStore>().clear()
                     get<ImmersionStatsDiagnosticsStore>().clear()
+                    clearStatsCaptureReconciliationReports()
                 },
                 onSessionDeleted = { sessionId ->
                     get<PreferenceAnkiOperationRepairStore>().removeForSession(sessionId)
