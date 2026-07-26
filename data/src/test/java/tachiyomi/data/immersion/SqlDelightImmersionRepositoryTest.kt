@@ -1427,6 +1427,108 @@ class SqlDelightImmersionRepositoryTest {
     }
 
     @Test
+    fun `cancelled index claims release immediately without stealing a newer claim`() = runTest {
+        prepareSession()
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = 809).let {
+                it.copy(source = it.source.copy(rawText = "猫"))
+            },
+        )
+
+        val first = repository.claimWork(
+            targetVersion = 1,
+            limit = 10,
+            nowEpochMillis = 1_000,
+        ).single()
+        repository.releaseClaims(listOf(first))
+
+        queryStrings("SELECT indexing_status FROM immersion_source_unit").single() shouldBe "PENDING"
+        queryLong(
+            "SELECT count(*) FROM immersion_source_unit WHERE next_index_attempt_at IS NULL",
+        ) shouldBe 1
+
+        val current = repository.claimWork(
+            targetVersion = 1,
+            limit = 10,
+            nowEpochMillis = 1_001,
+        ).single()
+        current.claimGeneration shouldBe first.claimGeneration + 1
+
+        repository.releaseClaims(listOf(first))
+        queryStrings("SELECT indexing_status FROM immersion_source_unit").single() shouldBe "IN_PROGRESS"
+        queryLong("SELECT index_attempt_count FROM immersion_source_unit") shouldBe
+            current.claimGeneration.toLong()
+
+        repository.releaseClaims(listOf(current))
+        repository.claimWork(
+            targetVersion = 1,
+            limit = 10,
+            nowEpochMillis = 1_002,
+        ).single().claimGeneration shouldBe current.claimGeneration + 1
+    }
+
+    @Test
+    fun `index claims and pending counts honor the complete reindex scope`() = runTest {
+        val japaneseTitle = TitleId("00000000-0000-0000-0000-000000000901")
+        val englishTitle = TitleId("00000000-0000-0000-0000-000000000902")
+        recordScopedAnkiExposure(
+            number = 901,
+            titleId = japaneseTitle,
+            mediaKind = MediaKind.NOVEL,
+            profileId = "profile",
+            languageTag = LanguageTag("ja"),
+            occurredAtEpochMillis = 1_000,
+            normalizedWord = "猫",
+            normalizedReading = "ねこ",
+            character = '猫',
+        )
+        recordScopedAnkiExposure(
+            number = 902,
+            titleId = japaneseTitle,
+            mediaKind = MediaKind.NOVEL,
+            profileId = "profile",
+            languageTag = LanguageTag("ja"),
+            occurredAtEpochMillis = 5_000,
+            normalizedWord = "犬",
+            normalizedReading = "いぬ",
+            character = '犬',
+        )
+        recordScopedAnkiExposure(
+            number = 903,
+            titleId = englishTitle,
+            mediaKind = MediaKind.NOVEL,
+            profileId = "profile",
+            languageTag = LanguageTag("en"),
+            occurredAtEpochMillis = 1_000,
+            normalizedWord = "cat",
+            normalizedReading = "",
+            character = 'c',
+        )
+        val request = ImmersionReindexRequest(
+            languageTag = LanguageTag("ja"),
+            titleId = japaneseTitle,
+            exposedFromEpochMillis = 900,
+            exposedUntilEpochMillis = 1_100,
+        )
+
+        repository.requeue(request, targetVersion = 2) shouldBe 1
+        repository.pendingCount(targetVersion = 2, request = request) shouldBe 1
+        repository.pendingCount(
+            targetVersion = 2,
+            request = ImmersionReindexRequest(languageTag = LanguageTag("ja")),
+        ) shouldBe 2
+        repository.pendingCount(targetVersion = 2) shouldBe 3
+
+        repository.claimWork(
+            targetVersion = 2,
+            limit = 10,
+            nowEpochMillis = 6_000,
+            request = request,
+        ).single().rawText shouldBe "猫"
+        repository.pendingCount(targetVersion = 2, request = request) shouldBe 1
+    }
+
+    @Test
     fun `stale completed index is claimable by a newer index version`() = runTest {
         prepareSession()
         repository.appendExposure(

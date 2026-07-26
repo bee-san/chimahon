@@ -92,7 +92,10 @@ interface ImmersionIndexRepository {
         targetVersion: Int,
         limit: Int,
         nowEpochMillis: Long,
+        request: ImmersionReindexRequest = ImmersionReindexRequest(),
     ): List<IndexWorkItem>
+
+    suspend fun releaseClaims(work: List<IndexWorkItem>)
 
     suspend fun storeIndexResult(
         sourceUnitId: SourceUnitId,
@@ -120,7 +123,10 @@ interface ImmersionIndexRepository {
         targetVersion: Int,
     ): Long
 
-    suspend fun pendingCount(targetVersion: Int): Long
+    suspend fun pendingCount(
+        targetVersion: Int,
+        request: ImmersionReindexRequest = ImmersionReindexRequest(),
+    ): Long
 }
 
 interface ImmersionStatsRepository {

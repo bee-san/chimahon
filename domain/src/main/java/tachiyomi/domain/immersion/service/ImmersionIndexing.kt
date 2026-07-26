@@ -2,6 +2,9 @@
 
 package tachiyomi.domain.immersion.service
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import tachiyomi.domain.immersion.model.ImmersionReindexRequest
 import tachiyomi.domain.immersion.model.IndexTerminalReason
 import tachiyomi.domain.immersion.model.IndexWorkItem
@@ -215,20 +218,39 @@ class ImmersionIndexingEngine(
     suspend fun processBatch(
         targetVersion: Int = ImmersionStatsVersions.INDEX,
         limit: Int = DEFAULT_BATCH_SIZE,
+        request: ImmersionReindexRequest = ImmersionReindexRequest(),
     ): ImmersionIndexBatchResult {
         val now = clock()
-        val work = repository.claimWork(targetVersion, limit, now)
+        val work = repository.claimWork(targetVersion, limit, now, request)
         var indexed = 0
         var unavailable = 0
         var failed = 0
-        work.forEach { item ->
-            when (process(item, targetVersion, now)) {
-                IndexOutcome.INDEXED -> indexed++
-                IndexOutcome.UNAVAILABLE -> unavailable++
-                IndexOutcome.FAILED -> failed++
+        try {
+            work.forEach { item ->
+                when (process(item, targetVersion, now)) {
+                    IndexOutcome.INDEXED -> indexed++
+                    IndexOutcome.UNAVAILABLE -> unavailable++
+                    IndexOutcome.FAILED -> failed++
+                }
             }
+        } catch (error: CancellationException) {
+            releaseClaimsAfterCancellation(work, error)
+            throw error
         }
         return ImmersionIndexBatchResult(work.size, indexed, unavailable, failed)
+    }
+
+    private suspend fun releaseClaimsAfterCancellation(
+        work: List<IndexWorkItem>,
+        cancellation: CancellationException,
+    ) {
+        try {
+            withContext(NonCancellable) {
+                repository.releaseClaims(work)
+            }
+        } catch (releaseError: Exception) {
+            cancellation.addSuppressed(releaseError)
+        }
     }
 
     private suspend fun process(
@@ -236,6 +258,7 @@ class ImmersionIndexingEngine(
         targetVersion: Int,
         now: Long,
     ): IndexOutcome {
+        var failureCode = INDEX_STORAGE_FAILURE
         return try {
             val rawText = item.rawText
             if (rawText == null) {
@@ -255,10 +278,14 @@ class ImmersionIndexingEngine(
                 return IndexOutcome.UNAVAILABLE
             }
             val language = item.languageTag ?: LanguageTag.from("und")
+            failureCode = NORMALIZATION_FAILURE
             val normalized = normalizer.normalize(rawText, language)
+            failureCode = CHARACTER_INDEX_FAILURE
             val characters = indexCharacters(normalized, item)
+            failureCode = TOKENIZER_FAILURE
             val tokenizer = tokenizers.firstOrNull { it.supports(language) }
             if (tokenizer == null) {
+                failureCode = INDEX_STORAGE_FAILURE
                 repository.storeIndexResult(
                     sourceUnitId = item.sourceUnitId,
                     claimGeneration = item.claimGeneration,
@@ -275,12 +302,14 @@ class ImmersionIndexingEngine(
                 IndexOutcome.UNAVAILABLE
             } else {
                 val tokenization = tokenizer.tokenize(normalized)
+                failureCode = WORD_INDEX_FAILURE
                 val words = tokenization.tokens.mapIndexedNotNull { ordinal, token ->
                     token.toIndexedWord(language, ordinal.toLong())
                         .takeUnless {
                             exclusionPolicy.excludesWord(it.id, language, item.titleId)
                         }
                 }
+                failureCode = INDEX_STORAGE_FAILURE
                 repository.storeIndexResult(
                     sourceUnitId = item.sourceUnitId,
                     claimGeneration = item.claimGeneration,
@@ -296,11 +325,13 @@ class ImmersionIndexingEngine(
                 )
                 IndexOutcome.INDEXED
             }
+        } catch (error: CancellationException) {
+            throw error
         } catch (_: Exception) {
             repository.markFailure(
                 sourceUnitId = item.sourceUnitId,
                 claimGeneration = item.claimGeneration,
-                errorCode = TOKENIZER_FAILURE,
+                errorCode = failureCode,
                 nextAttemptAtEpochMillis = now + retryDelayMillis(item.attemptCount),
             )
             IndexOutcome.FAILED
@@ -392,7 +423,11 @@ class ImmersionIndexingEngine(
     companion object {
         const val DEFAULT_BATCH_SIZE = 32
         const val CHARACTER_ONLY_TOKENIZER_ID = "characters-only"
+        const val NORMALIZATION_FAILURE = "NORMALIZATION_FAILURE"
+        const val CHARACTER_INDEX_FAILURE = "CHARACTER_INDEX_FAILURE"
         const val TOKENIZER_FAILURE = "TOKENIZER_FAILURE"
+        const val WORD_INDEX_FAILURE = "WORD_INDEX_FAILURE"
+        const val INDEX_STORAGE_FAILURE = "INDEX_STORAGE_FAILURE"
         private const val BASE_RETRY_MILLIS = 5_000L
         private const val MAX_RETRY_MILLIS = 3_600_000L
     }
@@ -419,14 +454,14 @@ class ImmersionReindexController(
         val requested = repository.requeue(request, targetVersion)
         var processed = 0L
         while (!isCancelled()) {
-            val batch = engine.processBatch(targetVersion, batchSize)
+            val batch = engine.processBatch(targetVersion, batchSize, request)
             if (batch.claimed == 0) break
             processed += batch.claimed
             onProgress(
                 ImmersionReindexProgress(
                     requested = requested,
                     processed = processed,
-                    remaining = repository.pendingCount(targetVersion),
+                    remaining = repository.pendingCount(targetVersion, request),
                     cancelled = false,
                 ),
             )
@@ -434,7 +469,7 @@ class ImmersionReindexController(
         return ImmersionReindexProgress(
             requested = requested,
             processed = processed,
-            remaining = repository.pendingCount(targetVersion),
+            remaining = repository.pendingCount(targetVersion, request),
             cancelled = isCancelled(),
         )
     }
