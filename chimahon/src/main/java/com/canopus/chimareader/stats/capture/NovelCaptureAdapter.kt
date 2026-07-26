@@ -385,10 +385,13 @@ object NovelCaptureReconciliationReporter {
     }
 
     @Synchronized
-    fun resetForTest() {
+    fun clear() {
         dayTotals.clear()
         mutableReport.value = NovelReconciliationReport()
     }
+
+    @Synchronized
+    fun resetForTest() = clear()
 
     private fun reconcile(
         session: ImmersionSession,

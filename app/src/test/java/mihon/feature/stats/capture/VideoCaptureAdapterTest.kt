@@ -174,6 +174,19 @@ class VideoCaptureAdapterTest {
     }
 
     @Test
+    fun `full stats reset helper clears video reconciliation evidence`() = runTest {
+        val adapter = playingAdapter(FakeRecorder())
+        adapter.onPlaybackPosition(1_000, 60_000)
+        adapter.onSubtitleCueActive(cue())
+        adapter.finalize().await()
+        VideoCaptureReconciliationReporter.report.value.entries.isNotEmpty() shouldBe true
+
+        clearStatsCaptureReconciliationReports()
+
+        VideoCaptureReconciliationReporter.report.value shouldBe VideoReconciliationReport()
+    }
+
+    @Test
     fun `primary learning language contributes while secondary and other language remain provenance only`() = runTest {
         val recorder = FakeRecorder()
         val adapter = playingAdapter(recorder)

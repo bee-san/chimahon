@@ -268,10 +268,13 @@ object VideoCaptureReconciliationReporter {
     }
 
     @Synchronized
-    fun resetForTest() {
+    fun clear() {
         observations.clear()
         mutableReport.value = VideoReconciliationReport()
     }
+
+    @Synchronized
+    fun resetForTest() = clear()
 
     private fun record(
         key: String,

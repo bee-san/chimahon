@@ -220,10 +220,13 @@ object MangaCaptureReconciliationReporter {
     }
 
     @Synchronized
-    fun resetForTest() {
+    fun clear() {
         dayTotals.clear()
         mutableReport.value = MangaReconciliationReport()
     }
+
+    @Synchronized
+    fun resetForTest() = clear()
 
     private fun reconcile(
         session: ImmersionSession,

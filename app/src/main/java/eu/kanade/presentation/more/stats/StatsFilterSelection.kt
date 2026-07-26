@@ -2,6 +2,30 @@
 
 package eu.kanade.presentation.more.stats
 
+import tachiyomi.domain.immersion.model.MaturityTier
+import tachiyomi.domain.immersion.model.ProvenanceState
+
+/**
+ * The analytics SQL resolves unmatched inventory rows to [MaturityTier.UNKNOWN]. Snapshot
+ * availability and staleness are result-quality states, not per-row maturity values.
+ */
+internal val statsMaturityFilterOptions = listOf(
+    MaturityTier.UNKNOWN,
+    MaturityTier.NEW,
+    MaturityTier.LEARNING,
+    MaturityTier.YOUNG,
+    MaturityTier.MATURE,
+)
+
+/**
+ * Analytics rows currently derive provenance from the legacy-import bit. Partial, removed, and
+ * unavailable provenance describe aggregate quality and cannot identify an individual row.
+ */
+internal val statsProvenanceFilterOptions = listOf(
+    ProvenanceState.AVAILABLE,
+    ProvenanceState.LEGACY_AGGREGATE,
+)
+
 internal sealed interface StatsFilterSelectionSummary<out T> {
     data object All : StatsFilterSelectionSummary<Nothing>
 
@@ -37,4 +61,17 @@ internal fun <T> toggleStatsFilterSelection(
         current + option
     }
     return updated.takeUnless { it.size == available.size }.orEmpty()
+}
+
+/**
+ * Keeps an empty stored set as the explicit "All" selection. A non-empty future/corrupt set that
+ * cannot be decoded becomes a safe no-match state instead of silently broadening to "All".
+ */
+internal inline fun <reified T : Enum<T>> Set<String>.decodePersistedStatsFilterSelection(
+    noMatchFallback: T,
+): Set<T> {
+    if (isEmpty()) return emptySet()
+    return mapNotNullTo(linkedSetOf()) { value ->
+        runCatching { enumValueOf<T>(value) }.getOrNull()
+    }.ifEmpty { setOf(noMatchFallback) }
 }
