@@ -5,7 +5,7 @@ package mihon.feature.stats.capture
 import com.canopus.chimareader.stats.capture.NovelCaptureReconciliationReporter
 
 /**
- * Drops process-local shadow-rollout evidence after the underlying stats database is erased.
+ * Drops process-local shadow-rollout evidence after all or part of the stats database is erased.
  */
 internal fun clearStatsCaptureReconciliationReports() {
     NovelCaptureReconciliationReporter.clear()

@@ -174,7 +174,7 @@ class VideoCaptureAdapterTest {
     }
 
     @Test
-    fun `full stats reset helper clears video reconciliation evidence`() = runTest {
+    fun `stats deletion helper clears video reconciliation evidence`() = runTest {
         val adapter = playingAdapter(FakeRecorder())
         adapter.onPlaybackPosition(1_000, 60_000)
         adapter.onSubtitleCueActive(cue())

@@ -90,6 +90,7 @@ class KMKDomainModule : InjektModule {
                 },
                 onSessionDeleted = { sessionId ->
                     get<PreferenceAnkiOperationRepairStore>().removeForSession(sessionId)
+                    clearStatsCaptureReconciliationReports()
                 },
             )
         }
