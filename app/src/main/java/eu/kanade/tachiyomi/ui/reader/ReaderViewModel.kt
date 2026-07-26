@@ -844,7 +844,7 @@ class ReaderViewModel @JvmOverloads constructor(
                 createdAtEpochMillis = manga.dateAdded.coerceAtLeast(0),
             ),
             recorder = immersionRecorder,
-            rawTextRetention = { immersionStatsPreferences.rawTextRetention().get() },
+            rawTextRetention = immersionStatsPreferences::effectiveRawTextRetention,
             idleTimeoutMillis = immersionStatsPreferences.readerIdleTimeoutSeconds().get() * 1_000L,
             incognito = incognitoMode,
         )

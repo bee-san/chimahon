@@ -2842,7 +2842,7 @@ class PlayerViewModel @JvmOverloads constructor(
                 durationMillis = duration.value.takeIf { it > 0 }?.let { (it * 1_000).toLong() },
             ),
             recorder = immersionRecorder,
-            rawTextRetention = { immersionStatsPreferences.rawTextRetention().get() },
+            rawTextRetention = immersionStatsPreferences::effectiveRawTextRetention,
             bufferingGraceMillis = immersionStatsPreferences.videoBufferingGraceSeconds().get() * 1_000L,
             incognito = incognitoMode,
         )

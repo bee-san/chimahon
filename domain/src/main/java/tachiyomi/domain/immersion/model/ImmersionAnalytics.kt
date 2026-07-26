@@ -146,6 +146,12 @@ data class AnalyticsInventoryMetrics(
 }
 
 @Serializable
+data class AnalyticsBucketInventory(
+    val metrics: AnalyticsInventoryMetrics = AnalyticsInventoryMetrics(),
+    val cumulative: AnalyticsInventoryMetrics = AnalyticsInventoryMetrics(),
+)
+
+@Serializable
 data class AnalyticsTrendPoint(
     val range: LocalDateRange,
     val metrics: ReadingMetrics,

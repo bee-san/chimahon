@@ -33,7 +33,7 @@ class ImmersionRetentionJob(
     override suspend fun doWork(): Result =
         try {
             val now = System.currentTimeMillis()
-            val retention = preferences.rawTextRetention().get()
+            val retention = preferences.effectiveRawTextRetention()
             val cutoff = retention.cutoffEpochMillis(now)
             val affected = when {
                 retention == RawTextRetention.UNTIL_DELETED -> 0L
@@ -46,7 +46,7 @@ class ImmersionRetentionJob(
             }
             Result.success(
                 workDataOf(
-                    AFFECTED_SOURCE_UNITS to affected,
+                    AFFECTED_PRIVATE_TEXT_RECORDS to affected,
                     RETENTION_POLICY to retention.name,
                 ),
             )
@@ -61,7 +61,7 @@ class ImmersionRetentionJob(
         private const val PERIODIC_WORK_NAME = "immersion-statistics-retention-periodic"
         private const val MANUAL_WORK_NAME = "immersion-statistics-retention-manual"
         private const val DRY_RUN = "dry_run"
-        const val AFFECTED_SOURCE_UNITS = "affected_source_units"
+        const val AFFECTED_PRIVATE_TEXT_RECORDS = "affected_private_text_records"
         const val RETENTION_POLICY = "retention_policy"
 
         fun setupTask(context: Context) {

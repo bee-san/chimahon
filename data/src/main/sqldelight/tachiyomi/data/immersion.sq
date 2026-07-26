@@ -934,6 +934,21 @@ SELECT DISTINCT source_unit_id
 FROM immersion_source_exposure
 WHERE session_id = :sessionId;
 
+selectImmersionSourceIdsForSessions:
+SELECT DISTINCT source_unit_id
+FROM immersion_source_exposure
+WHERE session_id IN :sessionIds;
+
+selectImmersionSourceIdsForEvents:
+SELECT DISTINCT source_unit_id
+FROM immersion_source_exposure
+WHERE event_id IN :eventIds;
+
+selectImmersionSourceIdsForTitles:
+SELECT id
+FROM immersion_source_unit
+WHERE title_id IN :titleIds;
+
 deleteImmersionSourceUnitIfUnreferenced:
 DELETE FROM immersion_source_unit
 WHERE
@@ -1373,6 +1388,26 @@ SET
     next_index_attempt_at = :nextAttemptAt
 WHERE id = :id;
 
+selectImmersionWordIdsForSource:
+SELECT DISTINCT word_id
+FROM immersion_word_occurrence
+WHERE source_unit_id = :sourceUnitId;
+
+selectImmersionCharacterCodePointsForSource:
+SELECT DISTINCT character_code_point
+FROM immersion_character_occurrence
+WHERE source_unit_id = :sourceUnitId;
+
+selectImmersionWordIdsForSources:
+SELECT DISTINCT word_id
+FROM immersion_word_occurrence
+WHERE source_unit_id IN :sourceUnitIds;
+
+selectImmersionCharacterCodePointsForSources:
+SELECT DISTINCT character_code_point
+FROM immersion_character_occurrence
+WHERE source_unit_id IN :sourceUnitIds;
+
 deleteImmersionWordOccurrencesForSource:
 DELETE FROM immersion_word_occurrence
 WHERE source_unit_id = :sourceUnitId;
@@ -1380,6 +1415,60 @@ WHERE source_unit_id = :sourceUnitId;
 deleteImmersionCharacterOccurrencesForSource:
 DELETE FROM immersion_character_occurrence
 WHERE source_unit_id = :sourceUnitId;
+
+recomputeImmersionSourceSeenTimes:
+UPDATE immersion_source_unit
+SET
+    first_exposed_at = (
+        SELECT min(event.occurred_at)
+        FROM immersion_source_exposure AS exposure
+        JOIN immersion_event AS event ON event.id = exposure.event_id
+        JOIN immersion_session AS session ON session.id = event.session_id
+        WHERE
+            exposure.source_unit_id = immersion_source_unit.id
+            AND session.status != 'DELETED'
+    ),
+    last_exposed_at = (
+        SELECT max(event.occurred_at)
+        FROM immersion_source_exposure AS exposure
+        JOIN immersion_event AS event ON event.id = exposure.event_id
+        JOIN immersion_session AS session ON session.id = event.session_id
+        WHERE
+            exposure.source_unit_id = immersion_source_unit.id
+            AND session.status != 'DELETED'
+    )
+WHERE EXISTS (
+    SELECT 1
+    FROM immersion_source_exposure AS exposure
+    JOIN immersion_event AS event ON event.id = exposure.event_id
+    JOIN immersion_session AS session ON session.id = event.session_id
+    WHERE
+        exposure.source_unit_id = immersion_source_unit.id
+        AND session.status != 'DELETED'
+);
+
+selectImmersionSourceExposureBoundsByIds:
+SELECT
+    source.id AS source_unit_id,
+    source.first_exposed_at,
+    source.last_exposed_at,
+    min(event.occurred_at) AS first_event_at,
+    max(event.occurred_at) AS last_event_at
+FROM immersion_source_unit AS source
+JOIN immersion_source_exposure AS exposure ON exposure.source_unit_id = source.id
+JOIN immersion_event AS event ON event.id = exposure.event_id
+JOIN immersion_session AS session ON session.id = event.session_id
+WHERE
+    source.id IN :sourceUnitIds
+    AND session.status != 'DELETED'
+GROUP BY source.id;
+
+updateImmersionSourceSeenTimesById:
+UPDATE immersion_source_unit
+SET
+    first_exposed_at = :firstExposedAt,
+    last_exposed_at = :lastExposedAt
+WHERE id = :sourceUnitId;
 
 recomputeImmersionWordSeenTimes:
 UPDATE immersion_word
@@ -1402,6 +1491,29 @@ WHERE EXISTS (
     WHERE occurrence.word_id = immersion_word.id
 );
 
+recomputeImmersionWordSeenTimesByIds:
+UPDATE immersion_word
+SET
+    first_seen_at = (
+        SELECT min(source.first_exposed_at)
+        FROM immersion_word_occurrence AS occurrence
+        JOIN immersion_source_unit AS source ON source.id = occurrence.source_unit_id
+        WHERE occurrence.word_id = immersion_word.id
+    ),
+    last_seen_at = (
+        SELECT max(source.last_exposed_at)
+        FROM immersion_word_occurrence AS occurrence
+        JOIN immersion_source_unit AS source ON source.id = occurrence.source_unit_id
+        WHERE occurrence.word_id = immersion_word.id
+    )
+WHERE
+    id IN :wordIds
+    AND EXISTS (
+        SELECT 1
+        FROM immersion_word_occurrence AS occurrence
+        WHERE occurrence.word_id = immersion_word.id
+    );
+
 recomputeImmersionCharacterSeenTimes:
 UPDATE immersion_character
 SET
@@ -1423,6 +1535,29 @@ WHERE EXISTS (
     WHERE occurrence.character_code_point = immersion_character.code_point
 );
 
+recomputeImmersionCharacterSeenTimesByCodePoints:
+UPDATE immersion_character
+SET
+    first_seen_at = (
+        SELECT min(source.first_exposed_at)
+        FROM immersion_character_occurrence AS occurrence
+        JOIN immersion_source_unit AS source ON source.id = occurrence.source_unit_id
+        WHERE occurrence.character_code_point = immersion_character.code_point
+    ),
+    last_seen_at = (
+        SELECT max(source.last_exposed_at)
+        FROM immersion_character_occurrence AS occurrence
+        JOIN immersion_source_unit AS source ON source.id = occurrence.source_unit_id
+        WHERE occurrence.character_code_point = immersion_character.code_point
+    )
+WHERE
+    code_point IN :codePoints
+    AND EXISTS (
+        SELECT 1
+        FROM immersion_character_occurrence AS occurrence
+        WHERE occurrence.character_code_point = immersion_character.code_point
+    );
+
 deleteOrphanImmersionWords:
 DELETE FROM immersion_word
 WHERE NOT EXISTS (
@@ -1431,6 +1566,16 @@ WHERE NOT EXISTS (
     WHERE occurrence.word_id = immersion_word.id
 );
 
+deleteOrphanImmersionWordsByIds:
+DELETE FROM immersion_word
+WHERE
+    id IN :wordIds
+    AND NOT EXISTS (
+        SELECT 1
+        FROM immersion_word_occurrence AS occurrence
+        WHERE occurrence.word_id = immersion_word.id
+    );
+
 deleteOrphanImmersionCharacters:
 DELETE FROM immersion_character
 WHERE NOT EXISTS (
@@ -1438,6 +1583,16 @@ WHERE NOT EXISTS (
     FROM immersion_character_occurrence AS occurrence
     WHERE occurrence.character_code_point = immersion_character.code_point
 );
+
+deleteOrphanImmersionCharactersByCodePoints:
+DELETE FROM immersion_character
+WHERE
+    code_point IN :codePoints
+    AND NOT EXISTS (
+        SELECT 1
+        FROM immersion_character_occurrence AS occurrence
+        WHERE occurrence.character_code_point = immersion_character.code_point
+    );
 
 requeueImmersionSourceUnits:
 UPDATE immersion_source_unit
@@ -1723,6 +1878,276 @@ SELECT *
 FROM immersion_daily_rollup
 WHERE local_date BETWEEN :startDate AND :endDate
 ORDER BY local_date, scope_key;
+
+selectImmersionAnalyticsInventoryFacts:
+WITH filtered_exposure AS (
+    SELECT
+        event.id AS event_id,
+        event.occurred_at,
+        event.local_date,
+        exposure.source_unit_id,
+        exposure.replay_ordinal,
+        session.media_kind,
+        session.profile_id,
+        coalesce(session.language_tag, '') AS language_tag,
+        session.title_id,
+        session.legacy_import
+    FROM immersion_source_exposure AS exposure
+    JOIN immersion_event AS event ON event.id = exposure.event_id
+    JOIN immersion_session AS session ON session.id = event.session_id
+    WHERE
+        session.status != 'DELETED'
+        AND (event.local_date BETWEEN :startDate AND :endDate)
+        AND (:filterMediaKinds = 0 OR session.media_kind IN :mediaKinds)
+        AND (:filterProfileIds = 0 OR session.profile_id IN :profileIds)
+        AND (:filterLanguageTags = 0 OR coalesce(session.language_tag, '') IN :languageTags)
+        AND (:filterTitleIds = 0 OR session.title_id IN :titleIds)
+        AND (:includeRereads = 1 OR exposure.replay_ordinal = 0)
+        AND (:includeLegacy = 1 OR session.legacy_import = 0)
+        AND (
+            :filterProvenance = 0
+            OR (
+                session.legacy_import = 1
+                AND 'LEGACY_AGGREGATE' IN :provenanceStates
+            )
+            OR (
+                session.legacy_import = 0
+                AND 'AVAILABLE' IN :provenanceStates
+            )
+        )
+),
+encountered_words AS (
+    SELECT DISTINCT occurrence.word_id
+    FROM filtered_exposure
+    JOIN immersion_word_occurrence AS occurrence
+        ON occurrence.source_unit_id = filtered_exposure.source_unit_id
+),
+candidate_words AS (
+    SELECT
+        encountered_words.word_id,
+        word.first_seen_at
+    FROM encountered_words
+    JOIN immersion_word AS word ON word.id = encountered_words.word_id
+    WHERE
+        word.excluded = 0
+        AND (
+            :filterMaturity = 0
+            OR EXISTS (
+                SELECT 1
+                FROM immersion_anki_item AS maturity_item
+                JOIN immersion_anki_snapshot AS maturity_snapshot
+                    ON maturity_snapshot.id = maturity_item.snapshot_id
+                WHERE
+                    maturity_snapshot.is_current = 1
+                    AND (:filterProfileIds = 0 OR maturity_snapshot.profile_id IN :profileIds)
+                    AND maturity_item.language_tag = word.language_tag
+                    AND maturity_item.normalized_word = word.normalized_headword
+                    AND maturity_item.maturity_tier IN :maturityTiers
+            )
+            OR (
+                'UNKNOWN' IN :maturityTiers
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM immersion_anki_item AS unknown_item
+                    JOIN immersion_anki_snapshot AS unknown_snapshot
+                        ON unknown_snapshot.id = unknown_item.snapshot_id
+                    WHERE
+                        unknown_snapshot.is_current = 1
+                        AND (:filterProfileIds = 0 OR unknown_snapshot.profile_id IN :profileIds)
+                        AND unknown_item.language_tag = word.language_tag
+                        AND unknown_item.normalized_word = word.normalized_headword
+                )
+            )
+        )
+),
+first_word_event_times AS (
+    SELECT
+        candidate_words.word_id,
+        min(event.occurred_at) AS occurred_at
+    FROM candidate_words
+    JOIN immersion_word_occurrence AS occurrence
+        ON occurrence.word_id = candidate_words.word_id
+    JOIN immersion_source_unit AS source
+        ON source.id = occurrence.source_unit_id
+        AND source.first_exposed_at = candidate_words.first_seen_at
+    JOIN immersion_source_exposure AS first_exposure
+        ON first_exposure.source_unit_id = source.id
+    JOIN immersion_event AS event
+        ON event.id = first_exposure.event_id
+    JOIN immersion_session AS session ON session.id = event.session_id
+    WHERE session.status != 'DELETED'
+    GROUP BY candidate_words.word_id
+),
+first_word_events AS (
+    SELECT
+        first_word_event_times.word_id,
+        min(event.id) AS event_id
+    FROM first_word_event_times
+    JOIN immersion_word_occurrence AS occurrence
+        ON occurrence.word_id = first_word_event_times.word_id
+    JOIN immersion_source_unit AS source
+        ON source.id = occurrence.source_unit_id
+    JOIN immersion_source_exposure AS first_exposure
+        ON first_exposure.source_unit_id = source.id
+    JOIN immersion_event AS event
+        ON event.id = first_exposure.event_id
+        AND event.occurred_at = first_word_event_times.occurred_at
+    JOIN immersion_session AS session ON session.id = event.session_id
+    WHERE session.status != 'DELETED'
+    GROUP BY first_word_event_times.word_id
+),
+encountered_characters AS (
+    SELECT DISTINCT occurrence.character_code_point
+    FROM filtered_exposure
+    JOIN immersion_character_occurrence AS occurrence
+        ON occurrence.source_unit_id = filtered_exposure.source_unit_id
+),
+candidate_characters AS (
+    SELECT
+        encountered_characters.character_code_point,
+        character.first_seen_at
+    FROM encountered_characters
+    JOIN immersion_character AS character
+        ON character.code_point = encountered_characters.character_code_point
+    WHERE
+        :filterMaturity = 0
+        OR EXISTS (
+            SELECT 1
+            FROM immersion_anki_character AS maturity_character
+            JOIN immersion_anki_item AS maturity_item
+                ON maturity_item.snapshot_id = maturity_character.snapshot_id
+                AND maturity_item.card_id = maturity_character.card_id
+            JOIN immersion_anki_snapshot AS maturity_snapshot
+                ON maturity_snapshot.id = maturity_item.snapshot_id
+            WHERE
+                maturity_snapshot.is_current = 1
+                AND (:filterProfileIds = 0 OR maturity_snapshot.profile_id IN :profileIds)
+                AND maturity_character.code_point =
+                    encountered_characters.character_code_point
+                AND maturity_item.maturity_tier IN :maturityTiers
+        )
+        OR (
+            'UNKNOWN' IN :maturityTiers
+            AND NOT EXISTS (
+                SELECT 1
+                FROM immersion_anki_character AS unknown_character
+                JOIN immersion_anki_item AS unknown_item
+                    ON unknown_item.snapshot_id = unknown_character.snapshot_id
+                    AND unknown_item.card_id = unknown_character.card_id
+                JOIN immersion_anki_snapshot AS unknown_snapshot
+                    ON unknown_snapshot.id = unknown_item.snapshot_id
+                WHERE
+                    unknown_snapshot.is_current = 1
+                    AND (:filterProfileIds = 0 OR unknown_snapshot.profile_id IN :profileIds)
+                    AND unknown_character.code_point =
+                        encountered_characters.character_code_point
+            )
+        )
+),
+candidate_character_state AS (
+    SELECT
+        candidate_characters.character_code_point,
+        CASE WHEN EXISTS (
+            SELECT 1
+            FROM immersion_anki_character AS anki_character
+            JOIN immersion_anki_snapshot AS snapshot
+                ON snapshot.id = anki_character.snapshot_id
+            WHERE
+                snapshot.is_current = 1
+                AND (:filterProfileIds = 0 OR snapshot.profile_id IN :profileIds)
+                AND anki_character.code_point = candidate_characters.character_code_point
+        ) THEN 1 ELSE 0 END AS represented_in_anki
+    FROM candidate_characters
+),
+first_character_event_times AS (
+    SELECT
+        candidate_characters.character_code_point,
+        min(event.occurred_at) AS occurred_at
+    FROM candidate_characters
+    JOIN immersion_character_occurrence AS occurrence
+        ON occurrence.character_code_point = candidate_characters.character_code_point
+    JOIN immersion_source_unit AS source
+        ON source.id = occurrence.source_unit_id
+        AND source.first_exposed_at = candidate_characters.first_seen_at
+    JOIN immersion_source_exposure AS first_exposure
+        ON first_exposure.source_unit_id = source.id
+    JOIN immersion_event AS event
+        ON event.id = first_exposure.event_id
+    JOIN immersion_session AS session ON session.id = event.session_id
+    WHERE session.status != 'DELETED'
+    GROUP BY candidate_characters.character_code_point
+),
+first_character_events AS (
+    SELECT
+        first_character_event_times.character_code_point,
+        min(event.id) AS event_id
+    FROM first_character_event_times
+    JOIN immersion_character_occurrence AS occurrence
+        ON occurrence.character_code_point = first_character_event_times.character_code_point
+    JOIN immersion_source_unit AS source
+        ON source.id = occurrence.source_unit_id
+    JOIN immersion_source_exposure AS first_exposure
+        ON first_exposure.source_unit_id = source.id
+    JOIN immersion_event AS event
+        ON event.id = first_exposure.event_id
+        AND event.occurred_at = first_character_event_times.occurred_at
+    JOIN immersion_session AS session ON session.id = event.session_id
+    WHERE session.status != 'DELETED'
+    GROUP BY first_character_event_times.character_code_point
+),
+word_facts AS (
+    SELECT
+        filtered_exposure.local_date,
+        filtered_exposure.title_id,
+        'WORD' AS entity_kind,
+        occurrence.word_id AS entity_key,
+        max(
+            CASE
+                WHEN filtered_exposure.event_id = first_word_events.event_id THEN 1
+                ELSE 0
+            END
+        ) AS globally_new,
+        0 AS represented_in_anki
+    FROM filtered_exposure
+    JOIN immersion_word_occurrence AS occurrence
+        ON occurrence.source_unit_id = filtered_exposure.source_unit_id
+    JOIN candidate_words ON candidate_words.word_id = occurrence.word_id
+    JOIN first_word_events ON first_word_events.word_id = occurrence.word_id
+    GROUP BY
+        filtered_exposure.local_date,
+        filtered_exposure.title_id,
+        occurrence.word_id
+),
+character_facts AS (
+    SELECT
+        filtered_exposure.local_date,
+        filtered_exposure.title_id,
+        'CHARACTER' AS entity_kind,
+        CAST(occurrence.character_code_point AS TEXT) AS entity_key,
+        max(
+            CASE
+                WHEN filtered_exposure.event_id = first_character_events.event_id THEN 1
+                ELSE 0
+            END
+        ) AS globally_new,
+        candidate_character_state.represented_in_anki
+    FROM filtered_exposure
+    JOIN immersion_character_occurrence AS occurrence
+        ON occurrence.source_unit_id = filtered_exposure.source_unit_id
+    JOIN candidate_character_state
+        ON candidate_character_state.character_code_point = occurrence.character_code_point
+    JOIN first_character_events
+        ON first_character_events.character_code_point = occurrence.character_code_point
+    GROUP BY
+        filtered_exposure.local_date,
+        filtered_exposure.title_id,
+        occurrence.character_code_point,
+        candidate_character_state.represented_in_anki
+)
+SELECT * FROM word_facts
+UNION ALL
+SELECT * FROM character_facts
+ORDER BY local_date, title_id, entity_kind, entity_key;
 
 selectImmersionAnalyticsInventory:
 WITH filtered_exposure AS (

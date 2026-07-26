@@ -157,7 +157,7 @@ class KMKDomainModule : InjektModule {
             val preferences = get<ImmersionStatsPreferences>()
             DefaultLookupTelemetry(
                 recorder = get(),
-                rawTextRetention = { preferences.rawTextRetention().get() },
+                rawTextRetention = preferences::effectiveRawTextRetention,
             )
         }
         addSingletonFactory<AnkiOperationRecorder> {
