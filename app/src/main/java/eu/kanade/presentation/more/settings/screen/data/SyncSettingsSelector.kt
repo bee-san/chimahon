@@ -125,6 +125,8 @@ private class SyncSettingsSelectorModel(
                 // SY <--
                 // Chimahon -->
                 novels = syncSettings.novels,
+                immersionStats = syncSettings.immersionStats,
+                immersionRawText = syncSettings.immersionRawText,
                 // Chimahon <--
                 animeEntries = syncSettings.animeEntries,
             )
@@ -149,6 +151,8 @@ private class SyncSettingsSelectorModel(
                 // SY <--
                 // Chimahon -->
                 novels = backupOptions.novels,
+                immersionStats = backupOptions.immersionStats,
+                immersionRawText = backupOptions.immersionRawText,
                 // Chimahon <--
                 animeEntries = backupOptions.animeEntries,
             )

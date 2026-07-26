@@ -15,10 +15,10 @@ class ImmersionStatsPreferences(
 ) {
     private val captureEnabledPreference = preferenceStore.getBoolean(CAPTURE_ENABLED, true)
     private val indexingEnabledPreference = preferenceStore.getBoolean(INDEXING_ENABLED, true)
-    private val uiEnabledPreference = preferenceStore.getBoolean(UI_ENABLED, true)
-    private val ankiSyncEnabledPreference = preferenceStore.getBoolean(ANKI_SYNC_ENABLED, true)
-    private val goalsEnabledPreference = preferenceStore.getBoolean(GOALS_ENABLED, true)
-    private val legacyWritesEnabledPreference = preferenceStore.getBoolean(LEGACY_WRITES_ENABLED, false)
+    private val uiEnabledPreference = preferenceStore.getBoolean(UI_ENABLED, false)
+    private val ankiSyncEnabledPreference = preferenceStore.getBoolean(ANKI_SYNC_ENABLED, false)
+    private val goalsEnabledPreference = preferenceStore.getBoolean(GOALS_ENABLED, false)
+    private val legacyWritesEnabledPreference = preferenceStore.getBoolean(LEGACY_WRITES_ENABLED, true)
     private val rolloutVersionPreference = preferenceStore.getInt(ROLLOUT_VERSION, 0)
     private val rawTextRetentionPreference = preferenceStore.getEnum(
         RAW_TEXT_RETENTION,
@@ -32,13 +32,13 @@ class ImmersionStatsPreferences(
     fun applyReleaseRolloutDefaults() {
         val rolloutVersion = rolloutVersionPreference.get()
         if (rolloutVersion >= CURRENT_ROLLOUT_VERSION) return
-        if (rolloutVersion < FEATURE_ROLLOUT_VERSION) {
+        if (rolloutVersion < SAFE_SHADOW_ROLLOUT_VERSION) {
             captureEnabled().set(true)
             indexingEnabled().set(true)
-            uiEnabled().set(true)
-            ankiSyncEnabled().set(true)
-            goalsEnabled().set(true)
-            legacyWritesEnabled().set(false)
+            uiEnabled().set(false)
+            ankiSyncEnabled().set(false)
+            goalsEnabled().set(false)
+            legacyWritesEnabled().set(true)
         }
         if (
             rolloutVersion < RAW_TEXT_DISCLOSURE_ROLLOUT_VERSION &&
@@ -97,9 +97,17 @@ class ImmersionStatsPreferences(
 
     fun dashboardRangePreset() = preferenceStore.getString(DASHBOARD_RANGE_PRESET, "TODAY")
 
+    fun dashboardPeriodOffset() = preferenceStore.getInt(DASHBOARD_PERIOD_OFFSET, 0)
+
+    fun dashboardCustomStart() = preferenceStore.getString(DASHBOARD_CUSTOM_START, "")
+
+    fun dashboardCustomEnd() = preferenceStore.getString(DASHBOARD_CUSTOM_END, "")
+
     fun dashboardMediaKind() = preferenceStore.getString(DASHBOARD_MEDIA_KIND, "")
 
     fun dashboardProfileId() = preferenceStore.getString(DASHBOARD_PROFILE_ID, "")
+
+    fun dashboardTitleId() = preferenceStore.getString(DASHBOARD_TITLE_ID, "")
 
     fun dashboardCharacterMetric() = preferenceStore.getEnum(
         DASHBOARD_CHARACTER_METRIC,
@@ -114,6 +122,8 @@ class ImmersionStatsPreferences(
         DASHBOARD_TREND_SCALE,
         AnalyticsBucketScale.DAY,
     )
+
+    fun dashboardTrendMetric() = preferenceStore.getString(DASHBOARD_TREND_METRIC, "CHARACTERS")
 
     fun dashboardTitleSort() = preferenceStore.getEnum(
         DASHBOARD_TITLE_SORT,
@@ -130,13 +140,21 @@ class ImmersionStatsPreferences(
         AnalyticsSort.MOST_OCCURRENCES,
     )
 
+    fun dashboardSelectedTitleId() = preferenceStore.getString(DASHBOARD_SELECTED_TITLE_ID, "")
+
+    fun dashboardSelectedWordId() = preferenceStore.getString(DASHBOARD_SELECTED_WORD_ID, "")
+
+    fun dashboardSelectedCharacter() = preferenceStore.getInt(DASHBOARD_SELECTED_CHARACTER, -1)
+
+    fun dashboardSelectedSessionId() = preferenceStore.getString(DASHBOARD_SELECTED_SESSION_ID, "")
+
     companion object {
-        const val CURRENT_ROLLOUT_VERSION = 2
+        const val CURRENT_ROLLOUT_VERSION = 3
         const val CURRENT_RAW_TEXT_DISCLOSURE_VERSION = 1
         const val DEFAULT_READER_IDLE_TIMEOUT_SECONDS = 120
         const val DEFAULT_VIDEO_BUFFERING_GRACE_SECONDS = 5
-        private const val FEATURE_ROLLOUT_VERSION = 1
         private const val RAW_TEXT_DISCLOSURE_ROLLOUT_VERSION = 2
+        private const val SAFE_SHADOW_ROLLOUT_VERSION = 3
 
         const val CAPTURE_ENABLED = "immersion_stats_capture_enabled"
         const val INDEXING_ENABLED = "immersion_stats_indexing_enabled"
@@ -152,14 +170,23 @@ class ImmersionStatsPreferences(
         const val RAW_TEXT_DISCLOSURE_VERSION = "immersion_stats_raw_text_disclosure_version"
         const val NOVEL_NET_PROGRESS_POLICY = "immersion_stats_novel_net_progress_policy"
         const val DASHBOARD_RANGE_PRESET = "immersion_stats_dashboard_range_preset"
+        const val DASHBOARD_PERIOD_OFFSET = "immersion_stats_dashboard_period_offset"
+        const val DASHBOARD_CUSTOM_START = "immersion_stats_dashboard_custom_start"
+        const val DASHBOARD_CUSTOM_END = "immersion_stats_dashboard_custom_end"
         const val DASHBOARD_MEDIA_KIND = "immersion_stats_dashboard_media_kind"
         const val DASHBOARD_PROFILE_ID = "immersion_stats_dashboard_profile_id"
+        const val DASHBOARD_TITLE_ID = "immersion_stats_dashboard_title_id"
         const val DASHBOARD_CHARACTER_METRIC = "immersion_stats_dashboard_character_metric"
         const val DASHBOARD_INCLUDE_REREADS = "immersion_stats_dashboard_include_rereads"
         const val DASHBOARD_SELECTED_TAB = "immersion_stats_dashboard_selected_tab"
         const val DASHBOARD_TREND_SCALE = "immersion_stats_dashboard_trend_scale"
+        const val DASHBOARD_TREND_METRIC = "immersion_stats_dashboard_trend_metric"
         const val DASHBOARD_TITLE_SORT = "immersion_stats_dashboard_title_sort"
         const val DASHBOARD_VOCABULARY_SORT = "immersion_stats_dashboard_vocabulary_sort"
         const val DASHBOARD_CHARACTER_SORT = "immersion_stats_dashboard_character_sort"
+        const val DASHBOARD_SELECTED_TITLE_ID = "immersion_stats_dashboard_selected_title_id"
+        const val DASHBOARD_SELECTED_WORD_ID = "immersion_stats_dashboard_selected_word_id"
+        const val DASHBOARD_SELECTED_CHARACTER = "immersion_stats_dashboard_selected_character"
+        const val DASHBOARD_SELECTED_SESSION_ID = "immersion_stats_dashboard_selected_session_id"
     }
 }

@@ -60,6 +60,10 @@ class ImmersionIndexJob(
         private const val MAX_BATCHES_PER_RUN = 4
 
         fun start(context: Context) {
+            if (!Injekt.get<ImmersionStatsPreferences>().indexingEnabled().get()) {
+                cancel(context)
+                return
+            }
             val request = OneTimeWorkRequestBuilder<ImmersionIndexJob>()
                 .setConstraints(
                     Constraints.Builder()
@@ -74,6 +78,19 @@ class ImmersionIndexJob(
                 ExistingWorkPolicy.KEEP,
                 request,
             )
+        }
+
+        fun setEnabled(context: Context, enabled: Boolean) {
+            Injekt.get<ImmersionStatsPreferences>().indexingEnabled().set(enabled)
+            if (enabled) {
+                start(context)
+            } else {
+                cancel(context)
+            }
+        }
+
+        fun cancel(context: Context) {
+            WorkManager.getInstance(context).cancelUniqueWork(UNIQUE_WORK_NAME)
         }
     }
 }

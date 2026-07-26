@@ -61,6 +61,7 @@ dependencies {
     // Mihon core
     implementation(projects.core.common)
     implementation(projects.domain)
+    implementation(projects.i18nKmk)
     implementation(libs.unifile)
 
     testImplementation(libs.bundles.test)

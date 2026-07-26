@@ -26,6 +26,7 @@ import tachiyomi.domain.immersion.model.AnkiSnapshotStatus
 import tachiyomi.domain.immersion.model.LanguageTag
 import tachiyomi.domain.immersion.service.AnkiInventoryConfiguration
 import tachiyomi.domain.immersion.service.AnkiInventorySynchronizer
+import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.util.concurrent.TimeUnit
@@ -36,8 +37,10 @@ class AnkiInventorySyncJob(
 ) : CoroutineWorker(context, workerParameters) {
     private val synchronizer: AnkiInventorySynchronizer = Injekt.get()
     private val dictionaryPreferences: DictionaryPreferences = Injekt.get()
+    private val statsPreferences: ImmersionStatsPreferences = Injekt.get()
 
     override suspend fun doWork(): Result {
+        if (!statsPreferences.ankiSyncEnabled().get()) return Result.success()
         val configurations = dictionaryPreferences.profileStore.getProfiles()
             .filter(AnkiProfile::ankiEnabled)
             .mapNotNull(AnkiProfile::toInventoryConfiguration)
@@ -75,6 +78,10 @@ class AnkiInventorySyncJob(
         private const val MANUAL_WORK_NAME = "immersion-anki-inventory-manual"
 
         fun setupTask(context: Context) {
+            if (!Injekt.get<ImmersionStatsPreferences>().ankiSyncEnabled().get()) {
+                cancelAll(context)
+                return
+            }
             val request = PeriodicWorkRequestBuilder<AnkiInventorySyncJob>(24, TimeUnit.HOURS)
                 .setConstraints(defaultConstraints())
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
@@ -87,6 +94,7 @@ class AnkiInventorySyncJob(
         }
 
         fun refreshNow(context: Context) {
+            if (!Injekt.get<ImmersionStatsPreferences>().ankiSyncEnabled().get()) return
             val request = OneTimeWorkRequestBuilder<AnkiInventorySyncJob>()
                 .setConstraints(defaultConstraints())
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
@@ -100,6 +108,20 @@ class AnkiInventorySyncJob(
 
         fun cancel(context: Context) {
             WorkManager.getInstance(context).cancelUniqueWork(MANUAL_WORK_NAME)
+        }
+
+        fun setEnabled(context: Context, enabled: Boolean) {
+            Injekt.get<ImmersionStatsPreferences>().ankiSyncEnabled().set(enabled)
+            if (enabled) {
+                setupTask(context)
+            } else {
+                cancelAll(context)
+            }
+        }
+
+        fun cancelAll(context: Context) {
+            WorkManager.getInstance(context).cancelUniqueWork(MANUAL_WORK_NAME)
+            WorkManager.getInstance(context).cancelUniqueWork(PERIODIC_WORK_NAME)
         }
 
         private fun defaultConstraints() =

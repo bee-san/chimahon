@@ -397,6 +397,78 @@ class NovelCaptureAdapterTest {
     }
 
     @Test
+    fun `progress bursts coalesce to an exact net delta before completion`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+
+        adapter.start("chapter-1.xhtml", 100)
+        repeat(2_000) { index ->
+            adapter.onProgress(101L + index)
+        }
+        adapter.onChapterCompleted()
+        adapter.onTitleCompleted()
+        adapter.finalize(legacy(net = 2_000)).await()
+
+        recorder.commands.filterIsInstance<CaptureCommand.Progress>()
+            .single()
+            .netCharacters shouldBe NetCharacterProgress(2_000)
+        recorder.commands.filterIsInstance<CaptureCommand.Activity>()
+            .map(CaptureCommand.Activity::eventType) shouldBe
+            listOf(EventType.UNIT_COMPLETED, EventType.TITLE_COMPLETED)
+        adapter.queueDiagnostics.value.let {
+            it.depth shouldBe 0
+            it.coalescedCommands shouldBe 1_999
+            it.droppedSnapshots shouldBe 0
+            it.semanticOverflowCommands shouldBe 0
+            it.droppedSemanticCommands shouldBe 0
+        }
+    }
+
+    @Test
+    fun `bounded queue saturation is diagnosed without escaping into reading`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+
+        val failure = runCatching {
+            adapter.start("chapter-0.xhtml", 0)
+            repeat(128) { index ->
+                adapter.onChapterChanged(
+                    sectionId = "chapter-${index + 1}.xhtml",
+                    netPosition = index + 1L,
+                    cause = NovelNavigationCause.TABLE_OF_CONTENTS,
+                )
+            }
+        }.exceptionOrNull()
+
+        failure shouldBe null
+        adapter.queueDiagnostics.value.let {
+            it.depth shouldBe 128
+            it.overflowDepth shouldBe 64
+            it.highWatermark shouldBe 128
+            it.semanticOverflowCommands shouldBe 64
+            it.droppedSemanticCommands shouldBe 1
+        }
+        adapter.finalize(legacy()).await()
+        recorder.commands.filterIsInstance<CaptureCommand.Activity>()
+            .count { it.eventType == EventType.SEEK } shouldBe 127
+    }
+
+    @Test
+    fun `recorder exception is diagnosed and later reading commands still drain`() = runTest {
+        val recorder = FakeRecorder(recordFailuresRemaining = 1)
+        val adapter = adapter(recorder)
+
+        adapter.start("chapter-1.xhtml", 0)
+        adapter.onChapterChanged("chapter-2.xhtml", 10, NovelNavigationCause.SEARCH)
+        adapter.onChapterCompleted()
+        adapter.finalize(legacy()).await()
+
+        adapter.queueDiagnostics.value.workerFailures shouldBe 1
+        recorder.commands.filterIsInstance<CaptureCommand.Activity>()
+            .map(CaptureCommand.Activity::eventType) shouldBe listOf(EventType.UNIT_COMPLETED)
+    }
+
+    @Test
     fun `codec counts supplementary code points and rejects overlapping source ranges`() {
         val decoded = NovelVisibleRangeCodec.decode(
             ranges(
@@ -495,6 +567,7 @@ class NovelCaptureAdapterTest {
     private class FakeRecorder(
         val seenSources: MutableSet<SourceUnitId> = mutableSetOf(),
         private val suppressStart: Boolean = false,
+        private var recordFailuresRemaining: Int = 0,
     ) : ImmersionRecorder {
         private val mutableState = MutableStateFlow(ImmersionRecorderSnapshot())
         override val state: StateFlow<ImmersionRecorderSnapshot> = mutableState
@@ -530,6 +603,10 @@ class NovelCaptureAdapterTest {
             command: CaptureCommand,
         ): RecordResult {
             if (handle != this.handle) return RecordResult.Rejected(ImmersionSessionState.ACTIVE)
+            if (recordFailuresRemaining > 0) {
+                recordFailuresRemaining -= 1
+                error("test recorder failure")
+            }
             commands += command
             return RecordResult.Enqueued(1)
         }

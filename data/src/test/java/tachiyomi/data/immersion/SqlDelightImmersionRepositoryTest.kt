@@ -31,14 +31,17 @@ import tachiyomi.data.StringListColumnAdapter
 import tachiyomi.domain.immersion.model.AnalyticsBucketInventory
 import tachiyomi.domain.immersion.model.AnalyticsInventoryMetrics
 import tachiyomi.domain.immersion.model.AnalyticsSort
+import tachiyomi.domain.immersion.model.AnalyticsTitleSeriesSelection
 import tachiyomi.domain.immersion.model.AnkiInventoryFailure
 import tachiyomi.domain.immersion.model.AnkiMatchConfidence
+import tachiyomi.domain.immersion.model.AnkiMaturityAggregation
 import tachiyomi.domain.immersion.model.AnkiOperationEvent
 import tachiyomi.domain.immersion.model.AnkiOperationId
 import tachiyomi.domain.immersion.model.AnkiOperationStatus
 import tachiyomi.domain.immersion.model.AnkiOperationType
 import tachiyomi.domain.immersion.model.AnkiSnapshotStatus
 import tachiyomi.domain.immersion.model.CapabilityState
+import tachiyomi.domain.immersion.model.CharacterMetric
 import tachiyomi.domain.immersion.model.CharacterVolume
 import tachiyomi.domain.immersion.model.EventId
 import tachiyomi.domain.immersion.model.EventType
@@ -46,12 +49,16 @@ import tachiyomi.domain.immersion.model.ExposureEvent
 import tachiyomi.domain.immersion.model.ImmersionAnkiItem
 import tachiyomi.domain.immersion.model.ImmersionAnkiSnapshot
 import tachiyomi.domain.immersion.model.ImmersionDataException
+import tachiyomi.domain.immersion.model.ImmersionGoal
+import tachiyomi.domain.immersion.model.ImmersionGoalCheckIn
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
 import tachiyomi.domain.immersion.model.ImmersionPortableCell
 import tachiyomi.domain.immersion.model.ImmersionPortableCellKind
+import tachiyomi.domain.immersion.model.ImmersionPortableRow
 import tachiyomi.domain.immersion.model.ImmersionReindexRequest
 import tachiyomi.domain.immersion.model.ImmersionSessionStart
 import tachiyomi.domain.immersion.model.ImmersionSourceUnit
+import tachiyomi.domain.immersion.model.ImmersionStatsDeletionScope
 import tachiyomi.domain.immersion.model.ImmersionTitle
 import tachiyomi.domain.immersion.model.IndexTerminalReason
 import tachiyomi.domain.immersion.model.IndexedCharacter
@@ -550,7 +557,7 @@ class SqlDelightImmersionRepositoryTest {
         queryLong("SELECT count(*) FROM immersion_source_exposure") shouldBe 0
         queryLong("SELECT count(*) FROM immersion_source_unit") shouldBe 0
         queryLong("SELECT count(*) FROM immersion_tombstone WHERE entity_type = 'SESSION'") shouldBe 1
-        queryLong("SELECT count(*) FROM immersion_tombstone WHERE entity_type = 'SOURCE_UNIT'") shouldBe 1
+        queryLong("SELECT count(*) FROM immersion_tombstone WHERE entity_type = 'SOURCE_UNIT'") shouldBe 0
     }
 
     @Test
@@ -576,7 +583,7 @@ class SqlDelightImmersionRepositoryTest {
                 source = source(secondAt),
             ),
         ) shouldBe PersistenceResult.Applied
-        repository.storeIndexResult(
+        storeClaimedIndexResult(
             sourceUnitId = SOURCE_ID,
             tokenizerId = "test",
             tokenizerVersion = 1,
@@ -606,6 +613,130 @@ class SqlDelightImmersionRepositoryTest {
             it.newWords shouldBe 1
             it.newCharacters shouldBe 1
         }
+    }
+
+    @Test
+    fun `session deletion dirties the later date promoted to first exposure`() = runTest {
+        val dayMillis = 86_400_000L
+        val firstAt = 1_100L
+        val secondAt = 2 * dayMillis + 1_100
+        val secondSession = sessionId(21)
+        val secondSource = SourceUnitId("00000000-0000-0000-0000-000000000221")
+        val range = LocalDateRange(ImmersionLocalDate(0), ImmersionLocalDate(2))
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        repository.createSession(sessionStart(startedAt = 1_000)) shouldBe PersistenceResult.Applied
+        repository.createSession(
+            sessionStart(id = secondSession, startedAt = secondAt - 100),
+        ) shouldBe PersistenceResult.Applied
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = 211).copy(
+                occurredAtEpochMillis = firstAt,
+                source = source(firstAt).copy(
+                    rawText = "猫",
+                    firstExposedAtEpochMillis = firstAt,
+                ),
+            ),
+        ) shouldBe PersistenceResult.Applied
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = 212).copy(
+                sessionId = secondSession,
+                occurredAtEpochMillis = secondAt,
+                source = source(secondAt).copy(
+                    id = secondSource,
+                    canonicalLocator = "novel:test:chapter-2:0-100",
+                    chapterOrSectionId = "chapter-2",
+                    normalizedTextHash = "sha256:second-source",
+                    rawText = "猫",
+                    firstExposedAtEpochMillis = secondAt,
+                ),
+            ),
+        ) shouldBe PersistenceResult.Applied
+        storeClaimedIndexResult(
+            sourceUnitId = SOURCE_ID,
+            tokenizerId = "test",
+            tokenizerVersion = 1,
+            normalizationVersion = 1,
+            indexedVersion = 1,
+            indexedAtEpochMillis = secondAt + 100,
+            tokenizationConfidence = 1.0,
+            terminalReason = null,
+            words = listOf(indexedWord("word-promoted", "猫", ordinal = 0)),
+            characters = listOf(indexedCharacter('猫', 1)),
+        )
+        storeClaimedIndexResult(
+            sourceUnitId = secondSource,
+            tokenizerId = "test",
+            tokenizerVersion = 1,
+            normalizationVersion = 1,
+            indexedVersion = 1,
+            indexedAtEpochMillis = secondAt + 100,
+            tokenizationConfidence = 1.0,
+            terminalReason = null,
+            words = listOf(indexedWord("word-promoted", "猫", ordinal = 0)),
+            characters = listOf(indexedCharacter('猫', 1)),
+        )
+        repository.finalizeSession(
+            SESSION_ID,
+            SessionStatus.COMPLETED,
+            firstAt + 100,
+            MillisecondDuration(200),
+        )
+        repository.finalizeSession(
+            secondSession,
+            SessionStatus.COMPLETED,
+            secondAt + 100,
+            MillisecondDuration(200),
+        )
+        repository.rebuildRollups(range, 2, secondAt + 200)
+        repository.dailyRollups(range).single { it.date == ImmersionLocalDate(0) }.metrics.let {
+            it.newWords shouldBe NonNegativeCounter(1)
+            it.newCharacters shouldBe NonNegativeCounter(1)
+        }
+
+        repository.deleteSession(SESSION_ID) shouldBe true
+
+        repository.dirtyRollupRanges(20).map { it.start }.toSet() shouldBe
+            setOf(ImmersionLocalDate(0), ImmersionLocalDate(2))
+        repository.rebuildRollups(range, 2, secondAt + 300)
+        repository.dailyRollups(range).single { it.date == ImmersionLocalDate(2) }.metrics.let {
+            it.newWords shouldBe NonNegativeCounter(1)
+            it.newCharacters shouldBe NonNegativeCounter(1)
+        }
+    }
+
+    @Test
+    fun `session deletion dirties every local date crossed by event duration`() = runTest {
+        val dayMillis = 86_400_000L
+        val eventAt = 3 * dayMillis + 3_600_000
+        val range = LocalDateRange(ImmersionLocalDate(0), ImmersionLocalDate(3))
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        repository.createSession(sessionStart(startedAt = 23 * 3_600_000)) shouldBe
+            PersistenceResult.Applied
+        repository.appendEventBatch(
+            listOf(
+                SessionEvent(
+                    id = eventId(213),
+                    sessionId = SESSION_ID,
+                    sequence = 1,
+                    occurredAtEpochMillis = eventAt,
+                    timezoneOffsetSeconds = 0,
+                    type = EventType.PROGRESS,
+                    activeDuration = MillisecondDuration(50 * 3_600_000),
+                ),
+            ),
+        ) shouldContainExactly listOf(PersistenceResult.Applied)
+        repository.finalizeSession(
+            SESSION_ID,
+            SessionStatus.COMPLETED,
+            eventAt,
+            MillisecondDuration(eventAt - 23 * 3_600_000),
+        )
+        repository.rebuildRollups(range, 2, eventAt + 100)
+
+        repository.deleteSession(SESSION_ID) shouldBe true
+
+        repository.dirtyRollupRanges(20).map { it.start }.toSet() shouldBe
+            (0L..3L).map(::ImmersionLocalDate).toSet()
     }
 
     @Test
@@ -712,6 +843,57 @@ class SqlDelightImmersionRepositoryTest {
             session.elapsedDuration shouldBe MillisecondDuration(3_000)
             session.activeDuration shouldBe MillisecondDuration(1_000)
         } shouldNotBe null
+    }
+
+    @Test
+    fun `session timeline preserves elapsed gaps with real bucket timestamps`() = runTest {
+        prepareSession()
+        repository.appendEventBatch(
+            listOf(
+                SessionEvent(
+                    id = eventId(7_001),
+                    sessionId = SESSION_ID,
+                    sequence = 1,
+                    occurredAtEpochMillis = 1_100,
+                    timezoneOffsetSeconds = 0,
+                    type = EventType.HEARTBEAT,
+                    activeDuration = MillisecondDuration(100),
+                ),
+                SessionEvent(
+                    id = eventId(7_002),
+                    sessionId = SESSION_ID,
+                    sequence = 2,
+                    occurredAtEpochMillis = 9_000,
+                    timezoneOffsetSeconds = 0,
+                    type = EventType.HEARTBEAT,
+                    activeDuration = MillisecondDuration(200),
+                ),
+            ),
+        ) shouldContainExactly listOf(PersistenceResult.Applied, PersistenceResult.Applied)
+        repository.finalizeSession(
+            sessionId = SESSION_ID,
+            status = SessionStatus.COMPLETED,
+            endedAtEpochMillis = 10_000,
+            elapsedDuration = MillisecondDuration(9_000),
+        ) shouldBe PersistenceResult.Applied
+
+        val timeline = repository.sessionDetail(SESSION_ID, maxTimelineBuckets = 3)?.timeline
+        timeline shouldNotBe null
+        checkNotNull(timeline).let { buckets ->
+            buckets.map { it.startEpochMillis } shouldContainExactly listOf(1_000L, 4_001L, 7_002L)
+            buckets.map { it.endEpochMillis } shouldContainExactly listOf(4_000L, 7_001L, 10_000L)
+            buckets.map { it.eventCount } shouldContainExactly listOf(1L, 0L, 1L)
+            buckets.map { it.activeDurationMillis } shouldContainExactly listOf(100L, 0L, 200L)
+            buckets[1].let { gap ->
+                gap.grossCharacters shouldBe 0
+                gap.uniqueSourceCharacters shouldBe 0
+                gap.netCharacters shouldBe 0
+                gap.lookupCount shouldBe 0
+                gap.cardsCreated shouldBe 0
+                gap.cardsUpdated shouldBe 0
+                gap.eventTypes shouldBe emptySet()
+            }
+        }
     }
 
     @Test
@@ -1136,7 +1318,7 @@ class SqlDelightImmersionRepositoryTest {
     }
 
     @Test
-    fun `index claim retry schedule and terminal requeue are deterministic`() = runTest {
+    fun `index claim lease retry schedule and terminal requeue are deterministic`() = runTest {
         prepareSession()
         repository.appendExposure(
             exposure(sequence = 1, eventNumber = 81).let {
@@ -1147,17 +1329,39 @@ class SqlDelightImmersionRepositoryTest {
         val first = repository.claimWork(targetVersion = 1, limit = 10, nowEpochMillis = 1_000).single()
         first.languageTag shouldBe LanguageTag("ja")
         first.attemptCount shouldBe 0
-        repository.markFailure(first.sourceUnitId, "TOKENIZER_FAILURE", nextAttemptAtEpochMillis = 5_000)
-        repository.claimWork(targetVersion = 1, limit = 10, nowEpochMillis = 4_999) shouldBe emptyList()
-        repository.claimWork(targetVersion = 1, limit = 10, nowEpochMillis = 5_000).single().attemptCount shouldBe 1
+        val leaseExpiresAt = 1_000 + INDEX_WORK_LEASE_MILLIS
+        repository.claimWork(
+            targetVersion = 1,
+            limit = 10,
+            nowEpochMillis = leaseExpiresAt - 1,
+        ) shouldBe emptyList()
+        val reclaimed = repository.claimWork(
+            targetVersion = 1,
+            limit = 10,
+            nowEpochMillis = leaseExpiresAt,
+        ).single()
+        reclaimed.sourceUnitId shouldBe first.sourceUnitId
+        reclaimed.attemptCount shouldBe 1
 
-        repository.storeIndexResult(
+        val retryAt = leaseExpiresAt + 5_000
+        repository.markFailure(
+            reclaimed.sourceUnitId,
+            reclaimed.claimGeneration,
+            "TOKENIZER_FAILURE",
+            retryAt,
+        )
+        repository.claimWork(targetVersion = 1, limit = 10, nowEpochMillis = retryAt - 1) shouldBe emptyList()
+        repository.claimWork(targetVersion = 1, limit = 10, nowEpochMillis = retryAt)
+            .single()
+            .attemptCount shouldBe 2
+
+        storeClaimedIndexResult(
             sourceUnitId = first.sourceUnitId,
             tokenizerId = "characters-only",
             tokenizerVersion = 1,
             normalizationVersion = 1,
             indexedVersion = 1,
-            indexedAtEpochMillis = 5_000,
+            indexedAtEpochMillis = retryAt,
             tokenizationConfidence = null,
             terminalReason = IndexTerminalReason.UNSUPPORTED_LANGUAGE,
             words = emptyList(),
@@ -1171,6 +1375,79 @@ class SqlDelightImmersionRepositoryTest {
             targetVersion = 1,
         ) shouldBe 1
         repository.pendingCount(1) shouldBe 1
+    }
+
+    @Test
+    fun `stale index claim cannot complete or fail work reclaimed by a newer owner`() = runTest {
+        prepareSession()
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = 811).let {
+                it.copy(source = it.source.copy(rawText = "猫"))
+            },
+        )
+        val stale = repository.claimWork(
+            targetVersion = 1,
+            limit = 10,
+            nowEpochMillis = 1_000,
+        ).single()
+        val current = repository.claimWork(
+            targetVersion = 1,
+            limit = 10,
+            nowEpochMillis = 1_000 + INDEX_WORK_LEASE_MILLIS,
+        ).single()
+        stale.claimGeneration shouldBe 1
+        current.claimGeneration shouldBe 2
+
+        repository.markFailure(
+            sourceUnitId = stale.sourceUnitId,
+            claimGeneration = stale.claimGeneration,
+            errorCode = "STALE_FAILURE",
+            nextAttemptAtEpochMillis = 99_000,
+        )
+        queryStrings("SELECT indexing_status FROM immersion_source_unit").single() shouldBe "IN_PROGRESS"
+        queryLong("SELECT index_attempt_count FROM immersion_source_unit") shouldBe 2
+
+        runCatching {
+            repository.storeIndexResult(
+                sourceUnitId = stale.sourceUnitId,
+                claimGeneration = stale.claimGeneration,
+                tokenizerId = "stale",
+                tokenizerVersion = 1,
+                normalizationVersion = 1,
+                indexedVersion = 1,
+                indexedAtEpochMillis = 2_000,
+                tokenizationConfidence = 1.0,
+                terminalReason = null,
+                words = listOf(indexedWord("stale-word", "古", ordinal = 0)),
+                characters = listOf(indexedCharacter('古', 1)),
+            )
+        }.exceptionOrNull() shouldNotBe null
+        queryLong("SELECT count(*) FROM immersion_word") shouldBe 0
+        queryLong("SELECT count(*) FROM immersion_character") shouldBe 0
+
+        repository.storeIndexResult(
+            sourceUnitId = current.sourceUnitId,
+            claimGeneration = current.claimGeneration,
+            tokenizerId = "current",
+            tokenizerVersion = 1,
+            normalizationVersion = 1,
+            indexedVersion = 1,
+            indexedAtEpochMillis = 2_100,
+            tokenizationConfidence = 1.0,
+            terminalReason = null,
+            words = listOf(indexedWord("current-word", "猫", ordinal = 0)),
+            characters = listOf(indexedCharacter('猫', 1)),
+        )
+        repository.markFailure(
+            sourceUnitId = stale.sourceUnitId,
+            claimGeneration = stale.claimGeneration,
+            errorCode = "STALE_AFTER_COMPLETION",
+            nextAttemptAtEpochMillis = 100_000,
+        )
+
+        queryStrings("SELECT indexing_status FROM immersion_source_unit").single() shouldBe "INDEXED"
+        queryStrings("SELECT tokenizer_id FROM immersion_source_unit").single() shouldBe "current"
+        queryStrings("SELECT id FROM immersion_word") shouldContainExactly listOf("current-word")
     }
 
     @Test
@@ -1188,7 +1465,7 @@ class SqlDelightImmersionRepositoryTest {
             },
         )
         val sourceId = SOURCE_ID
-        repository.storeIndexResult(
+        storeClaimedIndexResult(
             sourceUnitId = sourceId,
             tokenizerId = "test-v1",
             tokenizerVersion = 1,
@@ -1203,7 +1480,7 @@ class SqlDelightImmersionRepositoryTest {
 
         repository.requeue(ImmersionReindexRequest(titleId = TITLE_ID), targetVersion = 2) shouldBe 1
         repository.claimWork(targetVersion = 2, limit = 10, nowEpochMillis = 3_000).single().sourceUnitId shouldBe sourceId
-        repository.storeIndexResult(
+        storeClaimedIndexResult(
             sourceUnitId = sourceId,
             tokenizerId = "test-v2",
             tokenizerVersion = 2,
@@ -1248,7 +1525,7 @@ class SqlDelightImmersionRepositoryTest {
                 )
             },
         ) shouldBe PersistenceResult.Applied
-        repository.storeIndexResult(
+        storeClaimedIndexResult(
             sourceUnitId = SOURCE_ID,
             tokenizerId = "test-v1",
             tokenizerVersion = 1,
@@ -1260,7 +1537,7 @@ class SqlDelightImmersionRepositoryTest {
             words = listOf(indexedWord("word-cat", "猫", ordinal = 0)),
             characters = listOf(indexedCharacter('猫', 1)),
         )
-        repository.storeIndexResult(
+        storeClaimedIndexResult(
             sourceUnitId = unrelatedSourceId,
             tokenizerId = "test-v1",
             tokenizerVersion = 1,
@@ -1297,7 +1574,11 @@ class SqlDelightImmersionRepositoryTest {
             0,
         ).value
 
-        repository.storeIndexResult(
+        repository.requeue(
+            ImmersionReindexRequest(titleId = TITLE_ID),
+            targetVersion = 2,
+        ) shouldBe 2
+        storeClaimedIndexResult(
             sourceUnitId = SOURCE_ID,
             tokenizerId = "test-v2",
             tokenizerVersion = 2,
@@ -1339,7 +1620,7 @@ class SqlDelightImmersionRepositoryTest {
         )
 
         listOf(SOURCE_ID, secondSourceId).forEach { sourceId ->
-            repository.storeIndexResult(
+            storeClaimedIndexResult(
                 sourceUnitId = sourceId,
                 tokenizerId = "test-v1",
                 tokenizerVersion = 1,
@@ -1367,7 +1648,7 @@ class SqlDelightImmersionRepositoryTest {
                 it.copy(source = it.source.copy(rawText = "猫語"))
             },
         )
-        repository.storeIndexResult(
+        storeClaimedIndexResult(
             sourceUnitId = SOURCE_ID,
             tokenizerId = "test",
             tokenizerVersion = 1,
@@ -1428,9 +1709,559 @@ class SqlDelightImmersionRepositoryTest {
         repository.getCurrentItems("profile").single().maturityTier shouldBe MaturityTier.YOUNG
         repository.getCurrentSnapshot("profile")?.matureIntervalDays shouldBe 40
 
-        repository.clearSnapshots("profile")
+        repository.clearSnapshots("profile") shouldBe 3
         repository.getCurrentSnapshot("profile") shouldBe null
         queryLong("SELECT count(*) FROM immersion_anki_item") shouldBe 0
+    }
+
+    @Test
+    fun `Anki analytics coverage and maturity honor the complete exposure filter`() = runTest {
+        fun scopedTitle(number: Int) =
+            TitleId("00000000-0000-0000-0003-${number.toString().padStart(12, '0')}")
+
+        val profileId = "profile"
+        val japanese = LanguageTag("ja")
+        val english = LanguageTag("en")
+        val firstDay = Instant.parse("2026-07-01T12:00:00Z").toEpochMilli()
+        val secondDay = Instant.parse("2026-07-02T12:00:00Z").toEpochMilli()
+        val baseTitle = scopedTitle(201)
+        val otherTitle = scopedTitle(203)
+        val replayTitle = scopedTitle(204)
+        val futureTitle = scopedTitle(205)
+        val videoTitle = scopedTitle(206)
+        val otherProfileTitle = scopedTitle(207)
+        val otherLanguageTitle = scopedTitle(208)
+        val legacyTitle = scopedTitle(209)
+
+        recordScopedAnkiExposure(
+            201,
+            baseTitle,
+            MediaKind.NOVEL,
+            profileId,
+            japanese,
+            firstDay,
+            "猫",
+            "ねこ",
+            '猫',
+        )
+        recordScopedAnkiExposure(
+            202,
+            baseTitle,
+            MediaKind.NOVEL,
+            profileId,
+            japanese,
+            firstDay,
+            "牛",
+            "うし",
+            '牛',
+        )
+        recordScopedAnkiExposure(
+            203,
+            otherTitle,
+            MediaKind.NOVEL,
+            profileId,
+            japanese,
+            firstDay,
+            "犬",
+            "いぬ",
+            '犬',
+        )
+        recordScopedAnkiExposure(
+            204,
+            replayTitle,
+            MediaKind.NOVEL,
+            profileId,
+            japanese,
+            firstDay,
+            "狐",
+            "きつね",
+            '狐',
+            replay = true,
+        )
+        recordScopedAnkiExposure(
+            205,
+            futureTitle,
+            MediaKind.NOVEL,
+            profileId,
+            japanese,
+            secondDay,
+            "鳥",
+            "とり",
+            '鳥',
+        )
+        recordScopedAnkiExposure(
+            206,
+            videoTitle,
+            MediaKind.VIDEO,
+            profileId,
+            japanese,
+            firstDay,
+            "魚",
+            "さかな",
+            '魚',
+        )
+        recordScopedAnkiExposure(
+            207,
+            otherProfileTitle,
+            MediaKind.NOVEL,
+            "other-profile",
+            japanese,
+            firstDay,
+            "鼠",
+            "ねずみ",
+            '鼠',
+        )
+        recordScopedAnkiExposure(
+            208,
+            otherLanguageTitle,
+            MediaKind.NOVEL,
+            profileId,
+            english,
+            firstDay,
+            "tree",
+            "tree",
+            'T',
+        )
+        recordScopedAnkiExposure(
+            209,
+            legacyTitle,
+            MediaKind.NOVEL,
+            profileId,
+            japanese,
+            firstDay,
+            "馬",
+            "うま",
+            '馬',
+            legacy = true,
+        )
+
+        val itemDefinitions = listOf(
+            Triple("猫" to "ねこ", '猫', MaturityTier.MATURE),
+            Triple("牛" to "うし", '牛', MaturityTier.YOUNG),
+            Triple("犬" to "いぬ", '犬', MaturityTier.MATURE),
+            Triple("狐" to "きつね", '狐', MaturityTier.MATURE),
+            Triple("鳥" to "とり", '鳥', MaturityTier.MATURE),
+            Triple("魚" to "さかな", '魚', MaturityTier.MATURE),
+            Triple("鼠" to "ねずみ", '鼠', MaturityTier.MATURE),
+            Triple("tree" to "tree", 'T', MaturityTier.MATURE),
+            Triple("馬" to "うま", '馬', MaturityTier.MATURE),
+        )
+        val items = itemDefinitions.mapIndexed { index, (wordAndReading, character, tier) ->
+            val identity = 201L + index
+            ankiItem(
+                snapshotId = "snapshot-scope",
+                intervalDays = if (tier == MaturityTier.MATURE) 30 else 10,
+                tier = tier,
+                noteId = identity,
+                cardId = identity,
+                languageTag = if (wordAndReading.first == "tree") english else japanese,
+                normalizedWord = wordAndReading.first,
+                normalizedReading = wordAndReading.second,
+                characters = setOf(UnicodeCodePoint(character.code)),
+            )
+        }
+        repository.activateSnapshot(
+            ankiSnapshot("snapshot-scope", requestedAt = firstDay).copy(
+                itemCount = items.size,
+                noteCount = items.size,
+            ),
+            items,
+        )
+
+        val includedTitles = setOf(
+            baseTitle,
+            replayTitle,
+            futureTitle,
+            videoTitle,
+            otherProfileTitle,
+            otherLanguageTitle,
+            legacyTitle,
+        )
+        val range = LocalDateRange(
+            ImmersionLocalDate.parse("2026-07-01"),
+            ImmersionLocalDate.parse("2026-07-01"),
+        )
+        val scopedFilter = StatsFilter(
+            dateRange = range,
+            mediaKinds = setOf(MediaKind.NOVEL),
+            profileIds = setOf(profileId),
+            languageTags = setOf(japanese),
+            titleIds = includedTitles,
+            includeLegacyAggregates = false,
+            includeRereadsAndReplays = false,
+            maturityTiers = setOf(MaturityTier.MATURE),
+            provenanceStates = setOf(tachiyomi.domain.immersion.model.ProvenanceState.AVAILABLE),
+        )
+
+        repository.ankiSummary(scopedFilter).let { summary ->
+            summary.wordCoverageEncountered shouldBe 1
+            summary.wordCoverageKnown shouldBe 1
+            summary.characterCoverageEncountered shouldBe 1
+            summary.characterCoverageKnown shouldBe 1
+            summary.maturityDistribution shouldBe mapOf(MaturityTier.MATURE to 1L)
+        }
+        repository.ankiSummary(scopedFilter.copy(maturityTiers = emptySet())).let { summary ->
+            summary.wordCoverageEncountered shouldBe 2
+            summary.wordCoverageKnown shouldBe 2
+            summary.characterCoverageEncountered shouldBe 2
+            summary.characterCoverageKnown shouldBe 2
+            summary.maturityDistribution shouldBe
+                mapOf(MaturityTier.MATURE to 1L, MaturityTier.YOUNG to 1L)
+        }
+        repository.ankiSummary(
+            scopedFilter.copy(
+                includeLegacyAggregates = true,
+                provenanceStates =
+                setOf(tachiyomi.domain.immersion.model.ProvenanceState.LEGACY_AGGREGATE),
+            ),
+        ).let { summary ->
+            summary.wordCoverageEncountered shouldBe 1
+            summary.wordCoverageKnown shouldBe 1
+            summary.characterCoverageEncountered shouldBe 1
+            summary.characterCoverageKnown shouldBe 1
+            summary.maturityDistribution shouldBe mapOf(MaturityTier.MATURE to 1L)
+        }
+    }
+
+    @Test
+    fun `Anki word matching prefers exact readings and rejects homographs`() = runTest {
+        fun homographTitle(number: Int) =
+            TitleId("00000000-0000-0000-0005-${number.toString().padStart(12, '0')}")
+
+        val profileId = "profile"
+        val japanese = LanguageTag("ja")
+        val occurredAt = Instant.parse("2026-07-03T12:00:00Z").toEpochMilli()
+        val localDate = ImmersionLocalDate.parse("2026-07-03")
+        val exactTitle = homographTitle(301)
+        val fallbackTitle = homographTitle(302)
+        val mismatchTitle = homographTitle(303)
+        val preferenceTitle = homographTitle(304)
+        recordScopedAnkiExposure(
+            number = 301,
+            titleId = exactTitle,
+            mediaKind = MediaKind.NOVEL,
+            profileId = profileId,
+            languageTag = japanese,
+            occurredAtEpochMillis = occurredAt,
+            normalizedWord = "今日",
+            normalizedReading = "きょう",
+            character = '今',
+        )
+        recordScopedAnkiExposure(
+            number = 302,
+            titleId = fallbackTitle,
+            mediaKind = MediaKind.NOVEL,
+            profileId = profileId,
+            languageTag = japanese,
+            occurredAtEpochMillis = occurredAt + 1,
+            normalizedWord = "明日",
+            normalizedReading = "あした",
+            character = '明',
+        )
+        recordScopedAnkiExposure(
+            number = 303,
+            titleId = mismatchTitle,
+            mediaKind = MediaKind.NOVEL,
+            profileId = profileId,
+            languageTag = japanese,
+            occurredAtEpochMillis = occurredAt + 2,
+            normalizedWord = "生",
+            normalizedReading = "せい",
+            character = '生',
+        )
+        recordScopedAnkiExposure(
+            number = 304,
+            titleId = preferenceTitle,
+            mediaKind = MediaKind.NOVEL,
+            profileId = profileId,
+            languageTag = japanese,
+            occurredAtEpochMillis = occurredAt + 3,
+            normalizedWord = "上手",
+            normalizedReading = "じょうず",
+            character = '上',
+        )
+
+        val snapshotId = "snapshot-homographs"
+        val items = listOf(
+            ankiItem(
+                snapshotId = snapshotId,
+                intervalDays = 30,
+                tier = MaturityTier.MATURE,
+                noteId = 301,
+                cardId = 301,
+                normalizedWord = "今日",
+                normalizedReading = "きょう",
+                characters = setOf(UnicodeCodePoint('今'.code)),
+            ),
+            ankiItem(
+                snapshotId = snapshotId,
+                intervalDays = 10,
+                tier = MaturityTier.YOUNG,
+                noteId = 302,
+                cardId = 302,
+                normalizedWord = "明日",
+                normalizedReading = "",
+                matchConfidence = AnkiMatchConfidence.HEADWORD_ONLY,
+                characters = setOf(UnicodeCodePoint('明'.code)),
+            ),
+            ankiItem(
+                snapshotId = snapshotId,
+                intervalDays = 30,
+                tier = MaturityTier.MATURE,
+                noteId = 303,
+                cardId = 303,
+                normalizedWord = "生",
+                normalizedReading = "なま",
+                characters = setOf(UnicodeCodePoint('生'.code)),
+            ),
+            ankiItem(
+                snapshotId = snapshotId,
+                intervalDays = 30,
+                tier = MaturityTier.MATURE,
+                noteId = 304,
+                cardId = 304,
+                normalizedWord = "生",
+                normalizedReading = "",
+                matchConfidence = AnkiMatchConfidence.AMBIGUOUS,
+                characters = setOf(UnicodeCodePoint('生'.code)),
+            ),
+            ankiItem(
+                snapshotId = snapshotId,
+                intervalDays = 0,
+                tier = MaturityTier.NEW,
+                noteId = 305,
+                cardId = 305,
+                normalizedWord = "上手",
+                normalizedReading = "じょうず",
+                characters = setOf(UnicodeCodePoint('上'.code)),
+            ),
+            ankiItem(
+                snapshotId = snapshotId,
+                intervalDays = 30,
+                tier = MaturityTier.MATURE,
+                noteId = 306,
+                cardId = 306,
+                normalizedWord = "上手",
+                normalizedReading = "",
+                matchConfidence = AnkiMatchConfidence.HEADWORD_ONLY,
+                characters = setOf(UnicodeCodePoint('上'.code)),
+            ),
+        )
+        repository.activateSnapshot(
+            ankiSnapshot(snapshotId, requestedAt = occurredAt).copy(
+                itemCount = items.size,
+                noteCount = items.size,
+            ),
+            items,
+        )
+
+        val filter = StatsFilter(
+            dateRange = LocalDateRange(localDate, localDate),
+            mediaKinds = setOf(MediaKind.NOVEL),
+            profileIds = setOf(profileId),
+            languageTags = setOf(japanese),
+            titleIds = setOf(exactTitle, fallbackTitle, mismatchTitle, preferenceTitle),
+            includeLegacyAggregates = false,
+            includeRereadsAndReplays = false,
+            provenanceStates = setOf(tachiyomi.domain.immersion.model.ProvenanceState.AVAILABLE),
+        )
+        val words = repository.vocabularyPage(
+            filter = filter,
+            sort = AnalyticsSort.ALPHABETICAL,
+            offset = 0,
+            limit = 100,
+            searchQuery = null,
+        ).items.associateBy { it.headword }
+        words.getValue("今日").let {
+            it.maturity shouldBe MaturityTier.MATURE
+            it.matchConfidence shouldBe AnkiMatchConfidence.READING_AWARE
+        }
+        words.getValue("明日").let {
+            it.maturity shouldBe MaturityTier.YOUNG
+            it.matchConfidence shouldBe AnkiMatchConfidence.HEADWORD_ONLY
+        }
+        words.getValue("生").let {
+            it.maturity shouldBe MaturityTier.UNKNOWN
+            it.matchConfidence shouldBe null
+        }
+        words.getValue("上手").let {
+            it.maturity shouldBe MaturityTier.NEW
+            it.matchConfidence shouldBe AnkiMatchConfidence.READING_AWARE
+        }
+
+        suspend fun headwordsFor(tier: MaturityTier) = repository.vocabularyPage(
+            filter = filter.copy(maturityTiers = setOf(tier)),
+            sort = AnalyticsSort.ALPHABETICAL,
+            offset = 0,
+            limit = 100,
+            searchQuery = null,
+        ).items.map { it.headword }.toSet()
+        headwordsFor(MaturityTier.MATURE) shouldBe setOf("今日")
+        headwordsFor(MaturityTier.YOUNG) shouldBe setOf("明日")
+        headwordsFor(MaturityTier.NEW) shouldBe setOf("上手")
+        headwordsFor(MaturityTier.UNKNOWN) shouldBe setOf("生")
+
+        repository.findWordItems(profileId, japanese, "今日", "きょう")
+            .map { it.cardId } shouldContainExactly listOf(301L)
+        repository.findWordItems(profileId, japanese, "明日", "あした")
+            .map { it.cardId } shouldContainExactly listOf(302L)
+        repository.findWordItems(profileId, japanese, "生", "せい") shouldBe emptyList()
+        repository.findWordItems(profileId, japanese, "上手", "じょうず")
+            .map { it.cardId } shouldContainExactly listOf(305L)
+
+        repository.getWordCoverage(profileId, japanese).let { coverage ->
+            coverage.encountered shouldBe 4
+            coverage.coveredReadingAware shouldBe 2
+            coverage.coveredHeadwordOrCharacter shouldBe 3
+        }
+        repository.ankiSummary(filter).let { summary ->
+            summary.wordCoverageEncountered shouldBe 4
+            summary.wordCoverageKnown shouldBe 3
+            summary.maturityDistribution shouldBe mapOf(
+                MaturityTier.MATURE to 1L,
+                MaturityTier.NEW to 1L,
+                MaturityTier.UNKNOWN to 1L,
+                MaturityTier.YOUNG to 1L,
+            )
+        }
+        val unknownFilter = filter.copy(maturityTiers = setOf(MaturityTier.UNKNOWN))
+        repository.ankiSummary(unknownFilter).let { summary ->
+            summary.wordCoverageEncountered shouldBe 1
+            summary.wordCoverageKnown shouldBe 0
+            summary.maturityDistribution shouldBe mapOf(MaturityTier.UNKNOWN to 1L)
+        }
+        repository.inventoryMetrics(unknownFilter).uniqueWords shouldBe 1
+        repository.vocabularyFirstSeenByDate(unknownFilter)
+            .map { it.date to it.newWords } shouldContainExactly listOf(localDate to 1L)
+        repository.characterContainingWords(
+            filter = unknownFilter,
+            codePoint = UnicodeCodePoint('生'.code),
+            sort = AnalyticsSort.ALPHABETICAL,
+            offset = 0,
+            limit = 100,
+        ).items.map { it.headword } shouldContainExactly listOf("生")
+        repository.characterContainingWords(
+            filter = filter.copy(maturityTiers = setOf(MaturityTier.MATURE)),
+            codePoint = UnicodeCodePoint('生'.code),
+            sort = AnalyticsSort.ALPHABETICAL,
+            offset = 0,
+            limit = 100,
+        ).items shouldBe emptyList()
+    }
+
+    @Test
+    fun `Anki analytics apply any-card and all-cards maturity uniformly`() = runTest {
+        val profileId = "profile"
+        val japanese = LanguageTag("ja")
+        val occurredAt = Instant.parse("2026-07-04T12:00:00Z").toEpochMilli()
+        val localDate = ImmersionLocalDate.parse("2026-07-04")
+        val titleId = TitleId("00000000-0000-0000-0006-000000000401")
+        recordScopedAnkiExposure(
+            number = 401,
+            titleId = titleId,
+            mediaKind = MediaKind.NOVEL,
+            profileId = profileId,
+            languageTag = japanese,
+            occurredAtEpochMillis = occurredAt,
+            normalizedWord = "生",
+            normalizedReading = "せい",
+            character = '生',
+        )
+        val snapshotId = "snapshot-aggregation"
+        val items = listOf(
+            ankiItem(
+                snapshotId = snapshotId,
+                intervalDays = 0,
+                tier = MaturityTier.NEW,
+                noteId = 401,
+                cardId = 401,
+                normalizedWord = "生",
+                normalizedReading = "せい",
+                characters = setOf(UnicodeCodePoint('生'.code)),
+            ),
+            ankiItem(
+                snapshotId = snapshotId,
+                intervalDays = 30,
+                tier = MaturityTier.MATURE,
+                noteId = 401,
+                cardId = 402,
+                normalizedWord = "生",
+                normalizedReading = "せい",
+                characters = setOf(UnicodeCodePoint('生'.code)),
+            ),
+            ankiItem(
+                snapshotId = snapshotId,
+                intervalDays = 30,
+                tier = MaturityTier.MATURE,
+                noteId = 402,
+                cardId = 403,
+                normalizedWord = "生",
+                normalizedReading = "なま",
+                characters = setOf(UnicodeCodePoint('生'.code)),
+            ),
+            ankiItem(
+                snapshotId = snapshotId,
+                intervalDays = 30,
+                tier = MaturityTier.MATURE,
+                noteId = 403,
+                cardId = 404,
+                normalizedWord = "生",
+                normalizedReading = "",
+                matchConfidence = AnkiMatchConfidence.AMBIGUOUS,
+                characters = setOf(UnicodeCodePoint('生'.code)),
+            ),
+        )
+        repository.activateSnapshot(
+            ankiSnapshot(snapshotId, requestedAt = occurredAt).copy(
+                itemCount = items.size,
+                noteCount = 3,
+            ),
+            items,
+        )
+        val baseFilter = StatsFilter(
+            dateRange = LocalDateRange(localDate, localDate),
+            profileIds = setOf(profileId),
+            languageTags = setOf(japanese),
+            titleIds = setOf(titleId),
+        )
+
+        suspend fun assertAggregation(
+            aggregation: AnkiMaturityAggregation,
+            expected: MaturityTier,
+        ) {
+            val filter = baseFilter.copy(ankiMaturityAggregation = aggregation)
+            repository.vocabularyPage(
+                filter,
+                AnalyticsSort.ALPHABETICAL,
+                0,
+                10,
+            ).items.single().maturity shouldBe expected
+            repository.characterPage(
+                filter,
+                AnalyticsSort.ALPHABETICAL,
+                0,
+                10,
+            ).items.single().maturity shouldBe expected
+            repository.ankiSummary(filter).maturityDistribution shouldBe mapOf(expected to 1L)
+            repository.vocabularyPage(
+                filter.copy(maturityTiers = setOf(expected)),
+                AnalyticsSort.ALPHABETICAL,
+                0,
+                10,
+            ).items.map { it.headword } shouldContainExactly listOf("生")
+        }
+
+        assertAggregation(AnkiMaturityAggregation.MAX_INTERVAL, MaturityTier.MATURE)
+        assertAggregation(AnkiMaturityAggregation.MIN_INTERVAL, MaturityTier.NEW)
+        repository.vocabularyPage(
+            baseFilter.copy(
+                ankiMaturityAggregation = AnkiMaturityAggregation.MIN_INTERVAL,
+                maturityTiers = setOf(MaturityTier.MATURE),
+            ),
+            AnalyticsSort.ALPHABETICAL,
+            0,
+            10,
+        ).items shouldBe emptyList()
     }
 
     @Test
@@ -1480,7 +2311,7 @@ class SqlDelightImmersionRepositoryTest {
                 source = source.copy(lastExposedAtEpochMillis = midnight + 40 * 60 * 1_000),
             ),
         ) shouldBe PersistenceResult.Applied
-        repository.storeIndexResult(
+        storeClaimedIndexResult(
             sourceUnitId = SOURCE_ID,
             tokenizerId = "test",
             tokenizerVersion = 1,
@@ -1593,6 +2424,350 @@ class SqlDelightImmersionRepositoryTest {
         repository.dirtyRollupRanges(1) shouldBe emptyList()
         queryLong("SELECT count(*) FROM immersion_lifetime_rollup") shouldBe 2
         queryLong("SELECT count(*) FROM immersion_applied_event") shouldBe 2
+    }
+
+    @Test
+    fun `temporal activity and bounded title trends honor the complete rollup filter`() = runTest {
+        val monday = ImmersionLocalDate.parse("2026-07-20")
+        val tuesday = ImmersionLocalDate.parse("2026-07-21")
+        val range = LocalDateRange(monday, tuesday)
+        val titleA = TitleId("00000000-0000-0000-0003-000000000001")
+        val titleB = TitleId("00000000-0000-0000-0003-000000000002")
+        val titleC = TitleId("00000000-0000-0000-0003-000000000003")
+        val profile = "temporal-profile"
+        val japanese = LanguageTag("ja")
+
+        suspend fun createTitle(
+            id: TitleId,
+            mediaKind: MediaKind,
+            profileId: String,
+            languageTag: LanguageTag,
+            name: String,
+        ) {
+            repository.upsertTitle(
+                title().copy(
+                    id = id,
+                    mediaKind = mediaKind,
+                    sourceKey = "temporal:${id.value}",
+                    profileId = profileId,
+                    languageTag = languageTag,
+                    displayTitle = name,
+                ),
+            ) shouldBe PersistenceResult.Applied
+        }
+
+        suspend fun record(
+            number: Int,
+            titleId: TitleId,
+            mediaKind: MediaKind,
+            profileId: String,
+            languageTag: LanguageTag,
+            occurredAt: Long,
+            grossCharacters: Long,
+            uniqueSourceCharacters: Long = grossCharacters,
+            replayOrdinal: Int = 0,
+        ) {
+            val sessionId = sessionId(number)
+            val sourceId = SourceUnitId(
+                "00000000-0000-0000-0003-${number.toString().padStart(12, '0')}",
+            )
+            repository.createSession(
+                sessionStart(sessionId, occurredAt - 60_000).copy(
+                    titleId = titleId,
+                    mediaKind = mediaKind,
+                    profileId = profileId,
+                    languageTag = languageTag,
+                ),
+            ) shouldBe PersistenceResult.Applied
+            repository.appendExposure(
+                ExposureEvent(
+                    id = eventId(number),
+                    sessionId = sessionId,
+                    sequence = 1,
+                    occurredAtEpochMillis = occurredAt,
+                    timezoneOffsetSeconds = 0,
+                    source = source(occurredAt).copy(
+                        id = sourceId,
+                        titleId = titleId,
+                        sourceKind = when (mediaKind) {
+                            MediaKind.NOVEL -> SourceKind.NOVEL_RANGE
+                            MediaKind.MANGA -> SourceKind.MANGA_OCR_BLOCK
+                            MediaKind.VIDEO -> SourceKind.SUBTITLE_CUE
+                        },
+                        canonicalLocator = "temporal:$number",
+                        normalizedTextHash = "sha256:temporal:$number",
+                        firstExposedAtEpochMillis = occurredAt,
+                        lastExposedAtEpochMillis = occurredAt,
+                        characterCounts = CharacterVolume(
+                            gross = NonNegativeCounter(grossCharacters),
+                            uniqueSource = NonNegativeCounter(uniqueSourceCharacters),
+                            netProgress = NetCharacterProgress(grossCharacters),
+                        ),
+                    ),
+                    activeDuration = MillisecondDuration(3_600_000),
+                    grossCharacters = NonNegativeCounter(grossCharacters),
+                    uniqueSourceCharacters = NonNegativeCounter(uniqueSourceCharacters),
+                    netCharacters = NetCharacterProgress(grossCharacters),
+                    replayOrdinal = replayOrdinal,
+                    exposurePolicy = "COUNT_ONCE_PER_SOURCE",
+                ),
+            ) shouldBe PersistenceResult.Applied
+            repository.finalizeSession(
+                sessionId,
+                SessionStatus.COMPLETED,
+                occurredAt + 1,
+                MillisecondDuration(3_600_001),
+            ) shouldBe PersistenceResult.Applied
+        }
+
+        createTitle(titleA, MediaKind.NOVEL, profile, japanese, "Alpha")
+        createTitle(titleB, MediaKind.VIDEO, "other-profile", LanguageTag("en"), "Beta")
+        createTitle(titleC, MediaKind.NOVEL, profile, japanese, "Gamma")
+        record(
+            3_001,
+            titleA,
+            MediaKind.NOVEL,
+            profile,
+            japanese,
+            Instant.parse("2026-07-20T09:00:00Z").toEpochMilli(),
+            grossCharacters = 300,
+            uniqueSourceCharacters = 30,
+        )
+        record(
+            3_002,
+            titleA,
+            MediaKind.NOVEL,
+            profile,
+            japanese,
+            Instant.parse("2026-07-20T10:00:00Z").toEpochMilli(),
+            grossCharacters = 50,
+            uniqueSourceCharacters = 5,
+            replayOrdinal = 1,
+        )
+        record(
+            3_003,
+            titleB,
+            MediaKind.VIDEO,
+            "other-profile",
+            LanguageTag("en"),
+            Instant.parse("2026-07-21T11:00:00Z").toEpochMilli(),
+            400,
+        )
+        record(
+            3_004,
+            titleC,
+            MediaKind.NOVEL,
+            profile,
+            japanese,
+            Instant.parse("2026-07-21T12:00:00Z").toEpochMilli(),
+            grossCharacters = 200,
+            uniqueSourceCharacters = 200,
+        )
+        repository.rebuildRollups(range, 2, Instant.parse("2026-07-22T00:00:00Z").toEpochMilli())
+
+        val filter = StatsFilter(
+            dateRange = range,
+            mediaKinds = setOf(MediaKind.NOVEL),
+            profileIds = setOf(profile),
+            languageTags = setOf(japanese),
+            includeLegacyAggregates = false,
+            includeRereadsAndReplays = false,
+            provenanceStates = setOf(tachiyomi.domain.immersion.model.ProvenanceState.AVAILABLE),
+        )
+        repository.temporalActivity(filter).let { activity ->
+            activity.hours.map { it.hourOfDay } shouldContainExactly listOf(9, 12)
+            activity.hours.map { it.totals.grossCharacters } shouldContainExactly listOf(300, 200)
+            activity.hours.first().totals.readingSpeedPerHour(filter.characterMetric) shouldBe 300.0
+            activity.weekdays.map { it.isoDayOfWeek } shouldContainExactly listOf(1, 2)
+            activity.weekdays.map { it.totals.grossCharacters } shouldContainExactly listOf(300, 200)
+        }
+        repository.titleTrendDaily(
+            filter,
+            AnalyticsTitleSeriesSelection.TOP_CHARACTERS,
+            1,
+        ).map { it.titleId }.distinct() shouldContainExactly listOf(titleA)
+        repository.titleTrendDaily(
+            filter.copy(characterMetric = CharacterMetric.UNIQUE_SOURCE),
+            AnalyticsTitleSeriesSelection.TOP_CHARACTERS,
+            1,
+        ).map { it.titleId }.distinct() shouldContainExactly listOf(titleC)
+        repository.titleTrendDaily(
+            filter,
+            AnalyticsTitleSeriesSelection.MOST_RECENT,
+            2,
+        ).map { it.titleId }.distinct() shouldContainExactly listOf(titleC, titleA)
+        repository.titleTrendDaily(
+            filter.copy(titleIds = setOf(titleA)),
+            AnalyticsTitleSeriesSelection.TOP_CHARACTERS,
+            20,
+        ).single().metrics.characters.gross shouldBe NonNegativeCounter(300)
+    }
+
+    @Test
+    fun `global vocabulary first seen and character containing words stay scoped and paged`() = runTest {
+        val firstDate = ImmersionLocalDate.parse("2026-07-20")
+        val secondDate = ImmersionLocalDate.parse("2026-07-21")
+        val range = LocalDateRange(firstDate, secondDate)
+        val titleA = TitleId("00000000-0000-0000-0004-000000000001")
+        val titleB = TitleId("00000000-0000-0000-0004-000000000002")
+        val sessionA = sessionId(4_001)
+        val sessionB = sessionId(4_002)
+        val sourceA = SourceUnitId("00000000-0000-0000-0004-000000000101")
+        val sourceB = SourceUnitId("00000000-0000-0000-0004-000000000102")
+        val firstAt = Instant.parse("2026-07-20T09:00:00Z").toEpochMilli()
+        val secondAt = Instant.parse("2026-07-21T09:00:00Z").toEpochMilli()
+        val japanese = LanguageTag("ja")
+        val profileId = "vocabulary-profile"
+
+        repository.upsertTitle(
+            title().copy(
+                id = titleA,
+                sourceKey = "vocabulary:first",
+                displayTitle = "First title",
+                profileId = profileId,
+            ),
+        ) shouldBe PersistenceResult.Applied
+        repository.upsertTitle(
+            title().copy(
+                id = titleB,
+                sourceKey = "vocabulary:second",
+                displayTitle = "Second title",
+                profileId = profileId,
+            ),
+        ) shouldBe PersistenceResult.Applied
+        repository.createSession(
+            sessionStart(sessionA, firstAt).copy(
+                titleId = titleA,
+                profileId = profileId,
+            ),
+        ) shouldBe PersistenceResult.Applied
+        repository.createSession(
+            sessionStart(sessionB, secondAt).copy(
+                titleId = titleB,
+                profileId = profileId,
+            ),
+        ) shouldBe PersistenceResult.Applied
+
+        suspend fun expose(
+            eventNumber: Int,
+            sessionId: SessionId,
+            titleId: TitleId,
+            sourceId: SourceUnitId,
+            occurredAt: Long,
+            locator: String,
+        ) {
+            repository.appendExposure(
+                exposure(sequence = 1, eventNumber = eventNumber).copy(
+                    sessionId = sessionId,
+                    occurredAtEpochMillis = occurredAt,
+                    source = source(occurredAt).copy(
+                        id = sourceId,
+                        titleId = titleId,
+                        canonicalLocator = locator,
+                        normalizedTextHash = "sha256:$locator",
+                        rawText = locator,
+                        firstExposedAtEpochMillis = occurredAt,
+                        lastExposedAtEpochMillis = occurredAt,
+                    ),
+                ),
+            ) shouldBe PersistenceResult.Applied
+        }
+
+        expose(4_001, sessionA, titleA, sourceA, firstAt, "猫 猫舌")
+        expose(4_002, sessionB, titleB, sourceB, secondAt, "猫 猫又 犬")
+        storeClaimedIndexResult(
+            sourceUnitId = sourceA,
+            tokenizerId = "test",
+            tokenizerVersion = 1,
+            normalizationVersion = 1,
+            indexedVersion = 1,
+            indexedAtEpochMillis = firstAt,
+            tokenizationConfidence = 1.0,
+            terminalReason = null,
+            words = listOf(
+                indexedWord("global-cat", "猫", "ねこ", 0),
+                indexedWord("global-cat-tongue", "猫舌", "ねこじた", 1),
+            ),
+            characters = listOf(
+                indexedCharacter('猫', 2),
+                indexedCharacter('舌', 1, firstOrdinal = 1),
+            ),
+        )
+        storeClaimedIndexResult(
+            sourceUnitId = sourceB,
+            tokenizerId = "test",
+            tokenizerVersion = 1,
+            normalizationVersion = 1,
+            indexedVersion = 1,
+            indexedAtEpochMillis = secondAt,
+            tokenizationConfidence = 1.0,
+            terminalReason = null,
+            words = listOf(
+                indexedWord("global-cat", "猫", "ねこ", 0),
+                indexedWord("global-bakeneko", "猫又", "ねこまた", 1),
+                indexedWord("global-dog", "犬", "いぬ", 2),
+                indexedWord("global-bakeneko", "猫又", "ねこまた", 3),
+            ),
+            characters = listOf(
+                indexedCharacter('猫', 2),
+                indexedCharacter('又', 1, firstOrdinal = 1),
+                indexedCharacter('犬', 1, firstOrdinal = 2),
+            ),
+        )
+
+        repository.vocabularyFirstSeenByDate(
+            StatsFilter(dateRange = range),
+        ).map { it.date to it.newWords } shouldContainExactly listOf(
+            firstDate to 2L,
+            secondDate to 2L,
+        )
+        val scopedFilter = StatsFilter(
+            dateRange = range,
+            mediaKinds = setOf(MediaKind.NOVEL),
+            profileIds = setOf(profileId),
+            languageTags = setOf(japanese),
+            titleIds = setOf(titleB),
+            includeLegacyAggregates = false,
+            includeRereadsAndReplays = false,
+            maturityTiers = setOf(MaturityTier.UNKNOWN),
+            provenanceStates = setOf(tachiyomi.domain.immersion.model.ProvenanceState.AVAILABLE),
+        )
+        repository.vocabularyFirstSeenByDate(scopedFilter)
+            .map { it.date to it.newWords } shouldContainExactly listOf(secondDate to 2L)
+        repository.characterPage(
+            filter = scopedFilter,
+            sort = AnalyticsSort.MOST_OCCURRENCES,
+            offset = 0,
+            limit = 100,
+            searchQuery = "猫",
+        ).items.single().wordCount shouldBe 2
+
+        val firstPage = repository.characterContainingWords(
+            scopedFilter,
+            UnicodeCodePoint('猫'.code),
+            AnalyticsSort.ALPHABETICAL,
+            offset = 0,
+            limit = 1,
+        )
+        firstPage.items.map { it.headword } shouldContainExactly listOf("猫")
+        firstPage.nextOffset shouldBe 1
+        repository.characterContainingWords(
+            scopedFilter,
+            UnicodeCodePoint('猫'.code),
+            AnalyticsSort.ALPHABETICAL,
+            offset = 1,
+            limit = 1,
+        ).let { page ->
+            page.items.map { it.headword } shouldContainExactly listOf("猫又")
+            page.nextOffset shouldBe null
+        }
+        repository.characterContainingWords(
+            scopedFilter.copy(maturityTiers = setOf(MaturityTier.MATURE)),
+            UnicodeCodePoint('猫'.code),
+            AnalyticsSort.ALPHABETICAL,
+            offset = 0,
+            limit = 100,
+        ).items shouldBe emptyList()
     }
 
     @Test
@@ -1739,7 +2914,7 @@ class SqlDelightImmersionRepositoryTest {
             words: List<IndexedWord>,
             characters: List<IndexedCharacter>,
         ) {
-            repository.storeIndexResult(
+            storeClaimedIndexResult(
                 sourceUnitId = sourceId,
                 tokenizerId = "test",
                 tokenizerVersion = 1,
@@ -1901,6 +3076,35 @@ class SqlDelightImmersionRepositoryTest {
 
     @Test
     fun `portable archive omits private text and merges idempotently`() = runTest {
+        repository.upsertGoal(
+            ImmersionGoal(
+                id = "private-note-goal",
+                type = "DAILY",
+                metric = "ACTIVE_TIME",
+                target = 1.0,
+                period = "DAY",
+                startDate = null,
+                endDate = null,
+                mediaKind = null,
+                profileId = null,
+                languageTag = null,
+                titleId = null,
+                weekdayMultipliers = null,
+                restDayPolicy = null,
+                state = "ACTIVE",
+                createdAtEpochMillis = 900,
+                updatedAtEpochMillis = 900,
+            ),
+        )
+        repository.upsertCheckIn(
+            ImmersionGoalCheckIn(
+                goalId = "private-note-goal",
+                localDate = ImmersionLocalDate(1),
+                status = "DONE",
+                note = "private check-in note",
+                occurredAtEpochMillis = 950,
+            ),
+        )
         repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
         repository.createSession(sessionStart()) shouldBe PersistenceResult.Applied
         repository.appendExposure(
@@ -1924,6 +3128,10 @@ class SqlDelightImmersionRepositoryTest {
             val rawTextIndex = table.columns.indexOfFirst { it.name == "raw_text" }
             table.rows.single().cells[rawTextIndex].kind.name shouldBe "NULL"
         }
+        privateArchive.tables.single { it.name == "immersion_goal_check_in" }.let { table ->
+            val noteIndex = table.columns.indexOfFirst { it.name == "note" }
+            table.rows.single().cells[noteIndex].kind shouldBe ImmersionPortableCellKind.NULL
+        }
         val fullArchive = repository.exportPortableArchive(
             includeRawText = true,
             createdAtEpochMillis = 3_001,
@@ -1931,6 +3139,10 @@ class SqlDelightImmersionRepositoryTest {
         fullArchive.tables.single { it.name == "immersion_source_unit" }.let { table ->
             val rawTextIndex = table.columns.indexOfFirst { it.name == "raw_text" }
             table.rows.single().cells[rawTextIndex].blobValue shouldNotBe null
+        }
+        fullArchive.tables.single { it.name == "immersion_goal_check_in" }.let { table ->
+            val noteIndex = table.columns.indexOfFirst { it.name == "note" }
+            table.rows.single().cells[noteIndex].textValue shouldBe "private check-in note"
         }
 
         val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
@@ -1966,6 +3178,44 @@ class SqlDelightImmersionRepositoryTest {
                 .let { table ->
                     val rawTextIndex = table.columns.indexOfFirst { it.name == "raw_text" }
                     table.rows.single().cells[rawTextIndex].blobValue shouldNotBe null
+                }
+            target.exportPortableArchive(true, 4_004)
+                .tables
+                .single { it.name == "immersion_goal_check_in" }
+                .let { table ->
+                    val noteIndex = table.columns.indexOfFirst { it.name == "note" }
+                    table.rows.single().cells[noteIndex].textValue shouldBe "private check-in note"
+                }
+
+            val conflictingFullArchive = fullArchive.copy(
+                tables = fullArchive.tables.map { table ->
+                    if (table.name != "immersion_goal_check_in") {
+                        table
+                    } else {
+                        val noteIndex = table.columns.indexOfFirst { it.name == "note" }
+                        table.copy(
+                            rows = table.rows.map { row ->
+                                row.copy(
+                                    cells = row.cells.toMutableList().apply {
+                                        this[noteIndex] = ImmersionPortableCell(
+                                            kind = ImmersionPortableCellKind.TEXT,
+                                            textValue = "different private check-in note",
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            )
+            target.mergePortableArchive(conflictingFullArchive, 4_005)
+                .quarantinedConflicts shouldBe 1
+            target.exportPortableArchive(true, 4_006)
+                .tables
+                .single { it.name == "immersion_goal_check_in" }
+                .let { table ->
+                    val noteIndex = table.columns.indexOfFirst { it.name == "note" }
+                    table.rows.single().cells[noteIndex].textValue shouldBe "private check-in note"
                 }
         } finally {
             targetDriver.close()
@@ -2101,11 +3351,156 @@ class SqlDelightImmersionRepositoryTest {
     }
 
     @Test
+    fun `portable merge reconciles shared source bounds independent of device delivery order`() =
+        runTest {
+            val dayMillis = 86_400_000L
+            val firstAt = 1_100L
+            val secondAt = 2 * dayMillis + 1_100
+            val remoteSessionId = sessionId(600)
+            repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+            repository.createSession(
+                sessionStart(startedAt = firstAt - 100).copy(deviceId = "device-a"),
+            ) shouldBe PersistenceResult.Applied
+            repository.appendExposure(
+                exposure(sequence = 1, eventNumber = 600).copy(
+                    occurredAtEpochMillis = firstAt,
+                    source = source(firstAt).copy(firstExposedAtEpochMillis = firstAt),
+                ),
+            ) shouldBe PersistenceResult.Applied
+            repository.finalizeSession(
+                SESSION_ID,
+                SessionStatus.COMPLETED,
+                firstAt + 100,
+                MillisecondDuration(200),
+            ) shouldBe PersistenceResult.Applied
+            val firstArchive = repository.exportPortableArchive(false, 3_000)
+
+            val remoteDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+            try {
+                Database.Schema.create(remoteDriver).value
+                remoteDriver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+                val remote = SqlDelightImmersionRepository(
+                    AndroidDatabaseHandler(
+                        createDatabase(remoteDriver),
+                        remoteDriver,
+                        databaseDispatcher,
+                        databaseDispatcher,
+                    ),
+                )
+                remote.upsertTitle(title()) shouldBe PersistenceResult.Applied
+                remote.createSession(
+                    sessionStart(id = remoteSessionId, startedAt = secondAt - 100)
+                        .copy(deviceId = "device-b"),
+                ) shouldBe PersistenceResult.Applied
+                remote.appendExposure(
+                    exposure(sequence = 1, eventNumber = 601).copy(
+                        sessionId = remoteSessionId,
+                        occurredAtEpochMillis = secondAt,
+                        source = source(secondAt).copy(
+                            firstExposedAtEpochMillis = secondAt,
+                            lastExposedAtEpochMillis = secondAt,
+                        ),
+                    ),
+                ) shouldBe PersistenceResult.Applied
+                remote.finalizeSession(
+                    remoteSessionId,
+                    SessionStatus.COMPLETED,
+                    secondAt + 100,
+                    MillisecondDuration(200),
+                ) shouldBe PersistenceResult.Applied
+                val secondArchive = remote.exportPortableArchive(false, 4_000)
+                val canonicalSourceRows = mutableListOf<ImmersionPortableRow>()
+
+                listOf(
+                    listOf(firstArchive, secondArchive),
+                    listOf(secondArchive, firstArchive),
+                ).forEachIndexed { order, archives ->
+                    val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+                    try {
+                        Database.Schema.create(targetDriver).value
+                        targetDriver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+                        val target = SqlDelightImmersionRepository(
+                            AndroidDatabaseHandler(
+                                createDatabase(targetDriver),
+                                targetDriver,
+                                databaseDispatcher,
+                                databaseDispatcher,
+                            ),
+                        )
+                        archives.forEachIndexed { index, archive ->
+                            target.mergePortableArchive(
+                                archive,
+                                mergedAtEpochMillis = 5_000L + order * 1_000L + index,
+                            ).quarantinedConflicts shouldBe 0
+                        }
+
+                        queryLong(
+                            targetDriver,
+                            "SELECT first_exposed_at FROM immersion_source_unit",
+                        ) shouldBe firstAt
+                        queryLong(
+                            targetDriver,
+                            "SELECT last_exposed_at FROM immersion_source_unit",
+                        ) shouldBe secondAt
+                        queryLong(targetDriver, "SELECT count(*) FROM immersion_session") shouldBe 2
+                        queryLong(targetDriver, "SELECT count(*) FROM immersion_event") shouldBe 2
+                        queryLong(targetDriver, "SELECT count(*) FROM immersion_source_unit") shouldBe 1
+                        queryLong(targetDriver, "SELECT count(*) FROM immersion_source_exposure") shouldBe 2
+                        target.overview().let { overview ->
+                            overview.sessions shouldBe NonNegativeCounter(2)
+                            overview.grossCharacters shouldBe NonNegativeCounter(200)
+                            overview.sourceUnits shouldBe NonNegativeCounter(2)
+                        }
+                        canonicalSourceRows += target.exportPortableArchive(
+                            includeRawText = false,
+                            createdAtEpochMillis = 8_000L + order,
+                        ).tables.single { it.name == "immersion_source_unit" }.rows.single()
+                        if (order == 0) {
+                            val conflictingArchive = secondArchive.copy(
+                                tables = secondArchive.tables.map { table ->
+                                    if (table.name != "immersion_source_unit") {
+                                        table
+                                    } else {
+                                        val hashIndex = table.columns.indexOfFirst {
+                                            it.name == "normalized_text_hash"
+                                        }
+                                        table.copy(
+                                            rows = table.rows.map { row ->
+                                                row.copy(
+                                                    cells = row.cells.toMutableList().apply {
+                                                        this[hashIndex] = ImmersionPortableCell(
+                                                            kind = ImmersionPortableCellKind.TEXT,
+                                                            textValue = "sha256:conflicting-source",
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    }
+                                },
+                            )
+                            target.mergePortableArchive(
+                                conflictingArchive,
+                                mergedAtEpochMillis = 9_000,
+                            ).quarantinedConflicts shouldBe 1
+                        }
+                    } finally {
+                        targetDriver.close()
+                    }
+                }
+
+                canonicalSourceRows[0] shouldBe canonicalSourceRows[1]
+            } finally {
+                remoteDriver.close()
+            }
+        }
+
+    @Test
     fun `session tombstone prevents an older archive from resurrecting deleted activity`() = runTest {
         repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
         repository.createSession(sessionStart()) shouldBe PersistenceResult.Applied
         repository.appendExposure(exposure(sequence = 1, eventNumber = 601)) shouldBe PersistenceResult.Applied
-        repository.storeIndexResult(
+        storeClaimedIndexResult(
             sourceUnitId = SOURCE_ID,
             tokenizerId = "test",
             tokenizerVersion = 1,
@@ -2134,7 +3529,7 @@ class SqlDelightImmersionRepositoryTest {
 
         repository.deleteSession(SESSION_ID) shouldBe true
         queryLong("SELECT count(*) FROM immersion_tombstone WHERE entity_type = 'SESSION'") shouldBe 1
-        queryLong("SELECT count(*) FROM immersion_tombstone WHERE entity_type = 'SOURCE_UNIT'") shouldBe 1
+        queryLong("SELECT count(*) FROM immersion_tombstone WHERE entity_type = 'SOURCE_UNIT'") shouldBe 0
         queryLong("SELECT count(*) FROM immersion_event") shouldBe 0
         queryLong("SELECT count(*) FROM immersion_source_unit") shouldBe 0
         queryLong("SELECT count(*) FROM immersion_word") shouldBe 0
@@ -2152,6 +3547,136 @@ class SqlDelightImmersionRepositoryTest {
         queryLong("SELECT count(*) FROM immersion_daily_rollup") shouldBe 0
         queryLong("SELECT count(*) FROM immersion_lifetime_rollup") shouldBe 0
     }
+
+    @Test
+    fun `session tombstone preserves a remote shared source but garbage collects orphan archive text`() =
+        runTest {
+            val remoteSessionId = sessionId(602)
+            val sharedRawText = "private shared source text"
+            repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+            repository.createSession(
+                sessionStart().copy(deviceId = "device-a"),
+            ) shouldBe PersistenceResult.Applied
+            repository.appendExposure(
+                exposure(sequence = 1, eventNumber = 620).copy(
+                    source = source(1_100).copy(
+                        rawText = sharedRawText,
+                        firstExposedAtEpochMillis = 1_100,
+                    ),
+                ),
+            ) shouldBe PersistenceResult.Applied
+            repository.finalizeSession(
+                SESSION_ID,
+                SessionStatus.COMPLETED,
+                2_000,
+                MillisecondDuration(1_000),
+            ) shouldBe PersistenceResult.Applied
+            val deviceAOldArchive = repository.exportPortableArchive(true, 3_000)
+
+            repository.deleteSession(SESSION_ID) shouldBe true
+            queryLong("SELECT count(*) FROM immersion_tombstone WHERE entity_type = 'SESSION'") shouldBe 1
+            queryLong("SELECT count(*) FROM immersion_tombstone WHERE entity_type = 'SOURCE_UNIT'") shouldBe 0
+            val deviceADeletionArchive = repository.exportPortableArchive(true, 4_000)
+
+            val deviceBDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+            try {
+                Database.Schema.create(deviceBDriver).value
+                deviceBDriver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+                val deviceB = SqlDelightImmersionRepository(
+                    AndroidDatabaseHandler(
+                        createDatabase(deviceBDriver),
+                        deviceBDriver,
+                        databaseDispatcher,
+                        databaseDispatcher,
+                    ),
+                )
+                deviceB.upsertTitle(title()) shouldBe PersistenceResult.Applied
+                deviceB.createSession(
+                    sessionStart(id = remoteSessionId).copy(deviceId = "device-b"),
+                ) shouldBe PersistenceResult.Applied
+                deviceB.appendExposure(
+                    exposure(sequence = 1, eventNumber = 621).copy(
+                        sessionId = remoteSessionId,
+                        source = source(1_100).copy(
+                            rawText = sharedRawText,
+                            firstExposedAtEpochMillis = 1_100,
+                        ),
+                    ),
+                ) shouldBe PersistenceResult.Applied
+                deviceB.finalizeSession(
+                    remoteSessionId,
+                    SessionStatus.COMPLETED,
+                    2_000,
+                    MillisecondDuration(1_000),
+                ) shouldBe PersistenceResult.Applied
+                val deviceBArchive = deviceB.exportPortableArchive(true, 4_500)
+
+                val sharedTargetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+                try {
+                    Database.Schema.create(sharedTargetDriver).value
+                    sharedTargetDriver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+                    val sharedTarget = SqlDelightImmersionRepository(
+                        AndroidDatabaseHandler(
+                            createDatabase(sharedTargetDriver),
+                            sharedTargetDriver,
+                            databaseDispatcher,
+                            databaseDispatcher,
+                        ),
+                    )
+                    sharedTarget.mergePortableArchive(deviceAOldArchive, 5_000)
+                        .quarantinedConflicts shouldBe 0
+                    sharedTarget.mergePortableArchive(deviceBArchive, 5_500)
+                        .quarantinedConflicts shouldBe 0
+                    sharedTarget.mergePortableArchive(deviceADeletionArchive, 6_000)
+                        .quarantinedConflicts shouldBe 0
+                    sharedTarget.mergePortableArchive(deviceAOldArchive, 6_500).let { report ->
+                        report.skippedByTombstoneRows shouldNotBe 0
+                        report.quarantinedConflicts shouldBe 0
+                    }
+
+                    sharedTarget.getSession(SESSION_ID) shouldBe null
+                    sharedTarget.getSession(remoteSessionId)?.id shouldBe remoteSessionId
+                    queryLong(sharedTargetDriver, "SELECT count(*) FROM immersion_session") shouldBe 1
+                    queryLong(sharedTargetDriver, "SELECT count(*) FROM immersion_event") shouldBe 1
+                    queryLong(sharedTargetDriver, "SELECT count(*) FROM immersion_source_exposure") shouldBe 1
+                    queryLong(sharedTargetDriver, "SELECT count(*) FROM immersion_source_unit") shouldBe 1
+                    queryLong(
+                        sharedTargetDriver,
+                        "SELECT count(*) FROM immersion_source_unit WHERE raw_text IS NOT NULL",
+                    ) shouldBe 1
+                } finally {
+                    sharedTargetDriver.close()
+                }
+
+                val orphanTargetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+                try {
+                    Database.Schema.create(orphanTargetDriver).value
+                    orphanTargetDriver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+                    val orphanTarget = SqlDelightImmersionRepository(
+                        AndroidDatabaseHandler(
+                            createDatabase(orphanTargetDriver),
+                            orphanTargetDriver,
+                            databaseDispatcher,
+                            databaseDispatcher,
+                        ),
+                    )
+                    orphanTarget.mergePortableArchive(deviceADeletionArchive, 7_000)
+                        .quarantinedConflicts shouldBe 0
+                    orphanTarget.mergePortableArchive(deviceAOldArchive, 7_500).let { report ->
+                        report.skippedByTombstoneRows shouldNotBe 0
+                        report.quarantinedConflicts shouldBe 0
+                    }
+
+                    orphanTarget.getSession(SESSION_ID) shouldBe null
+                    queryLong(orphanTargetDriver, "SELECT count(*) FROM immersion_source_unit") shouldBe 0
+                    queryLong(orphanTargetDriver, "SELECT count(*) FROM immersion_source_fts") shouldBe 0
+                } finally {
+                    orphanTargetDriver.close()
+                }
+            } finally {
+                deviceBDriver.close()
+            }
+        }
 
     @Test
     fun `portable merge promotes shared source boundaries when a newer archive tombstones the first session`() =
@@ -2177,7 +3702,7 @@ class SqlDelightImmersionRepositoryTest {
                     source = source(secondAt),
                 ),
             ) shouldBe PersistenceResult.Applied
-            repository.storeIndexResult(
+            storeClaimedIndexResult(
                 sourceUnitId = SOURCE_ID,
                 tokenizerId = "test",
                 tokenizerVersion = 1,
@@ -2256,6 +3781,158 @@ class SqlDelightImmersionRepositoryTest {
         }
 
     @Test
+    fun `portable tombstone promotes inventory first seen from an orphan source to a distinct source`() =
+        runTest {
+            val dayMillis = 86_400_000L
+            val firstAt = 1_100L
+            val secondAt = 2 * dayMillis + 1_100
+            val secondSession = sessionId(5)
+            val secondSource = SourceUnitId("00000000-0000-0000-0000-000000000205")
+            repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+            repository.createSession(
+                sessionStart(startedAt = firstAt - 100).copy(deviceId = "device-a"),
+            ) shouldBe PersistenceResult.Applied
+            repository.appendExposure(
+                exposure(sequence = 1, eventNumber = 612).copy(
+                    occurredAtEpochMillis = firstAt,
+                    source = source(firstAt).copy(firstExposedAtEpochMillis = firstAt),
+                ),
+            ) shouldBe PersistenceResult.Applied
+            storeClaimedIndexResult(
+                sourceUnitId = SOURCE_ID,
+                tokenizerId = "test",
+                tokenizerVersion = 1,
+                normalizationVersion = 1,
+                indexedVersion = 1,
+                indexedAtEpochMillis = firstAt + 100,
+                tokenizationConfidence = 1.0,
+                terminalReason = null,
+                words = listOf(indexedWord("word-portable-promoted", "猫", ordinal = 0)),
+                characters = listOf(indexedCharacter('猫', 1)),
+            )
+            repository.finalizeSession(
+                SESSION_ID,
+                SessionStatus.COMPLETED,
+                firstAt + 200,
+                MillisecondDuration(200),
+            ) shouldBe PersistenceResult.Applied
+            val olderArchive = repository.exportPortableArchive(false, firstAt + 300)
+
+            repository.deleteSession(SESSION_ID) shouldBe true
+            val deletionArchive = repository.exportPortableArchive(false, firstAt + 400)
+
+            val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+            try {
+                Database.Schema.create(targetDriver).value
+                targetDriver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+                val target = SqlDelightImmersionRepository(
+                    AndroidDatabaseHandler(
+                        createDatabase(targetDriver),
+                        targetDriver,
+                        databaseDispatcher,
+                        databaseDispatcher,
+                    ),
+                )
+                target.mergePortableArchive(olderArchive, secondAt + 1_000)
+                    .quarantinedConflicts shouldBe 0
+                target.createSession(
+                    sessionStart(id = secondSession, startedAt = secondAt - 100)
+                        .copy(deviceId = "device-b"),
+                ) shouldBe PersistenceResult.Applied
+                target.appendExposure(
+                    exposure(sequence = 1, eventNumber = 613).copy(
+                        sessionId = secondSession,
+                        occurredAtEpochMillis = secondAt,
+                        source = source(secondAt).copy(
+                            id = secondSource,
+                            canonicalLocator = "novel:test:chapter-2:0-100",
+                            chapterOrSectionId = "chapter-2",
+                            normalizedTextHash = "sha256:portable-second-source",
+                            firstExposedAtEpochMillis = secondAt,
+                        ),
+                    ),
+                ) shouldBe PersistenceResult.Applied
+                val secondClaim = target.claimWork(
+                    targetVersion = 1,
+                    limit = 100,
+                    nowEpochMillis = secondAt + 100,
+                ).single { it.sourceUnitId == secondSource }
+                target.storeIndexResult(
+                    sourceUnitId = secondSource,
+                    claimGeneration = secondClaim.claimGeneration,
+                    tokenizerId = "test",
+                    tokenizerVersion = 1,
+                    normalizationVersion = 1,
+                    indexedVersion = 1,
+                    indexedAtEpochMillis = secondAt + 100,
+                    tokenizationConfidence = 1.0,
+                    terminalReason = null,
+                    words = listOf(indexedWord("word-portable-promoted", "猫", ordinal = 0)),
+                    characters = listOf(indexedCharacter('猫', 1)),
+                )
+                target.finalizeSession(
+                    secondSession,
+                    SessionStatus.COMPLETED,
+                    secondAt + 200,
+                    MillisecondDuration(200),
+                ) shouldBe PersistenceResult.Applied
+                queryLong(
+                    targetDriver,
+                    "SELECT first_seen_at FROM immersion_word WHERE id = 'word-portable-promoted'",
+                ) shouldBe firstAt
+
+                target.mergePortableArchive(deletionArchive, secondAt + 2_000)
+                    .quarantinedConflicts shouldBe 0
+
+                queryLong(
+                    targetDriver,
+                    "SELECT count(*) FROM immersion_source_unit WHERE id = '${SOURCE_ID.value}'",
+                ) shouldBe 0
+                queryLong(
+                    targetDriver,
+                    "SELECT count(*) FROM immersion_source_unit WHERE id = '${secondSource.value}'",
+                ) shouldBe 1
+                queryLong(
+                    targetDriver,
+                    "SELECT first_seen_at FROM immersion_word WHERE id = 'word-portable-promoted'",
+                ) shouldBe secondAt
+                queryLong(
+                    targetDriver,
+                    "SELECT first_seen_at FROM immersion_character WHERE code_point = ${'猫'.code}",
+                ) shouldBe secondAt
+                target.inventoryMetrics(
+                    StatsFilter(
+                        dateRange = LocalDateRange(
+                            ImmersionLocalDate(2),
+                            ImmersionLocalDate(2),
+                        ),
+                    ),
+                ).let {
+                    it.uniqueWords shouldBe 1
+                    it.newWords shouldBe 1
+                    it.distinctCharacters shouldBe 1
+                    it.newCharacters shouldBe 1
+                }
+            } finally {
+                targetDriver.close()
+            }
+        }
+
+    @Test
+    fun `source search normalizes decomposed Unicode input to NFC`() = runTest {
+        prepareSession()
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = 601).copy(
+                source = source(lastExposedAt = 1_100).copy(rawText = "Lire le café"),
+            ),
+        ) shouldBe PersistenceResult.Applied
+
+        repository.sourceSearch(StatsFilter(), "cafe\u0301", 0, 10)
+            .items
+            .map { it.sourceUnitId } shouldContainExactly listOf(SOURCE_ID)
+    }
+
+    @Test
     fun `raw text deletion clears search without changing aggregate totals`() = runTest {
         repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
         repository.createSession(sessionStart()) shouldBe PersistenceResult.Applied
@@ -2264,7 +3941,7 @@ class SqlDelightImmersionRepositoryTest {
                 source = source(lastExposedAt = 1_100).copy(rawText = "猫を読む"),
             ),
         ) shouldBe PersistenceResult.Applied
-        repository.storeIndexResult(
+        storeClaimedIndexResult(
             sourceUnitId = SOURCE_ID,
             tokenizerId = "test-v1",
             tokenizerVersion = 1,
@@ -2352,6 +4029,122 @@ class SqlDelightImmersionRepositoryTest {
 
         repository.setTitleCaptureExcluded(TITLE_ID, excluded = false, updatedAtEpochMillis = 2_000)
         repository.isTitleCaptureExcluded(TITLE_ID) shouldBe false
+    }
+
+    @Test
+    fun `scoped deletion removes only sessions matching the selected date range`() = runTest {
+        val retainedSessionId = SessionId("00000000-0000-0000-0000-000000000098")
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        repository.createSession(sessionStart()) shouldBe PersistenceResult.Applied
+        repository.finalizeSession(
+            SESSION_ID,
+            SessionStatus.COMPLETED,
+            2_000,
+            MillisecondDuration(1_000),
+        ) shouldBe PersistenceResult.Applied
+        repository.createSession(
+            sessionStart(
+                id = retainedSessionId,
+                startedAt = 86_401_000,
+            ),
+        ) shouldBe PersistenceResult.Applied
+        repository.finalizeSession(
+            retainedSessionId,
+            SessionStatus.COMPLETED,
+            86_402_000,
+            MillisecondDuration(1_000),
+        ) shouldBe PersistenceResult.Applied
+        val scope = ImmersionStatsDeletionScope(
+            dateRange = LocalDateRange(ImmersionLocalDate(0), ImmersionLocalDate(0)),
+        )
+
+        val preview = repository.previewScopedStatsDeletion(scope)
+        preview.sessions shouldBe 1
+        repository.deleteScopedStats(scope, preview).sessions shouldBe 1
+
+        repository.getSession(SESSION_ID) shouldBe null
+        repository.getSession(retainedSessionId)?.id shouldBe retainedSessionId
+        deletedSessionCallbacks shouldContainExactly listOf(SESSION_ID)
+    }
+
+    @Test
+    fun `scoped deletion rejects a same totals replacement selected after preview`() = runTest {
+        val replacementSessionId = sessionId(981)
+        val scope = ImmersionStatsDeletionScope(
+            dateRange = LocalDateRange(ImmersionLocalDate(0), ImmersionLocalDate(0)),
+        )
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        repository.createSession(sessionStart()) shouldBe PersistenceResult.Applied
+        repository.finalizeSession(
+            SESSION_ID,
+            SessionStatus.COMPLETED,
+            2_000,
+            MillisecondDuration(1_000),
+        ) shouldBe PersistenceResult.Applied
+        val preview = repository.previewScopedStatsDeletion(scope)
+        preview.selectionDigest shouldNotBe null
+        preview.databaseRevision shouldNotBe null
+
+        repository.deleteSession(SESSION_ID) shouldBe true
+        repository.createSession(sessionStart(id = replacementSessionId)) shouldBe PersistenceResult.Applied
+        repository.finalizeSession(
+            replacementSessionId,
+            SessionStatus.COMPLETED,
+            2_000,
+            MillisecondDuration(1_000),
+        ) shouldBe PersistenceResult.Applied
+        deletedSessionCallbacks.clear()
+
+        runCatching {
+            repository.deleteScopedStats(scope, preview)
+        }.exceptionOrNull() shouldNotBe null
+        repository.getSession(replacementSessionId)?.id shouldBe replacementSessionId
+        deletedSessionCallbacks shouldBe emptyList()
+    }
+
+    @Test
+    fun `scoped deletion rolls back every session and defers callbacks until commit`() = runTest {
+        val secondSessionId = sessionId(982)
+        val scope = ImmersionStatsDeletionScope(
+            dateRange = LocalDateRange(ImmersionLocalDate(0), ImmersionLocalDate(0)),
+        )
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        repository.createSession(sessionStart()) shouldBe PersistenceResult.Applied
+        repository.createSession(sessionStart(id = secondSessionId)) shouldBe PersistenceResult.Applied
+        repository.finalizeSession(
+            SESSION_ID,
+            SessionStatus.COMPLETED,
+            2_000,
+            MillisecondDuration(1_000),
+        ) shouldBe PersistenceResult.Applied
+        repository.finalizeSession(
+            secondSessionId,
+            SessionStatus.COMPLETED,
+            2_000,
+            MillisecondDuration(1_000),
+        ) shouldBe PersistenceResult.Applied
+        val preview = repository.previewScopedStatsDeletion(scope)
+        driver.execute(
+            null,
+            """
+            CREATE TRIGGER abort_second_scoped_session_delete
+            BEFORE DELETE ON immersion_session
+            WHEN OLD.id = '${secondSessionId.value}'
+            BEGIN
+                SELECT RAISE(ABORT, 'simulated scoped deletion failure');
+            END
+            """.trimIndent(),
+            0,
+        ).value
+
+        runCatching {
+            repository.deleteScopedStats(scope, preview)
+        }.exceptionOrNull() shouldNotBe null
+
+        repository.getSession(SESSION_ID)?.id shouldBe SESSION_ID
+        repository.getSession(secondSessionId)?.id shouldBe secondSessionId
+        queryLong("SELECT count(*) FROM immersion_tombstone WHERE entity_type = 'SESSION'") shouldBe 0
+        deletedSessionCallbacks shouldBe emptyList()
     }
 
     @Test
@@ -2494,6 +4287,142 @@ class SqlDelightImmersionRepositoryTest {
         repository.createSession(sessionStart()) shouldBe PersistenceResult.Applied
     }
 
+    private suspend fun recordScopedAnkiExposure(
+        number: Int,
+        titleId: TitleId,
+        mediaKind: MediaKind,
+        profileId: String,
+        languageTag: LanguageTag,
+        occurredAtEpochMillis: Long,
+        normalizedWord: String,
+        normalizedReading: String,
+        character: Char,
+        replay: Boolean = false,
+        legacy: Boolean = false,
+    ) {
+        val sessionId = sessionId(number)
+        val sourceId = SourceUnitId(
+            "00000000-0000-0000-0002-${number.toString().padStart(12, '0')}",
+        )
+        repository.upsertTitle(
+            title().copy(
+                id = titleId,
+                mediaKind = mediaKind,
+                sourceKey = "scope:${titleId.value}",
+                profileId = profileId,
+                languageTag = languageTag,
+                displayTitle = "Scope ${titleId.value.takeLast(12)}",
+                updatedAtEpochMillis = occurredAtEpochMillis,
+            ),
+        )
+        repository.createSession(
+            sessionStart(
+                id = sessionId,
+                startedAt = occurredAtEpochMillis,
+            ).copy(
+                titleId = titleId,
+                mediaKind = mediaKind,
+                languageTag = languageTag,
+                profileId = profileId,
+                legacyImport = false,
+            ),
+        ) shouldBe PersistenceResult.Applied
+        if (legacy) {
+            driver.execute(
+                identifier = null,
+                sql = """
+                    UPDATE immersion_session
+                    SET legacy_import = 1,
+                        legacy_local_date = ${occurredAtEpochMillis / 86_400_000}
+                    WHERE id = '${sessionId.value}'
+                """.trimIndent(),
+                parameters = 0,
+            ).value
+        }
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = number).copy(
+                sessionId = sessionId,
+                occurredAtEpochMillis = occurredAtEpochMillis,
+                replayOrdinal = if (replay) 1 else 0,
+                source = source(occurredAtEpochMillis).copy(
+                    id = sourceId,
+                    titleId = titleId,
+                    sourceKind = when (mediaKind) {
+                        MediaKind.NOVEL -> SourceKind.NOVEL_RANGE
+                        MediaKind.MANGA -> SourceKind.MANGA_OCR_BLOCK
+                        MediaKind.VIDEO -> SourceKind.SUBTITLE_CUE
+                    },
+                    canonicalLocator = "scope:$number:0-100",
+                    normalizedTextHash = "sha256:scope:$number",
+                    rawText = normalizedWord,
+                    firstExposedAtEpochMillis = occurredAtEpochMillis,
+                    lastExposedAtEpochMillis = occurredAtEpochMillis,
+                ),
+            ),
+        ) shouldBe PersistenceResult.Applied
+        storeClaimedIndexResult(
+            sourceUnitId = sourceId,
+            tokenizerId = "scope-test",
+            tokenizerVersion = 1,
+            normalizationVersion = 1,
+            indexedVersion = 1,
+            indexedAtEpochMillis = occurredAtEpochMillis,
+            tokenizationConfidence = 1.0,
+            terminalReason = null,
+            words = listOf(
+                indexedWord(
+                    id = "scope-word-$number",
+                    headword = normalizedWord,
+                    reading = normalizedReading,
+                    ordinal = 0,
+                ).copy(languageTag = languageTag),
+            ),
+            characters = listOf(indexedCharacter(character, 1)),
+        )
+    }
+
+    private suspend fun storeClaimedIndexResult(
+        sourceUnitId: SourceUnitId,
+        tokenizerId: String,
+        tokenizerVersion: Int,
+        normalizationVersion: Int,
+        indexedVersion: Int,
+        indexedAtEpochMillis: Long,
+        tokenizationConfidence: Double?,
+        terminalReason: IndexTerminalReason?,
+        words: List<IndexedWord>,
+        characters: List<IndexedCharacter>,
+    ) {
+        val claimGeneration = if (
+            queryStrings(
+                "SELECT indexing_status FROM immersion_source_unit WHERE id = '${sourceUnitId.value}'",
+            ).single() == "IN_PROGRESS"
+        ) {
+            queryLong(
+                "SELECT index_attempt_count FROM immersion_source_unit WHERE id = '${sourceUnitId.value}'",
+            ).toInt()
+        } else {
+            repository.claimWork(
+                targetVersion = indexedVersion,
+                limit = 100,
+                nowEpochMillis = indexedAtEpochMillis,
+            ).single { it.sourceUnitId == sourceUnitId }.claimGeneration
+        }
+        repository.storeIndexResult(
+            sourceUnitId = sourceUnitId,
+            claimGeneration = claimGeneration,
+            tokenizerId = tokenizerId,
+            tokenizerVersion = tokenizerVersion,
+            normalizationVersion = normalizationVersion,
+            indexedVersion = indexedVersion,
+            indexedAtEpochMillis = indexedAtEpochMillis,
+            tokenizationConfidence = tokenizationConfidence,
+            terminalReason = terminalReason,
+            words = words,
+            characters = characters,
+        )
+    }
+
     private fun title() = ImmersionTitle(
         id = TITLE_ID,
         mediaKind = MediaKind.NOVEL,
@@ -2619,16 +4548,24 @@ class SqlDelightImmersionRepositoryTest {
         snapshotId: String,
         intervalDays: Int,
         tier: MaturityTier,
+        noteId: Long = 1,
+        cardId: Long = 10,
+        languageTag: LanguageTag = LanguageTag("ja"),
+        normalizedWord: String = "猫語",
+        normalizedReading: String = "ねこご",
+        matchConfidence: AnkiMatchConfidence = AnkiMatchConfidence.READING_AWARE,
+        characters: Set<UnicodeCodePoint> =
+            setOf(UnicodeCodePoint('猫'.code), UnicodeCodePoint('語'.code)),
     ) = ImmersionAnkiItem(
         snapshotId = snapshotId,
-        noteId = 1,
-        cardId = 10,
+        noteId = noteId,
+        cardId = cardId,
         noteTypeId = 20,
         deckId = 30,
-        languageTag = LanguageTag("ja"),
-        normalizedWord = "猫語",
-        normalizedReading = "ねこご",
-        characters = setOf(UnicodeCodePoint('猫'.code), UnicodeCodePoint('語'.code)),
+        languageTag = languageTag,
+        normalizedWord = normalizedWord,
+        normalizedReading = normalizedReading,
+        characters = characters,
         cardType = 2,
         queue = 2,
         intervalDays = intervalDays,
@@ -2637,7 +4574,7 @@ class SqlDelightImmersionRepositoryTest {
         lapses = 1,
         ease = 2_500,
         noteModifiedAtEpochSeconds = 900,
-        matchConfidence = AnkiMatchConfidence.READING_AWARE,
+        matchConfidence = matchConfidence,
         ambiguityCount = 1,
         maturityTier = tier,
         firstMatureAtEpochMillis = if (tier == MaturityTier.MATURE) 2_000 else null,

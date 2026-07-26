@@ -115,6 +115,7 @@ import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
 import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.domain.immersion.repository.ImmersionAnkiRepository
+import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.i18n.stringResource
 import tachiyomi.presentation.core.util.collectAsState
@@ -1813,6 +1814,8 @@ object SettingsDictionaryScreen : SearchableSettings {
         val activity = context as? android.app.Activity
         val scope = rememberCoroutineScope()
         val dictionaryPreferences = remember { Injekt.get<DictionaryPreferences>() }
+        val statsPreferences = remember { Injekt.get<ImmersionStatsPreferences>() }
+        val statsSyncEnabled by statsPreferences.ankiSyncEnabled().collectAsState()
         val bridge = remember { AnkiDroidBridge(context) }
 
         val dictionaries by dictionaryNames.collectAsState()
@@ -2123,6 +2126,19 @@ object SettingsDictionaryScreen : SearchableSettings {
                     )
                 }
 
+                // KMK -->
+                add(
+                    Preference.PreferenceItem.SwitchPreference(
+                        preference = statsPreferences.ankiSyncEnabled(),
+                        title = stringResource(KMR.strings.stats_anki_sync_enabled),
+                        subtitle = stringResource(KMR.strings.stats_anki_sync_enabled_summary),
+                        onValueChanged = {
+                            AnkiInventorySyncJob.setEnabled(context, it)
+                            false
+                        },
+                    ),
+                )
+                // KMK <--
                 add(
                     Preference.PreferenceItem.CustomPreference(
                         title = stringResource(KMR.strings.stats_anki_inventory),
@@ -2210,12 +2226,14 @@ object SettingsDictionaryScreen : SearchableSettings {
                             ) {
                                 OutlinedButton(
                                     onClick = { AnkiInventorySyncJob.refreshNow(context) },
+                                    enabled = statsSyncEnabled,
                                     modifier = Modifier.weight(1f),
                                 ) {
                                     Text(stringResource(KMR.strings.stats_anki_refresh))
                                 }
                                 OutlinedButton(
                                     onClick = { AnkiInventorySyncJob.cancel(context) },
+                                    enabled = statsSyncEnabled,
                                     modifier = Modifier.weight(1f),
                                 ) {
                                     Text(stringResource(KMR.strings.stats_anki_cancel))

@@ -301,6 +301,190 @@ class MangaCaptureAdapterTest {
     }
 
     @Test
+    fun `viewport bursts coalesce to the latest geometry without displacing completion`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+        val key = MangaPageKey(chapterId = 10, pageIndex = 0)
+        val ocrBlock = block("日本", ymin = 0.75f, ymax = 1f)
+
+        adapter.onOcrResult(key, MangaOcrAvailability.AVAILABLE, listOf(ocrBlock))
+        repeat(2_000) { index ->
+            adapter.onVisiblePages(
+                listOf(
+                    MangaPageViewport(
+                        key = key,
+                        visibleTop = 0f,
+                        visibleBottom = if (index == 1_999) 1f else 0.5f,
+                    ),
+                ),
+            )
+        }
+        adapter.onChapterCompleted(key.chapterId)
+        adapter.onTitleCompleted()
+        adapter.finalize(legacy(characters = 2)).await()
+
+        recorder.exposures(SourceKind.MANGA_PAGE) shouldHaveSize 1
+        recorder.exposures(SourceKind.MANGA_OCR_BLOCK) shouldHaveSize 1
+        recorder.commands.filterIsInstance<CaptureCommand.Activity>()
+            .map(CaptureCommand.Activity::eventType)
+            .filter { it == EventType.UNIT_COMPLETED || it == EventType.TITLE_COMPLETED } shouldBe
+            listOf(EventType.UNIT_COMPLETED, EventType.TITLE_COMPLETED)
+        adapter.queueDiagnostics.value.let {
+            it.depth shouldBe 0
+            it.coalescedCommands shouldBe 1_998
+            it.droppedSnapshots shouldBe 0
+            it.semanticOverflowCommands shouldBe 0
+            it.droppedSemanticCommands shouldBe 0
+        }
+    }
+
+    @Test
+    fun `bounded queue diagnoses semantic drops and drains accepted FIFO before terminal`() = runTest {
+        val queue = BoundedCaptureCommandQueue<Int>(capacity = 2, overflowCapacity = 1)
+        val duplicate = CaptureCommandQueuePolicy.AdjacentCoalescible(
+            family = "duplicate",
+            key = Unit,
+        )
+
+        queue.offer(10, duplicate) shouldBe CaptureCommandOfferResult.ACCEPTED
+        queue.offer(11, duplicate) shouldBe CaptureCommandOfferResult.COALESCED
+        queue.offer(20, CaptureCommandQueuePolicy.NonCoalescible) shouldBe
+            CaptureCommandOfferResult.ACCEPTED
+        queue.offer(30, CaptureCommandQueuePolicy.NonCoalescible) shouldBe
+            CaptureCommandOfferResult.SEMANTIC_OVERFLOW
+        queue.offer(40, CaptureCommandQueuePolicy.NonCoalescible) shouldBe
+            CaptureCommandOfferResult.SEMANTIC_DROPPED
+        queue.diagnostics.value.let {
+            it.depth shouldBe 3
+            it.overflowDepth shouldBe 1
+            it.highWatermark shouldBe 3
+            it.coalescedCommands shouldBe 1
+            it.semanticOverflowCommands shouldBe 1
+            it.droppedSemanticCommands shouldBe 1
+        }
+        queue.finish(99) shouldBe true
+
+        queue.receive() shouldBe 11
+        queue.receive() shouldBe 20
+        queue.receive() shouldBe 30
+        queue.receive() shouldBe 99
+        queue.receive() shouldBe null
+    }
+
+    @Test
+    fun `semantic commands evict only safe snapshots and snapshot drops stay observable`() = runTest {
+        val queue = BoundedCaptureCommandQueue<Int>(capacity = 2, overflowCapacity = 1)
+        val snapshot = CaptureCommandQueuePolicy.LatestSnapshot(
+            family = "position",
+            key = Unit,
+        )
+
+        queue.offer(1, CaptureCommandQueuePolicy.NonCoalescible) shouldBe
+            CaptureCommandOfferResult.ACCEPTED
+        queue.offer(2, snapshot) shouldBe CaptureCommandOfferResult.ACCEPTED
+        queue.offer(3, CaptureCommandQueuePolicy.NonCoalescible) shouldBe
+            CaptureCommandOfferResult.ACCEPTED
+        queue.offer(4, snapshot) shouldBe CaptureCommandOfferResult.SNAPSHOT_DROPPED
+
+        queue.diagnostics.value.let {
+            it.depth shouldBe 2
+            it.evictedSnapshots shouldBe 1
+            it.droppedSnapshots shouldBe 1
+            it.semanticOverflowCommands shouldBe 0
+            it.droppedSemanticCommands shouldBe 0
+        }
+        queue.finish(99) shouldBe true
+        queue.receive() shouldBe 1
+        queue.receive() shouldBe 3
+        queue.receive() shouldBe 99
+    }
+
+    @Test
+    fun `semantic boundaries seal earlier snapshots against later eviction`() = runTest {
+        val queue = BoundedCaptureCommandQueue<Int>(capacity = 3, overflowCapacity = 1)
+        val snapshot = CaptureCommandQueuePolicy.LatestSnapshot(
+            family = "position",
+            key = Unit,
+        )
+
+        queue.offer(1, snapshot) shouldBe CaptureCommandOfferResult.ACCEPTED
+        queue.offer(2, CaptureCommandQueuePolicy.NonCoalescible) shouldBe
+            CaptureCommandOfferResult.ACCEPTED
+        queue.offer(3, CaptureCommandQueuePolicy.NonCoalescible) shouldBe
+            CaptureCommandOfferResult.ACCEPTED
+        queue.offer(4, CaptureCommandQueuePolicy.NonCoalescible) shouldBe
+            CaptureCommandOfferResult.SEMANTIC_OVERFLOW
+        queue.offer(5, CaptureCommandQueuePolicy.NonCoalescible) shouldBe
+            CaptureCommandOfferResult.SEMANTIC_DROPPED
+
+        queue.diagnostics.value.let {
+            it.depth shouldBe 4
+            it.overflowDepth shouldBe 1
+            it.highWatermark shouldBe 4
+            it.evictedSnapshots shouldBe 0
+            it.semanticOverflowCommands shouldBe 1
+            it.droppedSemanticCommands shouldBe 1
+        }
+        queue.finish(99) shouldBe true
+        queue.receive() shouldBe 1
+        queue.receive() shouldBe 2
+        queue.receive() shouldBe 3
+        queue.receive() shouldBe 4
+        queue.receive() shouldBe 99
+    }
+
+    @Test
+    fun `adapter isolates reader from bounded saturation and diagnoses semantic loss`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+
+        val failure = runCatching {
+            repeat(129) { chapterId ->
+                adapter.onChapterCompleted(chapterId.toLong())
+            }
+        }.exceptionOrNull()
+
+        failure shouldBe null
+        adapter.queueDiagnostics.value.let {
+            it.depth shouldBe 128
+            it.overflowDepth shouldBe 64
+            it.highWatermark shouldBe 128
+            it.semanticOverflowCommands shouldBe 64
+            it.droppedSemanticCommands shouldBe 1
+            it.droppedSnapshots shouldBe 0
+        }
+        adapter.finalize(legacy()).await()
+        recorder.commands.filterIsInstance<CaptureCommand.Activity>()
+            .count { it.eventType == EventType.UNIT_COMPLETED } shouldBe 128
+    }
+
+    @Test
+    fun `recorder exception is diagnosed and later commands plus finalization still drain`() = runTest {
+        val recorder = FakeRecorder(recordFailuresRemaining = 1)
+        val adapter = adapter(recorder)
+
+        adapter.onChapterCompleted(1)
+        adapter.onChapterCompleted(2)
+        adapter.finalize(legacy()).await()
+
+        adapter.queueDiagnostics.value.workerFailures shouldBe 1
+        recorder.commands.filterIsInstance<CaptureCommand.Activity>()
+            .map(CaptureCommand.Activity::eventType) shouldBe listOf(EventType.UNIT_COMPLETED)
+    }
+
+    @Test
+    fun `recorder finalization exception completes the terminal boundary`() = runTest {
+        val recorder = FakeRecorder(finalizeFailuresRemaining = 1)
+        val adapter = adapter(recorder)
+
+        adapter.onChapterCompleted(1)
+        adapter.finalize(legacy()).await()
+        adapter.finalize(legacy()).await()
+
+        adapter.queueDiagnostics.value.workerFailures shouldBe 1
+    }
+
+    @Test
     fun `session and day reconciliation report exact and policy differences`() = runTest {
         val recorder = FakeRecorder(activeMillis = 60_000)
         val adapter = adapter(recorder)
@@ -370,6 +554,8 @@ class MangaCaptureAdapterTest {
         private val suppressStart: Boolean = false,
         private val activeMillis: Long = 1_000,
         private val rejectOcrExposures: Boolean = false,
+        private var recordFailuresRemaining: Int = 0,
+        private var finalizeFailuresRemaining: Int = 0,
     ) : ImmersionRecorder {
         private val mutableState = MutableStateFlow(ImmersionRecorderSnapshot())
         override val state: StateFlow<ImmersionRecorderSnapshot> = mutableState
@@ -401,6 +587,10 @@ class MangaCaptureAdapterTest {
 
         override fun record(handle: SessionHandle, command: CaptureCommand): RecordResult {
             if (handle != this.handle) return RecordResult.Rejected(ImmersionSessionState.ACTIVE)
+            if (recordFailuresRemaining > 0) {
+                recordFailuresRemaining -= 1
+                error("test recorder failure")
+            }
             if (
                 rejectOcrExposures &&
                 command is CaptureCommand.Exposure &&
@@ -434,6 +624,10 @@ class MangaCaptureAdapterTest {
 
         override suspend fun finalize(handle: SessionHandle, reason: FinalizeReason): ImmersionSession? {
             if (handle != this.handle) return null
+            if (finalizeFailuresRemaining > 0) {
+                finalizeFailuresRemaining -= 1
+                error("test recorder finalization failure")
+            }
             val title = requireNotNull(context).title
             val exposures = commands.filterIsInstance<CaptureCommand.Exposure>()
             this.handle = null

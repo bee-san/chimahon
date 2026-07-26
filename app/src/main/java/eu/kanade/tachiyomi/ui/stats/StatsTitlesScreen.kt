@@ -1,9 +1,20 @@
 package eu.kanade.tachiyomi.ui.stats
 
 import android.app.Application
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.outlined.Sort
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import cafe.adriel.voyager.core.model.StateScreenModel
 import cafe.adriel.voyager.core.model.rememberScreenModel
 import cafe.adriel.voyager.core.model.screenModelScope
@@ -12,6 +23,8 @@ import cafe.adriel.voyager.navigator.currentOrThrow
 import com.canopus.chimareader.data.BookStorage
 import com.canopus.chimareader.data.MangaStatsStorage
 import eu.kanade.presentation.components.AppBar
+import eu.kanade.presentation.components.AppBarTitle
+import eu.kanade.presentation.components.SearchToolbar
 import eu.kanade.presentation.more.stats.StatsTitlesContent
 import eu.kanade.presentation.more.stats.data.StatsType
 import eu.kanade.presentation.util.Screen
@@ -27,6 +40,7 @@ import tachiyomi.domain.manga.interactor.GetReadMangaNotInLibraryView
 import tachiyomi.domain.manga.model.Manga
 import tachiyomi.domain.source.service.SourceManager
 import tachiyomi.i18n.MR
+import tachiyomi.i18n.kmk.KMR
 import tachiyomi.presentation.core.components.material.Scaffold
 import tachiyomi.presentation.core.i18n.stringResource
 import tachiyomi.presentation.core.screens.LoadingScreen
@@ -34,24 +48,11 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.io.File
 import java.time.LocalDate
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.outlined.Sort
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.Text
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import eu.kanade.presentation.components.AppBarTitle
-import eu.kanade.presentation.components.SearchToolbar
 
 enum class StatsTitlesSort {
     Alphabetical,
     LastRead,
-    DateAdded
+    DateAdded,
 }
 
 sealed interface StatsTitlesState {
@@ -107,17 +108,17 @@ class StatsTitlesScreenModel(
 
                 val sorted = when (sort) {
                     StatsTitlesSort.Alphabetical -> filtered.sortedWith(
-                        compareBy<StatsTitleItem> { it.title.lowercase() }
+                        compareBy<StatsTitleItem> { it.title.lowercase() },
                     )
                     StatsTitlesSort.LastRead -> filtered.sortedWith(
                         compareByDescending<StatsTitleItem> { it.lastReadDate != null }
                             .thenByDescending { it.lastReadDate }
                             .thenByDescending { it.readDurationMs }
-                            .thenBy { it.title }
+                            .thenBy { it.title },
                     )
                     StatsTitlesSort.DateAdded -> filtered.sortedWith(
                         compareByDescending<StatsTitleItem> { it.dateAdded }
-                            .thenBy { it.title }
+                            .thenBy { it.title },
                     )
                 }
 
@@ -206,7 +207,7 @@ class StatsTitlesScreenModel(
                         charactersRead = totalChars,
                         manga = manga,
                         dateAdded = manga.dateAdded,
-                    )
+                    ),
                 )
             }
 
@@ -233,7 +234,7 @@ class StatsTitlesScreenModel(
                         charactersRead = totalChars,
                         novelId = novel.id,
                         dateAdded = novel.dateAdded,
-                    )
+                    ),
                 )
             }
 
@@ -250,6 +251,7 @@ class StatsTitlesScreen(
 
     @Composable
     override fun Content() {
+        StatsRecentsPrivacy()
         val navigator = LocalNavigator.currentOrThrow
 
         val screenModel = rememberScreenModel {
@@ -261,7 +263,14 @@ class StatsTitlesScreen(
 
         Scaffold(
             topBar = { scrollBehavior ->
-                val titleText = stringResource(MR.strings.label_stats) + " - " + if (allRead) "All read" else "In library"
+                val titleText = stringResource(
+                    KMR.strings.stats_titles_legacy_title,
+                    if (allRead) {
+                        stringResource(KMR.strings.stats_titles_all_read)
+                    } else {
+                        stringResource(KMR.strings.stats_titles_in_library)
+                    },
+                )
                 SearchToolbar(
                     titleContent = { AppBarTitle(titleText) },
                     searchQuery = successState?.searchQuery,
@@ -289,7 +298,7 @@ class StatsTitlesScreen(
                                     if (successState?.sortOption == StatsTitlesSort.Alphabetical) {
                                         Icon(Icons.Default.Check, contentDescription = null)
                                     }
-                                }
+                                },
                             )
                             DropdownMenuItem(
                                 text = { Text(stringResource(MR.strings.action_sort_last_read)) },
@@ -301,7 +310,7 @@ class StatsTitlesScreen(
                                     if (successState?.sortOption == StatsTitlesSort.LastRead) {
                                         Icon(Icons.Default.Check, contentDescription = null)
                                     }
-                                }
+                                },
                             )
                             DropdownMenuItem(
                                 text = { Text(stringResource(MR.strings.action_sort_date_added)) },
@@ -313,7 +322,7 @@ class StatsTitlesScreen(
                                     if (successState?.sortOption == StatsTitlesSort.DateAdded) {
                                         Icon(Icons.Default.Check, contentDescription = null)
                                     }
-                                }
+                                },
                             )
                         }
                     },
@@ -328,12 +337,13 @@ class StatsTitlesScreen(
                         state = actualState,
                         paddingValues = paddingValues,
                         onTitleClick = { item ->
+                            val canonicalTitleId = canonicalStatsTitleId(item.id)
                             navigator.push(
                                 StatsScreen(
-                                    titleId = item.id,
+                                    titleId = canonicalTitleId?.value,
                                     isNovel = item.isNovel,
-                                    titleName = item.title,
-                                )
+                                    titleName = item.title.takeIf { canonicalTitleId != null },
+                                ),
                             )
                         },
                     )

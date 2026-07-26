@@ -5,6 +5,8 @@ package eu.kanade.tachiyomi.ui.stats
 import android.content.Context
 import com.canopus.chimareader.data.BookStorage
 import com.canopus.chimareader.ui.reader.NovelReaderActivity
+import com.canopus.chimareader.ui.reader.NovelSourceNavigationTarget
+import com.canopus.chimareader.ui.reader.resolveNovelSourceNavigationTarget
 import eu.kanade.tachiyomi.ui.player.PlayerActivity
 import eu.kanade.tachiyomi.ui.reader.ReaderActivity
 import tachiyomi.core.common.util.lang.withIOContext
@@ -31,7 +33,11 @@ object StatsSourceNavigator {
                     page = destination.pageIndex,
                 ),
             )
-            is Destination.Novel -> NovelReaderActivity.launch(context, destination.bookDirectory)
+            is Destination.Novel -> NovelReaderActivity.launch(
+                context = context,
+                bookDir = destination.bookDirectory,
+                sourceTarget = destination.sourceTarget,
+            )
             is Destination.Video -> context.startActivity(
                 PlayerActivity.newIntent(
                     context = context,
@@ -57,7 +63,13 @@ object StatsSourceNavigator {
                     .firstOrNull { BookStorage.bookIdentityKey(it) == documentId }
                     ?: return null
                 val directory = BookStorage.getBookDirectory(context, metadata.id)
-                directory.takeIf(File::isDirectory)?.let(Destination::Novel)
+                    .takeIf(File::isDirectory)
+                    ?: return null
+                val document = runCatching { BookStorage.loadEpub(directory) }.getOrNull() ?: return null
+                val sourceTarget = resolveNovelSourceNavigationTarget(document, locator.parts)
+                    ?.takeIf { it.documentId == documentId }
+                    ?: return null
+                Destination.Novel(directory, sourceTarget)
             }
             SourceKind.MANGA_PAGE,
             SourceKind.MANGA_OCR_BLOCK,
@@ -101,7 +113,10 @@ object StatsSourceNavigator {
             val pageIndex: Int,
         ) : Destination
 
-        data class Novel(val bookDirectory: File) : Destination
+        data class Novel(
+            val bookDirectory: File,
+            val sourceTarget: NovelSourceNavigationTarget,
+        ) : Destination
 
         data class Video(
             val animeId: Long,

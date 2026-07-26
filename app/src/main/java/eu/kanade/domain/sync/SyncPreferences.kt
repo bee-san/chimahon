@@ -72,6 +72,8 @@ class SyncPreferences(
             // SY <--
             // Chimahon -->
             novels = preferenceStore.getBoolean("sync_novels", true).get(),
+            immersionStats = preferenceStore.getBoolean("sync_immersion_stats", true).get(),
+            immersionRawText = preferenceStore.getBoolean("sync_immersion_raw_text", false).get(),
             // Chimahon <--
             animeEntries = preferenceStore.getBoolean("anime_entries", true).get(),
         )
@@ -95,6 +97,8 @@ class SyncPreferences(
         // SY <--
         // Chimahon -->
         preferenceStore.getBoolean("sync_novels", true).set(syncSettings.novels)
+        preferenceStore.getBoolean("sync_immersion_stats", true).set(syncSettings.immersionStats)
+        preferenceStore.getBoolean("sync_immersion_raw_text", false).set(syncSettings.immersionRawText)
         // Chimahon <--
         preferenceStore.getBoolean("anime_entries", true).set(syncSettings.animeEntries)
     }

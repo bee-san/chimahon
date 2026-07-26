@@ -48,6 +48,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import tachiyomi.core.common.util.lang.launchIO
+import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.i18n.stringResource
 import uy.kohesive.injekt.Injekt
@@ -93,6 +94,10 @@ data object MoreTab : Tab {
                     ScreenLookupService.stop(context)
                 }
             },
+            // KMK -->
+            statsUiEnabled = screenModel.statsUiEnabled,
+            onStatsUiEnabledChange = { screenModel.statsUiEnabled = it },
+            // KMK <--
             // SY -->
             moreTabKeys = {
                 val consolidated = Injekt.get<UiPreferences>().useConsolidatedLibrary().get()
@@ -137,6 +142,9 @@ private class MoreScreenModel(
     private val downloadManager: DownloadManager = Injekt.get(),
     private val animeDownloadManager: AnimeDownloadManager = Injekt.get(),
     preferences: BasePreferences = Injekt.get(),
+    // KMK -->
+    statsPreferences: ImmersionStatsPreferences = Injekt.get(),
+    // KMK <--
     // SY -->
     uiPreferences: UiPreferences = Injekt.get(),
     // SY <--
@@ -144,6 +152,10 @@ private class MoreScreenModel(
 
     var downloadedOnly by preferences.downloadedOnly().asState(screenModelScope)
     var incognitoMode by preferences.incognitoMode().asState(screenModelScope)
+
+    // KMK -->
+    var statsUiEnabled by statsPreferences.uiEnabled().asState(screenModelScope)
+    // KMK <--
 
     // SY -->
     val moreTabKeys = uiPreferences.navTabLayout().asState(screenModelScope)

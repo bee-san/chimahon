@@ -253,13 +253,19 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
         val immersionStatsPreferences =
             Injekt.get<tachiyomi.domain.immersion.service.ImmersionStatsPreferences>()
         immersionStatsPreferences.applyReleaseRolloutDefaults()
-        if (immersionStatsPreferences.uiEnabled().get()) {
+        if (immersionStatsPreferences.captureEnabled().get()) {
             mihon.feature.stats.legacy.LegacyStatsImportJob.start(this)
         }
         if (immersionStatsPreferences.indexingEnabled().get()) {
             mihon.feature.stats.indexing.ImmersionIndexJob.start(this)
+        } else {
+            mihon.feature.stats.indexing.ImmersionIndexJob.cancel(this)
         }
-        AnkiInventorySyncJob.setupTask(this)
+        if (immersionStatsPreferences.ankiSyncEnabled().get()) {
+            AnkiInventorySyncJob.setupTask(this)
+        } else {
+            AnkiInventorySyncJob.cancelAll(this)
+        }
         ImmersionRollupJob.setupTask(this)
         ImmersionRollupJob.start(this)
         mihon.feature.stats.retention.ImmersionRetentionJob.setupTask(this)

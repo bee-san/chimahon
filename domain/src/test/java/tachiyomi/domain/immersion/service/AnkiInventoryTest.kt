@@ -47,11 +47,13 @@ class AnkiInventoryTest {
                 notes = listOf(
                     note(1, "生", "せい"),
                     note(2, "生", "なま"),
+                    note(3, "生", "せい"),
                 ),
                 cards = listOf(
                     card(id = 11, noteId = 1, type = 0),
                     card(id = 12, noteId = 1, type = 2, interval = 30),
                     card(id = 21, noteId = 2, type = 2, interval = 10),
+                    card(id = 31, noteId = 3, type = 2, interval = 30),
                 ),
             ),
         )
@@ -60,9 +62,9 @@ class AnkiInventoryTest {
         val result = synchronizer.refresh(configuration())
 
         result.status shouldBe AnkiSnapshotStatus.COMPLETE
-        result.itemCount shouldBe 3
+        result.itemCount shouldBe 4
         repository.current?.isCurrent shouldBe true
-        repository.items shouldHaveSize 3
+        repository.items shouldHaveSize 4
         repository.items.first().characters shouldBe setOf(UnicodeCodePoint('生'.code))
 
         val resolver = AnkiKnownnessResolver(repository)
@@ -97,6 +99,40 @@ class AnkiInventoryTest {
             it.matchConfidence shouldBe AnkiMatchConfidence.AMBIGUOUS
             it.ambiguityCount shouldBe 2
         }
+    }
+
+    @Test
+    fun `knownness prefers exact reading and never accepts another reading or ambiguity`() = runTest {
+        val repository = FakeAnkiRepository()
+        val provider = FakeProvider(
+            inventory = inventory(
+                notes = listOf(
+                    note(1, "今日", "きょう"),
+                    note(2, "今日", ""),
+                    note(3, "生", "なま"),
+                    note(4, "上", "うえ"),
+                    note(5, "上", "じょう"),
+                    note(6, "上", ""),
+                ),
+                cards = listOf(
+                    card(11, 1, type = 0),
+                    card(21, 2, type = 2, interval = 30),
+                    card(31, 3, type = 2, interval = 30),
+                    card(41, 4, type = 2, interval = 30),
+                    card(51, 5, type = 2, interval = 30),
+                    card(61, 6, type = 2, interval = 30),
+                ),
+            ),
+        )
+        AnkiInventorySynchronizer(repository, provider) { 10_000 }.refresh(configuration())
+        val resolver = AnkiKnownnessResolver(repository)
+
+        resolver.word(true, PROFILE, JA, "今日", "きょう").let {
+            it.tier shouldBe MaturityTier.NEW
+            it.matchConfidence shouldBe AnkiMatchConfidence.READING_AWARE
+        }
+        resolver.word(true, PROFILE, JA, "生", "せい").tier shouldBe MaturityTier.UNKNOWN
+        resolver.word(true, PROFILE, JA, "上", "かみ").tier shouldBe MaturityTier.UNKNOWN
     }
 
     @Test
@@ -216,16 +252,21 @@ class AnkiInventoryTest {
             languageTag: LanguageTag,
             normalizedWord: String,
             normalizedReading: String,
-        ): List<ImmersionAnkiItem> =
-            items.filter {
-                it.languageTag == languageTag &&
-                    it.normalizedWord == normalizedWord &&
-                    (
-                        normalizedReading.isBlank() ||
-                            it.normalizedReading == normalizedReading ||
-                            it.normalizedReading.isBlank()
-                        )
+        ): List<ImmersionAnkiItem> {
+            val candidates = items.filter {
+                it.languageTag == languageTag && it.normalizedWord == normalizedWord
             }
+            val readingAware = candidates.filter {
+                it.matchConfidence == AnkiMatchConfidence.READING_AWARE &&
+                    it.normalizedReading == normalizedReading
+            }
+            return readingAware.ifEmpty {
+                candidates.filter {
+                    it.matchConfidence == AnkiMatchConfidence.HEADWORD_ONLY &&
+                        it.normalizedReading.isBlank()
+                }
+            }
+        }
 
         override suspend fun findCharacterItems(
             profileId: String,
@@ -262,11 +303,13 @@ class AnkiInventoryTest {
             }
         }
 
-        override suspend fun clearSnapshots(profileId: String) {
+        override suspend fun clearSnapshots(profileId: String): Long {
+            val deleted = if (latest == null) 0 else 1L
             current = null
             latest = null
             items = emptyList()
             latestFlow.value = null
+            return deleted
         }
     }
 

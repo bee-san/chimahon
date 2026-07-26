@@ -58,12 +58,30 @@ Session deletion:
 1. captures the affected rollup range;
 2. writes a session tombstone;
 3. deletes the session and cascading events/exposures;
-4. tombstones and deletes source units no longer referenced elsewhere;
+4. locally garbage-collects source units no longer referenced elsewhere;
 5. marks affected rollups dirty and increments the revision.
+
+Orphan source cleanup does not create a source-unit tombstone. Source identities
+are shared across devices, so a session deletion must not erase an independent
+remote exposure to the same source. The session tombstone prevents the deleted
+activity from being restored, and post-merge orphan cleanup removes any
+unreferenced source text reintroduced by an older archive.
 
 Full reset previews sessions, time, gross characters, source units, words, and
 characters. It tombstones every portable source identity before deletion,
 clears derived/cache/import/sync/conflict state, and preserves the tombstones.
+
+Scoped deletion uses a separate, non-empty scope type. Date range, title, media,
+profile, and language predicates are combined, and an empty or malformed scope
+is rejected rather than widened to a full reset. The UI first freezes the scope
+and displays its affected sessions, active time, gross characters, and source
+units. Delete reloads that same scope and fails closed if its preview changed.
+Each matching session follows the same tombstone, source cleanup, dirty-rollup,
+and revision path as an individual session deletion. The maintenance UI also
+exposes raw-text-only and per-profile Anki-cache-only deletion; clearing the
+Anki cache never deletes AnkiDroid cards. A title report can disable capture for
+that title, and the exclusion is checked before an event reaches a capture
+queue.
 
 ## Performance and battery budgets
 
@@ -88,10 +106,20 @@ cannot substitute for those measurements.
 
 ## Rollout and rollback
 
-Rollout preferences are versioned. The release defaults event capture,
-indexing, analytics UI, Anki inventory, and goals on, while legacy JSON writers
-are off. Existing legacy files remain readable and importable during the
-compatibility window.
+Rollout preferences are versioned. Version 3 is a safe shadow posture: event
+capture and local indexing are on, the analytics UI, Anki inventory sync, and
+goals are opt-in, and legacy JSON rollback writes remain on. This preserves the
+old stores while event-backed parity is still being qualified; it does not make
+legacy aggregates authoritative for event-backed queries.
+
+The More tab always shows an `Immersion statistics preview` switch, so the
+default-off UI has a reachable opt-in. The Stats row, home-tab request, shortcut,
+and direct Stats screen all honor the same flag. Stats data and privacy exposes
+the individual capture, indexing, UI, Anki, and goals flags for rollback.
+Disabling a surface does not erase data. Disabling Anki inventory also cancels
+its periodic and manual WorkManager jobs, and a running worker checks the flag
+again before touching a provider. Disabling indexing cancels its unique
+WorkManager job; enabling it schedules the bounded index worker again.
 
 Disable capture/UI or return to the legacy query path if duplicate events,
 incognito writes, queue drops, corrupt migration/repair, unacceptable

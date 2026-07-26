@@ -6,10 +6,10 @@ their own tokens, while repository warm-up, deinflection, media loading, duplica
 prefetches remain uninstrumented.
 
 The token snapshots the active immersion session and most recently retained source unit. Completion
-records exactly one of `SUCCESS`, `EMPTY`, `CANCELLED`, or `FAILED`. Lookup totals use requested
-lookups (all terminal statuses except `CANCELLED`); status-specific analysis remains available from
-the detail table. Queries are NFC-normalized and always hashed. Raw query text is stored only when
-the configured raw-text retention policy permits it.
+records exactly one of `SUCCESS`, `EMPTY`, `CANCELLED`, or `FAILED`. Lookup totals count only
+`SUCCESS`; other statuses remain available for diagnostics and provenance but are excluded from the
+primary counter and lookup-rate numerator. Queries are NFC-normalized and always hashed. Raw query
+text is stored only when the configured raw-text retention policy permits it.
 
 Anki operations allocate a stable UUID before any AnkiDroid permission, lookup, update, or insert
 call. Results distinguish:

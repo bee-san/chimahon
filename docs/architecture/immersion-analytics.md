@@ -52,6 +52,24 @@ Filters cover date/comparison range, media, profile, language, title, legacy inc
 
 Legacy aggregates remain visible when requested but never manufacture word, character, source, lookup, or review-history detail. Anki review-history analytics stay unavailable unless the active snapshot explicitly reports that provider capability.
 
+## Goal calendar and edit policy
+
+Goal history follows the same event calendar contract: completed activity remains
+assigned to the local date and offset recorded when the event was captured.
+The meaning of “today” and all future goal boundaries follows the device's
+current timezone when progress is evaluated. Changing timezone can therefore
+change which current day is in progress, but it does not move historical
+activity between dates.
+
+Weekday schedules store an explicit multiplier for every ISO weekday. A zero
+multiplier is a rest day and does not break a daily streak; fractional values
+scale that day's target. Goal edits apply prospectively from the current local
+day, retain the same goal identity and creation timestamp, and upsert only the
+goal definition. Existing check-ins and immutable achievement rows are not
+deleted or rewritten. Finish-title goals use a user-entered source-unit target
+scoped to one title until the persistence model has a trustworthy known title
+length.
+
 ## Performance verification
 
 The implementation avoids date-filtered raw event scans by using `immersion_event_local_date_scope_index`; the query-plan test asserts that index. Daily trends read bounded rollup rows, and detail lists use SQL `LIMIT`/`OFFSET` or keyset paging with stable tie-breakers.

@@ -221,30 +221,32 @@ class ImmersionIndexingEngine(
         targetVersion: Int,
         now: Long,
     ): IndexOutcome {
-        val rawText = item.rawText
-        if (rawText == null) {
-            repository.storeIndexResult(
-                sourceUnitId = item.sourceUnitId,
-                tokenizerId = CHARACTER_ONLY_TOKENIZER_ID,
-                tokenizerVersion = ImmersionStatsVersions.TOKENIZER,
-                normalizationVersion = normalizer.version,
-                indexedVersion = targetVersion,
-                indexedAtEpochMillis = now,
-                tokenizationConfidence = null,
-                terminalReason = IndexTerminalReason.RAW_TEXT_UNAVAILABLE,
-                words = emptyList(),
-                characters = emptyList(),
-            )
-            return IndexOutcome.UNAVAILABLE
-        }
-        val language = item.languageTag ?: LanguageTag.from("und")
         return try {
+            val rawText = item.rawText
+            if (rawText == null) {
+                repository.storeIndexResult(
+                    sourceUnitId = item.sourceUnitId,
+                    claimGeneration = item.claimGeneration,
+                    tokenizerId = CHARACTER_ONLY_TOKENIZER_ID,
+                    tokenizerVersion = ImmersionStatsVersions.TOKENIZER,
+                    normalizationVersion = normalizer.version,
+                    indexedVersion = targetVersion,
+                    indexedAtEpochMillis = now,
+                    tokenizationConfidence = null,
+                    terminalReason = IndexTerminalReason.RAW_TEXT_UNAVAILABLE,
+                    words = emptyList(),
+                    characters = emptyList(),
+                )
+                return IndexOutcome.UNAVAILABLE
+            }
+            val language = item.languageTag ?: LanguageTag.from("und")
             val normalized = normalizer.normalize(rawText, language)
             val characters = indexCharacters(normalized, item)
             val tokenizer = tokenizers.firstOrNull { it.supports(language) }
             if (tokenizer == null) {
                 repository.storeIndexResult(
                     sourceUnitId = item.sourceUnitId,
+                    claimGeneration = item.claimGeneration,
                     tokenizerId = CHARACTER_ONLY_TOKENIZER_ID,
                     tokenizerVersion = ImmersionStatsVersions.TOKENIZER,
                     normalizationVersion = normalizer.version,
@@ -266,6 +268,7 @@ class ImmersionIndexingEngine(
                 }
                 repository.storeIndexResult(
                     sourceUnitId = item.sourceUnitId,
+                    claimGeneration = item.claimGeneration,
                     tokenizerId = tokenizer.id,
                     tokenizerVersion = tokenizer.version,
                     normalizationVersion = normalizer.version,
@@ -281,6 +284,7 @@ class ImmersionIndexingEngine(
         } catch (_: Exception) {
             repository.markFailure(
                 sourceUnitId = item.sourceUnitId,
+                claimGeneration = item.claimGeneration,
                 errorCode = TOKENIZER_FAILURE,
                 nextAttemptAtEpochMillis = now + retryDelayMillis(item.attemptCount),
             )

@@ -329,12 +329,14 @@ data class IndexWorkItem(
     val tokenizerVersion: Int,
     val indexedVersion: Int,
     val attemptCount: Int = 0,
+    val claimGeneration: Int,
 ) {
     init {
         require(normalizedTextHash.isNotBlank()) { "Normalized text hash cannot be blank" }
         require(tokenizerVersion >= 0) { "Tokenizer version cannot be negative" }
         require(indexedVersion >= 0) { "Indexed version cannot be negative" }
         require(attemptCount >= 0) { "Index attempt count cannot be negative" }
+        require(claimGeneration > 0) { "Index claim generation must be positive" }
     }
 }
 
@@ -507,6 +509,9 @@ data class ImmersionAnkiSnapshot(
     val isCurrent: Boolean,
     val isStale: Boolean,
 ) {
+    val hasUsableInventory: Boolean
+        get() = isCurrent && isComplete && capabilityState != CapabilityState.UNAVAILABLE
+
     init {
         require(id.isNotBlank()) { "Snapshot ID cannot be blank" }
         require(profileId.isNotBlank()) { "Snapshot profile cannot be blank" }

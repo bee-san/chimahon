@@ -4,6 +4,7 @@ package mihon.feature.stats.capture
 
 import kotlinx.collections.immutable.PersistentMap
 import kotlinx.collections.immutable.persistentMapOf
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +54,8 @@ import java.time.Instant
 import java.time.ZoneId
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 data class MangaCaptureTitle(
     val mangaId: Long,
@@ -290,42 +293,62 @@ class MangaCaptureAdapter(
         updatedAtEpochMillis = maxOf(captureTitle.createdAtEpochMillis, clock()),
     )
     private val mangaId = captureTitle.mangaId
-    private val commands = Channel<AdapterCommand>(Channel.UNLIMITED)
+    private val commands = BoundedCaptureCommandQueue<AdapterCommand>()
     private val mutableCoverage = MutableStateFlow(MangaOcrCoverageSnapshot())
     private val activeLookupSources = AtomicReference(ActiveLookupSources())
     val coverage: StateFlow<MangaOcrCoverageSnapshot> = mutableCoverage.asStateFlow()
+    internal val queueDiagnostics: StateFlow<CaptureCommandQueueDiagnostics> = commands.diagnostics
 
     init {
         workerScope.launch {
             val state = AdapterState()
-            for (command in commands) {
-                when (command) {
-                    is AdapterCommand.VisiblePages -> handleVisiblePages(state, command.pages)
-                    is AdapterCommand.OcrResult -> handleOcrResult(state, command)
-                    is AdapterCommand.ChapterCompleted -> {
-                        if (state.completedChapters.add(command.chapterId)) {
-                            recordActivity(state, EventType.UNIT_COMPLETED)
+            while (true) {
+                val command = commands.receive() ?: break
+                try {
+                    when (command) {
+                        is AdapterCommand.VisiblePages -> handleVisiblePages(state, command.pages)
+                        is AdapterCommand.OcrResult -> handleOcrResult(state, command)
+                        is AdapterCommand.ChapterCompleted -> {
+                            if (state.completedChapters.add(command.chapterId)) {
+                                recordActivity(state, EventType.UNIT_COMPLETED)
+                            }
+                        }
+                        AdapterCommand.TitleCompleted -> {
+                            if (!state.titleCompleted) {
+                                state.titleCompleted = true
+                                recordActivity(state, EventType.TITLE_COMPLETED)
+                            }
+                        }
+                        is AdapterCommand.Blocked -> handleBlocked(state, command)
+                        is AdapterCommand.Finalize -> {
+                            finalize(state, command)
+                            command.completion.complete(Unit)
+                            commands.close()
                         }
                     }
-                    AdapterCommand.TitleCompleted -> {
-                        if (!state.titleCompleted) {
-                            state.titleCompleted = true
-                            recordActivity(state, EventType.TITLE_COMPLETED)
-                        }
+                } catch (error: CancellationException) {
+                    if (command is AdapterCommand.Finalize) {
+                        command.completion.complete(Unit)
                     }
-                    is AdapterCommand.Blocked -> handleBlocked(state, command)
-                    is AdapterCommand.Finalize -> {
-                        finalize(state, command)
+                    throw error
+                } catch (_: Exception) {
+                    commands.recordWorkerFailure()
+                    if (command is AdapterCommand.Finalize) {
                         command.completion.complete(Unit)
                         commands.close()
                     }
                 }
             }
+        }.invokeOnCompletion {
+            val terminal = commands.close()
+            if (terminal is AdapterCommand.Finalize) {
+                terminal.completion.complete(Unit)
+            }
         }
     }
 
     fun onVisiblePages(pages: List<MangaPageViewport>) {
-        commands.trySend(AdapterCommand.VisiblePages(pages))
+        enqueue(AdapterCommand.VisiblePages(pages))
     }
 
     fun onOcrResult(
@@ -333,7 +356,7 @@ class MangaCaptureAdapter(
         availability: MangaOcrAvailability,
         blocks: List<MangaOcrBlockCapture>,
     ) {
-        commands.trySend(AdapterCommand.OcrResult(page, availability, blocks))
+        enqueue(AdapterCommand.OcrResult(page, availability, blocks))
     }
 
     /**
@@ -362,22 +385,22 @@ class MangaCaptureAdapter(
     }
 
     fun onChapterCompleted(chapterId: Long) {
-        commands.trySend(AdapterCommand.ChapterCompleted(chapterId))
+        enqueue(AdapterCommand.ChapterCompleted(chapterId))
     }
 
     fun onTitleCompleted() {
-        commands.trySend(AdapterCommand.TitleCompleted)
+        enqueue(AdapterCommand.TitleCompleted)
     }
 
     fun setOverlayVisible(
         overlay: MangaCaptureOverlay,
         visible: Boolean,
     ) {
-        commands.trySend(AdapterCommand.Blocked(CaptureBlocker.Overlay(overlay), visible))
+        enqueue(AdapterCommand.Blocked(CaptureBlocker.Overlay(overlay), visible))
     }
 
     fun setBackgrounded(backgrounded: Boolean) {
-        commands.trySend(AdapterCommand.Blocked(CaptureBlocker.Background, backgrounded))
+        enqueue(AdapterCommand.Blocked(CaptureBlocker.Background, backgrounded))
     }
 
     fun finalize(
@@ -385,10 +408,24 @@ class MangaCaptureAdapter(
         reason: FinalizeReason = FinalizeReason.NORMAL,
     ): CompletableDeferred<Unit> {
         val completion = CompletableDeferred<Unit>()
-        if (commands.trySend(AdapterCommand.Finalize(reason, legacy, completion)).isFailure) {
+        if (!commands.finish(AdapterCommand.Finalize(reason, legacy, completion))) {
             completion.complete(Unit)
         }
         return completion
+    }
+
+    private fun enqueue(command: AdapterCommand) {
+        when (commands.offer(command, command.queuePolicy)) {
+            // Capture is best-effort at the reader boundary. Saturation remains visible in
+            // diagnostics so rollout can be stopped, but it must never crash or freeze reading.
+            CaptureCommandOfferResult.SEMANTIC_OVERFLOW,
+            CaptureCommandOfferResult.SEMANTIC_DROPPED,
+            CaptureCommandOfferResult.ACCEPTED,
+            CaptureCommandOfferResult.COALESCED,
+            CaptureCommandOfferResult.SNAPSHOT_DROPPED,
+            CaptureCommandOfferResult.CLOSED,
+            -> Unit
+        }
     }
 
     private suspend fun ensureStarted(state: AdapterState): SessionHandle? {
@@ -532,11 +569,12 @@ class MangaCaptureAdapter(
         )
     }
 
-    private fun recordActivity(
+    private suspend fun recordActivity(
         state: AdapterState,
         eventType: EventType,
     ) {
-        state.handle?.let { recorder.record(it, CaptureCommand.Activity(eventType)) }
+        val handle = ensureStarted(state) ?: return
+        recorder.record(handle, CaptureCommand.Activity(eventType))
     }
 
     private suspend fun handleBlocked(
@@ -707,6 +745,31 @@ class MangaCaptureAdapter(
             val legacy: LegacyMangaSessionSnapshot,
             val completion: CompletableDeferred<Unit>,
         ) : AdapterCommand
+
+        val queuePolicy: CaptureCommandQueuePolicy
+            get() = when (this) {
+                is VisiblePages -> CaptureCommandQueuePolicy.AdjacentCoalescible(
+                    family = "manga-visible-pages",
+                    key = pages,
+                )
+                is OcrResult -> CaptureCommandQueuePolicy.AdjacentCoalescible(
+                    family = "manga-ocr-result",
+                    key = this,
+                )
+                is ChapterCompleted -> CaptureCommandQueuePolicy.AdjacentCoalescible(
+                    family = "manga-chapter-completed",
+                    key = chapterId,
+                )
+                TitleCompleted -> CaptureCommandQueuePolicy.AdjacentCoalescible(
+                    family = "manga-title-completed",
+                    key = Unit,
+                )
+                is Blocked -> CaptureCommandQueuePolicy.AdjacentCoalescible(
+                    family = "manga-blocked",
+                    key = blocker to blocked,
+                )
+                is Finalize -> CaptureCommandQueuePolicy.NonCoalescible
+            }
     }
 
     private sealed interface CaptureBlocker {
@@ -722,6 +785,265 @@ class MangaCaptureAdapter(
         const val SOURCE_NAMESPACE = "immersion-source-manga"
     }
 }
+
+/**
+ * A fixed-capacity command queue for capture callbacks.
+ *
+ * Only commands explicitly marked as latest-wins snapshots may be evicted. Semantic commands first
+ * reclaim snapshot capacity and then enter a fixed-capacity FIFO overflow spool. Once both budgets
+ * are full, the command is dropped with an explicit diagnostic instead of blocking the reader.
+ * Finalization uses a reserved terminal slot and drains every previously accepted command.
+ */
+internal class BoundedCaptureCommandQueue<T : Any>(
+    private val capacity: Int = CAPTURE_COMMAND_QUEUE_CAPACITY,
+    private val overflowCapacity: Int = CAPTURE_COMMAND_OVERFLOW_CAPACITY,
+) {
+    private val lock = ReentrantLock()
+    private val pending = ArrayDeque<QueueEntry<T>>(capacity)
+    private val overflow = ArrayDeque<QueueEntry<T>>(overflowCapacity)
+    private val wakeups = Channel<Unit>(Channel.CONFLATED)
+    private val mutableDiagnostics = MutableStateFlow(
+        CaptureCommandQueueDiagnostics(
+            capacity = capacity,
+            overflowCapacity = overflowCapacity,
+        ),
+    )
+    private var terminal: T? = null
+    private var accepting = true
+    private var closed = false
+    private var semanticGeneration = 0L
+    private var highWatermark = 0
+    private var coalescedCommands = 0L
+    private var evictedSnapshots = 0L
+    private var droppedSnapshots = 0L
+    private var semanticOverflowCommands = 0L
+    private var droppedSemanticCommands = 0L
+    private var workerFailures = 0L
+
+    val diagnostics: StateFlow<CaptureCommandQueueDiagnostics> = mutableDiagnostics.asStateFlow()
+
+    init {
+        require(capacity > 0) { "Capture command queue capacity must be positive" }
+        require(overflowCapacity > 0) { "Capture command overflow capacity must be positive" }
+    }
+
+    fun offer(
+        command: T,
+        policy: CaptureCommandQueuePolicy,
+    ): CaptureCommandOfferResult {
+        lock.withLock {
+            if (!accepting || closed) return CaptureCommandOfferResult.CLOSED
+            if (coalesce(command, policy)) {
+                coalescedCommands += 1
+                publishDiagnostics()
+                signalWorker()
+                return CaptureCommandOfferResult.COALESCED
+            }
+
+            if (pending.size >= capacity && policy is CaptureCommandQueuePolicy.LatestSnapshot) {
+                if (!evictOldestSnapshot()) {
+                    droppedSnapshots += 1
+                    publishDiagnostics()
+                    return CaptureCommandOfferResult.SNAPSHOT_DROPPED
+                }
+            }
+
+            if (
+                pending.size >= capacity &&
+                overflow.isEmpty() &&
+                policy !is CaptureCommandQueuePolicy.LatestSnapshot
+            ) {
+                evictOldestSnapshot()
+            }
+
+            if (pending.size >= capacity || overflow.isNotEmpty()) {
+                if (policy is CaptureCommandQueuePolicy.LatestSnapshot) {
+                    droppedSnapshots += 1
+                    publishDiagnostics()
+                    return CaptureCommandOfferResult.SNAPSHOT_DROPPED
+                }
+                if (overflow.size >= overflowCapacity) {
+                    droppedSemanticCommands += 1
+                    publishDiagnostics()
+                    return CaptureCommandOfferResult.SEMANTIC_DROPPED
+                }
+                val generation = ++semanticGeneration
+                overflow.addLast(QueueEntry(command, policy, generation))
+                semanticOverflowCommands += 1
+                highWatermark = maxOf(highWatermark, pending.size + overflow.size)
+                publishDiagnostics()
+                signalWorker()
+                return CaptureCommandOfferResult.SEMANTIC_OVERFLOW
+            }
+
+            val generation = if (policy is CaptureCommandQueuePolicy.LatestSnapshot) {
+                semanticGeneration
+            } else {
+                ++semanticGeneration
+            }
+            pending.addLast(QueueEntry(command, policy, generation))
+            highWatermark = maxOf(highWatermark, pending.size + overflow.size)
+            publishDiagnostics()
+            signalWorker()
+            return CaptureCommandOfferResult.ACCEPTED
+        }
+    }
+
+    fun finish(command: T): Boolean = lock.withLock {
+        if (!accepting || closed) return false
+        accepting = false
+        terminal = command
+        signalWorker()
+        true
+    }
+
+    suspend fun receive(): T? {
+        while (true) {
+            lock.withLock {
+                if (pending.isNotEmpty()) {
+                    val entry = pending.removeFirst()
+                    if (overflow.isNotEmpty()) {
+                        pending.addLast(overflow.removeFirst())
+                    }
+                    publishDiagnostics()
+                    return entry.command
+                }
+                if (overflow.isNotEmpty()) {
+                    return overflow.removeFirst().command.also {
+                        publishDiagnostics()
+                    }
+                }
+                terminal?.let {
+                    terminal = null
+                    return it
+                }
+                if (!accepting || closed) return null
+            }
+            if (wakeups.receiveCatching().isClosed) return null
+        }
+    }
+
+    fun close(): T? {
+        val terminalCommand = lock.withLock {
+            closed = true
+            accepting = false
+            terminal.also { terminal = null }
+        }
+        wakeups.close()
+        return terminalCommand
+    }
+
+    fun recordWorkerFailure() {
+        lock.withLock {
+            workerFailures += 1
+            publishDiagnostics()
+        }
+    }
+
+    private fun coalesce(
+        command: T,
+        policy: CaptureCommandQueuePolicy,
+    ): Boolean {
+        val queue = if (overflow.isNotEmpty()) overflow else pending
+        val index = when (policy) {
+            is CaptureCommandQueuePolicy.AdjacentCoalescible -> {
+                queue.lastIndex.takeIf { candidate ->
+                    candidate >= 0 &&
+                        queue[candidate].policy == policy
+                }
+            }
+            is CaptureCommandQueuePolicy.LatestSnapshot -> {
+                queue.indexOfLast { entry ->
+                    entry.semanticGeneration == semanticGeneration &&
+                        entry.policy == policy
+                }.takeIf { it >= 0 }
+            }
+            CaptureCommandQueuePolicy.NonCoalescible -> null
+        } ?: return false
+
+        queue.removeAt(index)
+        queue.addLast(QueueEntry(command, policy, semanticGeneration))
+        return true
+    }
+
+    private fun evictOldestSnapshot(): Boolean {
+        val index = pending.indexOfFirst {
+            it.semanticGeneration == semanticGeneration &&
+                it.policy is CaptureCommandQueuePolicy.LatestSnapshot
+        }
+        if (index < 0) return false
+        pending.removeAt(index)
+        evictedSnapshots += 1
+        publishDiagnostics()
+        return true
+    }
+
+    private fun publishDiagnostics() {
+        mutableDiagnostics.value = CaptureCommandQueueDiagnostics(
+            capacity = capacity,
+            overflowCapacity = overflowCapacity,
+            depth = pending.size + overflow.size,
+            overflowDepth = overflow.size,
+            highWatermark = highWatermark,
+            coalescedCommands = coalescedCommands,
+            evictedSnapshots = evictedSnapshots,
+            droppedSnapshots = droppedSnapshots,
+            semanticOverflowCommands = semanticOverflowCommands,
+            droppedSemanticCommands = droppedSemanticCommands,
+            workerFailures = workerFailures,
+        )
+    }
+
+    private fun signalWorker() {
+        wakeups.trySend(Unit)
+    }
+
+    private data class QueueEntry<T>(
+        val command: T,
+        val policy: CaptureCommandQueuePolicy,
+        val semanticGeneration: Long,
+    )
+}
+
+internal sealed interface CaptureCommandQueuePolicy {
+    data class LatestSnapshot(
+        val family: String,
+        val key: Any,
+    ) : CaptureCommandQueuePolicy
+
+    data class AdjacentCoalescible(
+        val family: String,
+        val key: Any,
+    ) : CaptureCommandQueuePolicy
+
+    data object NonCoalescible : CaptureCommandQueuePolicy
+}
+
+internal enum class CaptureCommandOfferResult {
+    ACCEPTED,
+    COALESCED,
+    SNAPSHOT_DROPPED,
+    SEMANTIC_OVERFLOW,
+    SEMANTIC_DROPPED,
+    CLOSED,
+}
+
+internal data class CaptureCommandQueueDiagnostics(
+    val capacity: Int,
+    val overflowCapacity: Int,
+    val depth: Int = 0,
+    val overflowDepth: Int = 0,
+    val highWatermark: Int = 0,
+    val coalescedCommands: Long = 0,
+    val evictedSnapshots: Long = 0,
+    val droppedSnapshots: Long = 0,
+    val semanticOverflowCommands: Long = 0,
+    val droppedSemanticCommands: Long = 0,
+    val workerFailures: Long = 0,
+)
+
+private const val CAPTURE_COMMAND_QUEUE_CAPACITY = 64
+private const val CAPTURE_COMMAND_OVERFLOW_CAPACITY = 64
 
 private fun MangaOcrBlockCapture.isMeaningfullyVisible(viewport: MangaPageViewport): Boolean {
     val intersection = minOf(ymax, viewport.visibleBottom) - maxOf(ymin, viewport.visibleTop)

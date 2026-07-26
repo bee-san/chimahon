@@ -406,7 +406,7 @@ object AnkiCardCreator {
             }
 
             val fieldMap = parseFieldMap(effectiveFieldMapJson)
-            android.util.Log.d(TAG, "addToAnki: parsed fieldMap=$fieldMap")
+            android.util.Log.d(TAG, "addToAnki: parsed ${fieldMap.size} field mappings")
             val cloze = if (sentence.isNotEmpty() && offset >= 0) {
                 // Use result.matched (the exact surface form the dictionary engine consumed)
                 // so the bold window is precisely the word that was looked up, not the base form.
@@ -496,7 +496,7 @@ object AnkiCardCreator {
                 )
             }
             val fields = resolveDictionaryMediaPlaceholders(fieldsWithPlaceholders, exportMedia, bridge)
-            android.util.Log.d(TAG, "addToAnki: built fields=$fields")
+            android.util.Log.d(TAG, "addToAnki: built ${fields.size} fields")
             val tagList = withContext(Dispatchers.Default) {
                 // Split configured tags before rendering markers so commas from a
                 // resolved value (for example a title) stay inside one tag.
