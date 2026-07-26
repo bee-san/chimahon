@@ -148,7 +148,7 @@ data class ImmersionMergeVerification(
             integrity.isFullyHealthy
 
     companion object {
-        const val CURRENT_EVIDENCE_VERSION = 2
+        const val CURRENT_EVIDENCE_VERSION = 3
     }
 }
 

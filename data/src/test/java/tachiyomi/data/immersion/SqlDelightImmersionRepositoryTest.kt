@@ -9,11 +9,14 @@ import io.kotest.matchers.collections.shouldNotBeEmpty
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -75,6 +78,7 @@ import tachiyomi.domain.immersion.model.LegacyImportSourceKind
 import tachiyomi.domain.immersion.model.LocalDateRange
 import tachiyomi.domain.immersion.model.LookupEvent
 import tachiyomi.domain.immersion.model.LookupStatus
+import tachiyomi.domain.immersion.model.MAX_RECORDED_IMMERSION_EVENT_ACTIVE_DURATION_MILLIS
 import tachiyomi.domain.immersion.model.MaturityTier
 import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.MillisecondDuration
@@ -91,6 +95,7 @@ import tachiyomi.domain.immersion.model.StatsFilter
 import tachiyomi.domain.immersion.model.TitleId
 import tachiyomi.domain.immersion.model.UnicodeCodePoint
 import tachiyomi.domain.immersion.service.AnkiOperationToken
+import tachiyomi.domain.immersion.service.ImmersionStatsVersions
 import tachiyomi.domain.immersion.service.PendingAnkiOperation
 import java.time.Instant
 import java.time.ZoneId
@@ -4085,6 +4090,310 @@ class SqlDelightImmersionRepositoryTest {
         }
 
     @Test
+    fun `portable merge preserves duration that starts in the previous date chunk`() = runTest {
+        val dayMillis = 86_400_000L
+        val occurredAt = 32L * dayMillis
+        prepareSession()
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = 962).copy(
+                occurredAtEpochMillis = occurredAt,
+                source = source(lastExposedAt = occurredAt),
+                activeDuration = MillisecondDuration(48L * 60L * 60L * 1_000L),
+            ),
+        ) shouldBe PersistenceResult.Applied
+        repository.finalizeSession(
+            sessionId = SESSION_ID,
+            status = SessionStatus.COMPLETED,
+            endedAtEpochMillis = occurredAt + 1_000,
+            elapsedDuration = MillisecondDuration(48L * 60L * 60L * 1_000L),
+        ) shouldBe PersistenceResult.Applied
+        val archive = repository.exportPortableArchive(
+            includeRawText = false,
+            createdAtEpochMillis = occurredAt + dayMillis,
+        )
+
+        val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        try {
+            Database.Schema.create(targetDriver).value
+            targetDriver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+            val firstPassChunks = mutableListOf<LocalDateRange>()
+            val target = SqlDelightImmersionRepository(
+                handler = AndroidDatabaseHandler(
+                    createDatabase(targetDriver),
+                    targetDriver,
+                    databaseDispatcher,
+                    databaseDispatcher,
+                ),
+                portableMergeRollupChunkObserver = { _, pass, range ->
+                    if (pass == 1) firstPassChunks += range
+                },
+            )
+
+            target.mergePortableArchive(archive, 12_000_000_000).let { report ->
+                report.verification.isHealthy shouldBe true
+                report.verification.firstRollupDigest shouldBe
+                    report.verification.secondRollupDigest
+            }
+            firstPassChunks.map { it.start.epochDay } shouldContainExactly listOf(0L, 31L)
+            queryLong(
+                targetDriver,
+                """
+                    SELECT active_duration_ms
+                    FROM immersion_daily_rollup
+                    WHERE local_date = 30
+                """.trimIndent(),
+            ) shouldBe dayMillis
+            queryLong(
+                targetDriver,
+                """
+                    SELECT active_duration_ms
+                    FROM immersion_daily_rollup
+                    WHERE local_date = 31
+                """.trimIndent(),
+            ) shouldBe dayMillis
+            queryLong(
+                targetDriver,
+                "SELECT coalesce(sum(active_duration_ms), 0) FROM immersion_daily_rollup",
+            ) shouldBe 2L * dayMillis
+            queryLong(
+                targetDriver,
+                "SELECT coalesce(sum(active_duration_ms), 0) FROM immersion_lifetime_rollup",
+            ) shouldBe 2L * dayMillis
+        } finally {
+            targetDriver.close()
+        }
+    }
+
+    @Test
+    fun `portable merge stores unhealthy evidence for an over-limit archived event`() = runTest {
+        val maximumDuration = MAX_RECORDED_IMMERSION_EVENT_ACTIVE_DURATION_MILLIS
+        runCatching {
+            exposure(sequence = 1, eventNumber = 963).copy(
+                activeDuration = MillisecondDuration(maximumDuration + 1),
+            )
+        }.exceptionOrNull() shouldNotBe null
+
+        val occurredAt = maximumDuration + 1_000
+        prepareSession()
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = 963).copy(
+                occurredAtEpochMillis = occurredAt,
+                source = source(lastExposedAt = occurredAt),
+                activeDuration = MillisecondDuration(maximumDuration),
+            ),
+        ) shouldBe PersistenceResult.Applied
+        repository.finalizeSession(
+            sessionId = SESSION_ID,
+            status = SessionStatus.COMPLETED,
+            endedAtEpochMillis = occurredAt + 1_000,
+            elapsedDuration = MillisecondDuration(maximumDuration),
+        ) shouldBe PersistenceResult.Applied
+        val archive = repository.exportPortableArchive(
+            includeRawText = false,
+            createdAtEpochMillis = occurredAt + 2_000,
+        )
+        val overLimitArchive = archive.copy(
+            tables = archive.tables.map { table ->
+                if (table.name != "immersion_event") {
+                    table
+                } else {
+                    val durationIndex = table.columns.indexOfFirst {
+                        it.name == "active_duration_delta_ms"
+                    }
+                    table.copy(
+                        rows = table.rows.map { row ->
+                            row.copy(
+                                cells = row.cells.toMutableList().apply {
+                                    this[durationIndex] = ImmersionPortableCell(
+                                        kind = ImmersionPortableCellKind.INTEGER,
+                                        integerValue = maximumDuration + 1,
+                                    )
+                                },
+                            )
+                        },
+                    )
+                }
+            },
+        )
+
+        val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        try {
+            Database.Schema.create(targetDriver).value
+            targetDriver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+            val target = SqlDelightImmersionRepository(
+                AndroidDatabaseHandler(
+                    createDatabase(targetDriver),
+                    targetDriver,
+                    databaseDispatcher,
+                    databaseDispatcher,
+                ),
+            )
+
+            runCatching {
+                target.mergePortableArchive(overLimitArchive, 12_000_000_000)
+            }.exceptionOrNull() shouldNotBe null
+            queryStrings(
+                targetDriver,
+                "SELECT stage FROM immersion_portable_merge_checkpoint",
+            ).single() shouldBe "VALIDATION_FAILED"
+            queryStrings(
+                targetDriver,
+                "SELECT last_error_code FROM immersion_portable_merge_checkpoint",
+            ).single() shouldBe "INTEGRITY_FAILURE"
+            queryLong(
+                targetDriver,
+                """
+                    SELECT json_extract(
+                        verification_json,
+                        '$.integrity.overLimitEventDurations'
+                    )
+                    FROM immersion_portable_merge_checkpoint
+                """.trimIndent(),
+            ) shouldBe 1
+            target.validateInvariants(ImmersionStatsVersions.ROLLUP).let { integrity ->
+                integrity.overLimitEventDurations shouldBe NonNegativeCounter(1)
+                integrity.isFullyHealthy shouldBe false
+            }
+        } finally {
+            targetDriver.close()
+        }
+    }
+
+    @Test
+    fun `portable merge restarts a streamed pass after a concurrent capture write`() = runTest {
+        val archive = multiChunkPortableArchive()
+        val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        try {
+            Database.Schema.create(targetDriver).value
+            targetDriver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+            val targetHandler = AndroidDatabaseHandler(
+                createDatabase(targetDriver),
+                targetDriver,
+                databaseDispatcher,
+                databaseDispatcher,
+            )
+            val concurrentWriter = SqlDelightImmersionRepository(targetHandler)
+            val concurrentTitleId = TitleId("00000000-0000-0000-0000-000000000964")
+            val concurrentSessionId = sessionId(964)
+            val firstPassChunks = mutableListOf<Int>()
+            var capturePending = true
+            val target = SqlDelightImmersionRepository(
+                handler = targetHandler,
+                portableMergeCheckpointObserver = { _, tableName, nextRowOffset ->
+                    if (tableName == "immersion_rollup_first_pass_chunk") {
+                        firstPassChunks += nextRowOffset
+                        if (capturePending && nextRowOffset == 1) {
+                            capturePending = false
+                            concurrentWriter.upsertTitle(
+                                title().copy(
+                                    id = concurrentTitleId,
+                                    sourceKey = "concurrent:capture",
+                                    displayTitle = "Concurrent capture",
+                                ),
+                            ) shouldBe PersistenceResult.Applied
+                            concurrentWriter.createSession(
+                                sessionStart(
+                                    id = concurrentSessionId,
+                                    startedAt = 15L * 86_400_000L + 1_000,
+                                ).copy(titleId = concurrentTitleId),
+                            ) shouldBe PersistenceResult.Applied
+                        }
+                    }
+                },
+            )
+
+            target.mergePortableArchive(archive, 12_000_000_000).let { report ->
+                report.verification.isHealthy shouldBe true
+                report.verification.entityCounts.titles shouldBe 2
+                report.verification.entityCounts.sessions shouldBe 5
+            }
+            firstPassChunks shouldContainExactly listOf(1, 1, 2, 3, 4)
+            queryLong(
+                targetDriver,
+                "SELECT count(*) FROM immersion_daily_rollup",
+            ) shouldBe 5
+        } finally {
+            targetDriver.close()
+        }
+    }
+
+    @Test
+    fun `portable merge serializes different archives across repository instances`() = runTest {
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        val firstArchive = repository.exportPortableArchive(false, 3_000)
+        repository.upsertTitle(
+            title().copy(
+                id = TitleId("00000000-0000-0000-0000-000000000965"),
+                sourceKey = "second:archive",
+                displayTitle = "Second archive",
+            ),
+        ) shouldBe PersistenceResult.Applied
+        val secondArchive = repository.exportPortableArchive(false, 3_001)
+
+        val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        try {
+            Database.Schema.create(targetDriver).value
+            targetDriver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+            val targetHandler = AndroidDatabaseHandler(
+                createDatabase(targetDriver),
+                targetDriver,
+                databaseDispatcher,
+                databaseDispatcher,
+            )
+            val firstPaused = CompletableDeferred<Unit>()
+            val releaseFirst = CompletableDeferred<Unit>()
+            val secondEntered = CompletableDeferred<Unit>()
+            var pausePending = true
+            val first = SqlDelightImmersionRepository(
+                handler = targetHandler,
+                portableMergeCheckpointObserver = { _, tableName, _ ->
+                    if (pausePending && tableName == "immersion_title") {
+                        pausePending = false
+                        firstPaused.complete(Unit)
+                        releaseFirst.await()
+                    }
+                },
+            )
+            val second = SqlDelightImmersionRepository(
+                handler = targetHandler,
+                portableMergeCheckpointObserver = { _, _, _ ->
+                    secondEntered.complete(Unit)
+                },
+            )
+
+            coroutineScope {
+                val firstMerge = async(Dispatchers.IO) {
+                    first.mergePortableArchive(firstArchive, 4_000)
+                }
+                firstPaused.await()
+                val secondAttempted = CompletableDeferred<Unit>()
+                val secondMerge = async(Dispatchers.IO) {
+                    secondAttempted.complete(Unit)
+                    second.mergePortableArchive(secondArchive, 4_001)
+                }
+                secondAttempted.await()
+                val enteredWhileFirstWasPaused = withContext(Dispatchers.IO) {
+                    withTimeoutOrNull(500) {
+                        secondEntered.await()
+                    }
+                } != null
+                releaseFirst.complete(Unit)
+                val reports = awaitAll(firstMerge, secondMerge)
+
+                enteredWhileFirstWasPaused shouldBe false
+                reports.all { it.verification.isHealthy } shouldBe true
+                secondEntered.isCompleted shouldBe true
+            }
+            queryLong(
+                targetDriver,
+                "SELECT count(*) FROM immersion_portable_merge_checkpoint",
+            ) shouldBe 2
+        } finally {
+            targetDriver.close()
+        }
+    }
+
+    @Test
     fun `portable merge restarts validation for legacy rollup fingerprint evidence`() = runTest {
         val archive = multiChunkPortableArchive()
         val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
@@ -4377,7 +4686,9 @@ class SqlDelightImmersionRepositoryTest {
         ) shouldBe PersistenceResult.Applied
 
         val queries = createDatabase(driver).immersionQueries
-        queries.selectImmersionRollupRebuildBounds().executeAsOne().let { bounds ->
+        queries.selectImmersionRollupRebuildBounds(
+            MAX_RECORDED_IMMERSION_EVENT_ACTIVE_DURATION_MILLIS,
+        ).executeAsOne().let { bounds ->
             bounds.first_date shouldBe 5
             bounds.last_date shouldBe 621
         }
@@ -4403,7 +4714,9 @@ class SqlDelightImmersionRepositoryTest {
             ),
         ) shouldBe PersistenceResult.Applied
 
-        queries.selectImmersionRollupRebuildBounds().executeAsOne().let { bounds ->
+        queries.selectImmersionRollupRebuildBounds(
+            MAX_RECORDED_IMMERSION_EVENT_ACTIVE_DURATION_MILLIS,
+        ).executeAsOne().let { bounds ->
             bounds.first_date shouldBe -1
             bounds.last_date shouldBe 621
         }

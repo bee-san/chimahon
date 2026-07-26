@@ -102,6 +102,15 @@ data class ImmersionSourceUnit(
     }
 }
 
+/**
+ * Maximum active interval represented by one recorder event.
+ *
+ * Range-bounded rollup reads widen their indexed event-time window by this
+ * value. Persisted rows above the limit are integrity violations rather than
+ * valid rollup input.
+ */
+const val MAX_RECORDED_IMMERSION_EVENT_ACTIVE_DURATION_MILLIS = 7L * 24L * 60L * 60L * 1_000L
+
 @Serializable
 sealed interface RecordedImmersionEvent {
     val id: EventId
@@ -134,6 +143,7 @@ data class SessionEvent(
         require(type == EventType.PROGRESS || netCharacters == NetCharacterProgress.ZERO) {
             "Only progress events can include a net-character delta"
         }
+        activeDuration.requireSupportedRecordedEventDuration()
     }
 }
 
@@ -161,6 +171,7 @@ data class ExposureEvent(
         }
         require(replayOrdinal >= 0) { "Replay ordinal cannot be negative" }
         require(exposurePolicy.isNotBlank()) { "Exposure policy cannot be blank" }
+        activeDuration.requireSupportedRecordedEventDuration()
     }
 }
 
@@ -193,6 +204,7 @@ data class LookupEvent(
         require(lookupId.isNotBlank()) { "Lookup ID cannot be blank" }
         require(queryHash.isNotBlank()) { "Lookup query hash cannot be blank" }
         require(type == EventType.LOOKUP) { "Lookup events must use the lookup event type" }
+        activeDuration.requireSupportedRecordedEventDuration()
     }
 }
 
@@ -230,6 +242,13 @@ data class AnkiOperationEvent(
         require(type == EventType.ANKI_OPERATION) {
             "Anki operation events must use the Anki operation event type"
         }
+        activeDuration.requireSupportedRecordedEventDuration()
+    }
+}
+
+private fun MillisecondDuration.requireSupportedRecordedEventDuration() {
+    require(value <= MAX_RECORDED_IMMERSION_EVENT_ACTIVE_DURATION_MILLIS) {
+        "Event active duration exceeds the supported maximum"
     }
 }
 
@@ -314,6 +333,7 @@ data class ImmersionIntegrityReport(
     val rollupSessionMismatches: NonNegativeCounter = NonNegativeCounter.ZERO,
     val dirtyRollupRanges: NonNegativeCounter = NonNegativeCounter.ZERO,
     val repairInProgress: NonNegativeCounter = NonNegativeCounter.ZERO,
+    val overLimitEventDurations: NonNegativeCounter = NonNegativeCounter.ZERO,
 ) {
     val isHealthy: Boolean
         get() = orphanedEvents == NonNegativeCounter.ZERO &&
@@ -322,7 +342,8 @@ data class ImmersionIntegrityReport(
             negativeCounters == NonNegativeCounter.ZERO &&
             rollupVersionMismatches == NonNegativeCounter.ZERO &&
             foreignKeyViolations == NonNegativeCounter.ZERO &&
-            rollupStateMismatches == NonNegativeCounter.ZERO
+            rollupStateMismatches == NonNegativeCounter.ZERO &&
+            overLimitEventDurations == NonNegativeCounter.ZERO
 
     val isRollupConsistent: Boolean
         get() = unappliedEvents == NonNegativeCounter.ZERO &&
