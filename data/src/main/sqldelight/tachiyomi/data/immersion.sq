@@ -732,6 +732,7 @@ CREATE TABLE immersion_portable_merge_checkpoint(
         'FINALIZE',
         'SEARCH',
         'ROLLUP_VALIDATE',
+        'ROLLUP_VERIFY',
         'VALIDATION_FAILED',
         'COMPLETE'
     )),
@@ -1445,6 +1446,33 @@ SELECT revision
 FROM immersion_rollup_state
 WHERE scope_key = 'global';
 
+ensureImmersionRollupState:
+INSERT INTO immersion_rollup_state(
+    scope_key,
+    schema_version,
+    capture_version,
+    normalization_version,
+    tokenizer_version,
+    rollup_version,
+    updated_at
+)
+VALUES (
+    'global',
+    :schemaVersion,
+    :captureVersion,
+    :normalizationVersion,
+    :tokenizerVersion,
+    :rollupVersion,
+    :updatedAt
+)
+ON CONFLICT(scope_key) DO UPDATE SET
+    schema_version = excluded.schema_version,
+    capture_version = excluded.capture_version,
+    normalization_version = excluded.normalization_version,
+    tokenizer_version = excluded.tokenizer_version,
+    rollup_version = excluded.rollup_version,
+    updated_at = excluded.updated_at;
+
 selectImmersionChanges:
 SELECT changes();
 
@@ -1969,6 +1997,85 @@ FROM immersion_session
 WHERE status IN ('COMPLETED', 'ABANDONED');
 
 selectImmersionIntegrityReport:
+WITH expected_daily_sessions AS (
+    SELECT
+        coalesce(
+            legacy_local_date,
+            CAST(
+                (started_at + start_offset_seconds * 1000) / 86400000
+                AS INTEGER
+            )
+        ) AS local_date,
+        profile_id,
+        coalesce(language_tag, '') AS language_tag,
+        media_kind,
+        title_id,
+        CASE
+            WHEN legacy_import = 1 THEN 'LEGACY_AGGREGATE'
+            ELSE 'AVAILABLE'
+        END AS provenance_state,
+        'PRIMARY' AS replay_state,
+        count(*) AS sessions
+    FROM immersion_session
+    WHERE status != 'DELETED'
+    GROUP BY 1, 2, 3, 4, 5, 6, 7
+),
+actual_daily_sessions AS (
+    SELECT
+        local_date,
+        profile_id,
+        language_tag,
+        media_kind,
+        title_id,
+        provenance_state,
+        replay_state,
+        sum(sessions) AS sessions
+    FROM immersion_daily_rollup
+    WHERE rollup_version = :expectedRollupVersion
+    GROUP BY
+        local_date,
+        profile_id,
+        language_tag,
+        media_kind,
+        title_id,
+        provenance_state,
+        replay_state
+),
+expected_lifetime_sessions AS (
+    SELECT
+        profile_id,
+        coalesce(language_tag, '') AS language_tag,
+        media_kind,
+        title_id,
+        CASE
+            WHEN legacy_import = 1 THEN 'LEGACY_AGGREGATE'
+            ELSE 'AVAILABLE'
+        END AS provenance_state,
+        'PRIMARY' AS replay_state,
+        count(*) AS sessions
+    FROM immersion_session
+    WHERE status != 'DELETED'
+    GROUP BY 1, 2, 3, 4, 5, 6
+),
+actual_lifetime_sessions AS (
+    SELECT
+        profile_id,
+        language_tag,
+        media_kind,
+        title_id,
+        provenance_state,
+        replay_state,
+        sum(sessions) AS sessions
+    FROM immersion_lifetime_rollup
+    WHERE rollup_version = :expectedRollupVersion
+    GROUP BY
+        profile_id,
+        language_tag,
+        media_kind,
+        title_id,
+        provenance_state,
+        replay_state
+)
 SELECT
     (
         SELECT count(*)
@@ -2021,7 +2128,92 @@ SELECT
         SELECT count(*)
         FROM immersion_lifetime_rollup
         WHERE rollup_version != :expectedRollupVersion
-    ) AS rollup_version_mismatches;
+    ) AS rollup_version_mismatches,
+    CASE
+        WHEN (
+            SELECT count(*)
+            FROM immersion_rollup_state
+            WHERE
+                scope_key = 'global'
+                AND rollup_version = :expectedRollupVersion
+        ) = 1 THEN 0
+        ELSE 1
+    END AS rollup_state_mismatches,
+    (
+        SELECT count(*)
+        FROM immersion_event AS event
+        JOIN immersion_session AS session ON session.id = event.session_id
+        LEFT JOIN immersion_applied_event AS applied
+            ON applied.event_id = event.id
+            AND applied.rollup_version = :expectedRollupVersion
+        WHERE
+            session.status != 'DELETED'
+            AND applied.event_id IS NULL
+    ) + (
+        SELECT count(*)
+        FROM immersion_applied_event AS applied
+        LEFT JOIN immersion_event AS event ON event.id = applied.event_id
+        LEFT JOIN immersion_session AS session ON session.id = event.session_id
+        WHERE
+            applied.rollup_version = :expectedRollupVersion
+            AND (event.id IS NULL OR session.status = 'DELETED')
+    ) AS unapplied_events,
+    (
+        SELECT count(*)
+        FROM expected_daily_sessions AS expected
+        LEFT JOIN actual_daily_sessions AS actual
+            ON actual.local_date = expected.local_date
+            AND actual.profile_id = expected.profile_id
+            AND actual.language_tag = expected.language_tag
+            AND actual.media_kind = expected.media_kind
+            AND actual.title_id = expected.title_id
+            AND actual.provenance_state = expected.provenance_state
+            AND actual.replay_state = expected.replay_state
+        WHERE coalesce(actual.sessions, -1) != expected.sessions
+    ) + (
+        SELECT count(*)
+        FROM actual_daily_sessions AS actual
+        LEFT JOIN expected_daily_sessions AS expected
+            ON expected.local_date = actual.local_date
+            AND expected.profile_id = actual.profile_id
+            AND expected.language_tag = actual.language_tag
+            AND expected.media_kind = actual.media_kind
+            AND expected.title_id = actual.title_id
+            AND expected.provenance_state = actual.provenance_state
+            AND expected.replay_state = actual.replay_state
+        WHERE expected.local_date IS NULL AND actual.sessions != 0
+    ) + (
+        SELECT count(*)
+        FROM expected_lifetime_sessions AS expected
+        LEFT JOIN actual_lifetime_sessions AS actual
+            ON actual.profile_id = expected.profile_id
+            AND actual.language_tag = expected.language_tag
+            AND actual.media_kind = expected.media_kind
+            AND actual.title_id = expected.title_id
+            AND actual.provenance_state = expected.provenance_state
+            AND actual.replay_state = expected.replay_state
+        WHERE coalesce(actual.sessions, -1) != expected.sessions
+    ) + (
+        SELECT count(*)
+        FROM actual_lifetime_sessions AS actual
+        LEFT JOIN expected_lifetime_sessions AS expected
+            ON expected.profile_id = actual.profile_id
+            AND expected.language_tag = actual.language_tag
+            AND expected.media_kind = actual.media_kind
+            AND expected.title_id = actual.title_id
+            AND expected.provenance_state = actual.provenance_state
+            AND expected.replay_state = actual.replay_state
+        WHERE expected.title_id IS NULL AND actual.sessions != 0
+    ) AS rollup_session_mismatches,
+    (
+        SELECT count(*)
+        FROM immersion_rollup_dirty
+    ) AS dirty_rollup_ranges,
+    (
+        SELECT count(*)
+        FROM immersion_rollup_state
+        WHERE scope_key = 'global' AND repair_cursor IS NOT NULL
+    ) AS repair_in_progress;
 
 clearImmersionRollups:
 DELETE FROM immersion_daily_rollup;

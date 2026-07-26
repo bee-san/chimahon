@@ -3619,7 +3619,270 @@ class SqlDelightImmersionRepositoryTest {
                     disposition = ImmersionMergeDisposition.ALREADY_COMPLETE,
                 )
             }
+
+            targetDriver.execute(
+                null,
+                """
+                    UPDATE immersion_rollup_state
+                    SET revision = revision + 1
+                    WHERE scope_key = 'global'
+                """.trimIndent(),
+                0,
+            ).value
+            resumed.mergePortableArchive(archive, 4_300).let { revalidated ->
+                revalidated.disposition shouldBe ImmersionMergeDisposition.RESUMED
+                revalidated.verification.isHealthy shouldBe true
+                revalidated.verification.databaseRevision shouldNotBe
+                    report.verification.databaseRevision
+            }
+
+            targetDriver.execute(
+                null,
+                "DELETE FROM immersion_rollup_state WHERE scope_key = 'global'",
+                0,
+            ).value
+            resumed.mergePortableArchive(archive, 4_400).let { repaired ->
+                repaired.disposition shouldBe ImmersionMergeDisposition.RESUMED
+                repaired.verification.isHealthy shouldBe true
+            }
+            queryLong(
+                targetDriver,
+                "SELECT count(*) FROM immersion_rollup_state WHERE scope_key = 'global'",
+            ) shouldBe 1
             queryLong(targetDriver, "SELECT count(*) FROM immersion_portable_merge_checkpoint") shouldBe 1
+        } finally {
+            targetDriver.close()
+        }
+    }
+
+    @Test
+    fun `portable merge resumes between durable tombstone ingestion and application`() = runTest {
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        val activityArchive = repository.exportPortableArchive(
+            includeRawText = false,
+            createdAtEpochMillis = 3_000,
+        )
+        repository.resetAllStats(
+            deviceId = "device-a",
+            deletedAtEpochMillis = 4_000,
+        )
+        val deletionArchive = repository.exportPortableArchive(
+            includeRawText = false,
+            createdAtEpochMillis = 4_100,
+        )
+
+        val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        try {
+            Database.Schema.create(targetDriver).value
+            targetDriver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+            val targetHandler = AndroidDatabaseHandler(
+                createDatabase(targetDriver),
+                targetDriver,
+                databaseDispatcher,
+                databaseDispatcher,
+            )
+            SqlDelightImmersionRepository(targetHandler)
+                .mergePortableArchive(activityArchive, 5_000)
+                .verification.isHealthy shouldBe true
+            queryLong(targetDriver, "SELECT count(*) FROM immersion_title") shouldBe 1
+
+            var simulatedCrashPending = true
+            val interrupted = SqlDelightImmersionRepository(
+                handler = targetHandler,
+                portableMergeCheckpointObserver = { _, tableName, nextRowOffset ->
+                    if (
+                        simulatedCrashPending &&
+                        tableName == "immersion_tombstone" &&
+                        nextRowOffset == 1
+                    ) {
+                        simulatedCrashPending = false
+                        error("simulated tombstone interruption")
+                    }
+                },
+            )
+            runCatching {
+                interrupted.mergePortableArchive(deletionArchive, 5_100)
+            }.exceptionOrNull() shouldNotBe null
+
+            queryLong(targetDriver, "SELECT count(*) FROM immersion_tombstone") shouldBe 1
+            queryLong(targetDriver, "SELECT count(*) FROM immersion_title") shouldBe 1
+            queryLong(
+                targetDriver,
+                """
+                    SELECT next_row_offset
+                    FROM immersion_portable_merge_checkpoint
+                    WHERE stage = 'TOMBSTONES'
+                """.trimIndent(),
+            ) shouldBe 1
+
+            val resumed = SqlDelightImmersionRepository(targetHandler)
+            resumed.mergePortableArchive(deletionArchive, 5_200).let { report ->
+                report.disposition shouldBe ImmersionMergeDisposition.RESUMED
+                report.verification.isHealthy shouldBe true
+            }
+            queryLong(targetDriver, "SELECT count(*) FROM immersion_title") shouldBe 0
+        } finally {
+            targetDriver.close()
+        }
+    }
+
+    @Test
+    fun `portable merge includes eventless sessions in complete deterministic rollups`() = runTest {
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        repository.createSession(sessionStart()) shouldBe PersistenceResult.Applied
+        repository.finalizeSession(
+            sessionId = SESSION_ID,
+            status = SessionStatus.COMPLETED,
+            endedAtEpochMillis = 2_000,
+            elapsedDuration = MillisecondDuration(1_000),
+        ) shouldBe PersistenceResult.Applied
+        val archive = repository.exportPortableArchive(
+            includeRawText = false,
+            createdAtEpochMillis = 3_000,
+        )
+
+        val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        try {
+            Database.Schema.create(targetDriver).value
+            targetDriver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+            val target = SqlDelightImmersionRepository(
+                AndroidDatabaseHandler(
+                    createDatabase(targetDriver),
+                    targetDriver,
+                    databaseDispatcher,
+                    databaseDispatcher,
+                ),
+            )
+
+            target.mergePortableArchive(archive, 4_000).let { report ->
+                report.verification.isHealthy shouldBe true
+                report.verification.entityCounts.sessions shouldBe 1
+                report.verification.integrity.unappliedEvents shouldBe NonNegativeCounter.ZERO
+                report.verification.integrity.rollupSessionMismatches shouldBe
+                    NonNegativeCounter.ZERO
+                report.verification.integrity.dirtyRollupRanges shouldBe NonNegativeCounter.ZERO
+                report.verification.integrity.repairInProgress shouldBe NonNegativeCounter.ZERO
+            }
+            queryLong(targetDriver, "SELECT sum(sessions) FROM immersion_daily_rollup") shouldBe 1
+            queryLong(targetDriver, "SELECT sum(sessions) FROM immersion_lifetime_rollup") shouldBe 1
+        } finally {
+            targetDriver.close()
+        }
+    }
+
+    @Test
+    fun `portable merge resumes from its committed first rollup fingerprint`() = runTest {
+        prepareSession()
+        repository.appendExposure(exposure(sequence = 1, eventNumber = 650)) shouldBe
+            PersistenceResult.Applied
+        repository.finalizeSession(
+            sessionId = SESSION_ID,
+            status = SessionStatus.COMPLETED,
+            endedAtEpochMillis = 2_000,
+            elapsedDuration = MillisecondDuration(1_000),
+        ) shouldBe PersistenceResult.Applied
+        val archive = repository.exportPortableArchive(
+            includeRawText = false,
+            createdAtEpochMillis = 3_000,
+        )
+
+        val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        try {
+            Database.Schema.create(targetDriver).value
+            targetDriver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+            val targetHandler = AndroidDatabaseHandler(
+                createDatabase(targetDriver),
+                targetDriver,
+                databaseDispatcher,
+                databaseDispatcher,
+            )
+            var simulatedCrashPending = true
+            val interrupted = SqlDelightImmersionRepository(
+                handler = targetHandler,
+                portableMergeCheckpointObserver = { _, tableName, _ ->
+                    if (
+                        simulatedCrashPending &&
+                        tableName == "immersion_rollup_first_pass"
+                    ) {
+                        simulatedCrashPending = false
+                        error("simulated rollup validation interruption")
+                    }
+                },
+            )
+
+            runCatching {
+                interrupted.mergePortableArchive(archive, 4_000)
+            }.exceptionOrNull() shouldNotBe null
+            queryStrings(
+                targetDriver,
+                "SELECT stage FROM immersion_portable_merge_checkpoint",
+            ).single() shouldBe "ROLLUP_VERIFY"
+            queryLong(targetDriver, "SELECT count(*) FROM immersion_daily_rollup") shouldBe 1
+            queryLong(
+                targetDriver,
+                "SELECT count(*) FROM immersion_rollup_state WHERE repair_cursor IS NOT NULL",
+            ) shouldBe 0
+
+            SqlDelightImmersionRepository(targetHandler)
+                .mergePortableArchive(archive, 4_100)
+                .let { report ->
+                    report.disposition shouldBe ImmersionMergeDisposition.RESUMED
+                    report.verification.isHealthy shouldBe true
+                    report.verification.firstRollupDigest shouldBe
+                        report.verification.secondRollupDigest
+                }
+        } finally {
+            targetDriver.close()
+        }
+    }
+
+    @Test
+    fun `portable merge integrity ignores foreign key defects outside immersion tables`() = runTest {
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        val archive = repository.exportPortableArchive(
+            includeRawText = false,
+            createdAtEpochMillis = 3_000,
+        )
+        val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        try {
+            Database.Schema.create(targetDriver).value
+            targetDriver.execute(null, "PRAGMA foreign_keys = OFF", 0).value
+            targetDriver.execute(
+                null,
+                "CREATE TABLE unrelated_parent(id INTEGER NOT NULL PRIMARY KEY)",
+                0,
+            ).value
+            targetDriver.execute(
+                null,
+                """
+                    CREATE TABLE unrelated_child(
+                        id INTEGER NOT NULL PRIMARY KEY,
+                        parent_id INTEGER NOT NULL,
+                        FOREIGN KEY(parent_id) REFERENCES unrelated_parent(id)
+                    )
+                """.trimIndent(),
+                0,
+            ).value
+            targetDriver.execute(
+                null,
+                "INSERT INTO unrelated_child(id, parent_id) VALUES (1, 999)",
+                0,
+            ).value
+            targetDriver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+            val target = SqlDelightImmersionRepository(
+                AndroidDatabaseHandler(
+                    createDatabase(targetDriver),
+                    targetDriver,
+                    databaseDispatcher,
+                    databaseDispatcher,
+                ),
+            )
+
+            target.mergePortableArchive(archive, 4_000)
+                .verification
+                .integrity
+                .foreignKeyViolations shouldBe NonNegativeCounter.ZERO
+            queryLong(targetDriver, "SELECT count(*) FROM pragma_foreign_key_check") shouldBe 1
         } finally {
             targetDriver.close()
         }
@@ -4033,7 +4296,7 @@ class SqlDelightImmersionRepositoryTest {
                     sharedTarget.mergePortableArchive(deviceADeletionArchive, 6_000)
                         .quarantinedConflicts shouldBe 0
                     sharedTarget.mergePortableArchive(deviceAOldArchive, 6_500).let { report ->
-                        report.disposition shouldBe ImmersionMergeDisposition.ALREADY_COMPLETE
+                        report.disposition shouldBe ImmersionMergeDisposition.RESUMED
                         report.quarantinedConflicts shouldBe 0
                     }
 

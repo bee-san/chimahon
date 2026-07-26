@@ -31,6 +31,7 @@ CREATE TABLE immersion_portable_merge_checkpoint(
         'FINALIZE',
         'SEARCH',
         'ROLLUP_VALIDATE',
+        'ROLLUP_VERIFY',
         'VALIDATION_FAILED',
         'COMPLETE'
     )),
