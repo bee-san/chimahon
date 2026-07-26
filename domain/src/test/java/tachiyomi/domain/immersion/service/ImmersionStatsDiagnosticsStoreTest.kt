@@ -60,22 +60,57 @@ class ImmersionStatsDiagnosticsStoreTest {
                 ImmersionAdapterDiagnosticKind.WORKER_FAILURE,
             )
         }
+        store.setQueueDepth(6)
+        store.recordWriteLatency(19)
+        store.recordError(
+            ImmersionDiagnosticStage.ROLLUP,
+            ImmersionDiagnosticErrorCode.ROLLUP_FAILED,
+        )
+        store.recordDroppedCommand()
+        store.recordAbandonedRecovery(3)
+        store.recordRepair(5_000)
 
-        val restored = ImmersionStatsDiagnosticsStore(persistence).state.value.adapterDiagnostics
-        restored.getValue(ImmersionCaptureAdapter.NOVEL).droppedSnapshotCount shouldBe
+        val restored = ImmersionStatsDiagnosticsStore(persistence).state.value
+        restored.adapterDiagnostics
+            .getValue(ImmersionCaptureAdapter.NOVEL)
+            .droppedSnapshotCount shouldBe
             NonNegativeCounter(1)
-        restored.getValue(ImmersionCaptureAdapter.MANGA).droppedSemanticCommandCount shouldBe
+        restored.adapterDiagnostics
+            .getValue(ImmersionCaptureAdapter.MANGA)
+            .droppedSemanticCommandCount shouldBe
             NonNegativeCounter(1)
-        restored.getValue(ImmersionCaptureAdapter.VIDEO).workerFailureCount shouldBe
+        restored.adapterDiagnostics
+            .getValue(ImmersionCaptureAdapter.VIDEO)
+            .workerFailureCount shouldBe
             NonNegativeCounter(2)
+        restored.queueDepth shouldBe 0
+        restored.maximumQueueDepth shouldBe 6
+        restored.lastWriteLatencyMillis shouldBe 19
+        restored.lastRollupError shouldBe ImmersionDiagnosticErrorCode.ROLLUP_FAILED
+        restored.droppedCommandCount shouldBe NonNegativeCounter(1)
+        restored.abandonedRecoveryCount shouldBe NonNegativeCounter(3)
+        restored.lastRepairAtEpochMillis shouldBe 5_000
         persistence.values.keys.all { (adapter, kind) ->
             adapter in ImmersionCaptureAdapter.entries &&
                 kind in ImmersionAdapterDiagnosticKind.entries
         } shouldBe true
+
+        store.clear()
+
+        store.state.value shouldBe ImmersionStatsDiagnostics()
+        ImmersionStatsDiagnosticsStore(persistence).state.value shouldBe
+            ImmersionStatsDiagnostics()
     }
 
     private class FakeDiagnosticsPersistence : ImmersionStatsDiagnosticsPersistence {
         val values = mutableMapOf<Pair<ImmersionCaptureAdapter, ImmersionAdapterDiagnosticKind>, Long>()
+        var durable = ImmersionDurableDiagnostics()
+
+        override fun readDurableDiagnostics(): ImmersionDurableDiagnostics = durable
+
+        override fun writeDurableDiagnostics(diagnostics: ImmersionDurableDiagnostics) {
+            durable = diagnostics
+        }
 
         override fun readAdapterCounter(
             adapter: ImmersionCaptureAdapter,
@@ -88,6 +123,11 @@ class ImmersionStatsDiagnosticsStoreTest {
             value: Long,
         ) {
             values[adapter to kind] = value
+        }
+
+        override fun clear() {
+            values.clear()
+            durable = ImmersionDurableDiagnostics()
         }
     }
 }

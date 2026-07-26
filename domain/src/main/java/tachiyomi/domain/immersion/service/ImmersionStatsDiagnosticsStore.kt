@@ -5,7 +5,6 @@ package tachiyomi.domain.immersion.service
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import tachiyomi.core.common.preference.Preference
 import tachiyomi.core.common.preference.PreferenceStore
 import tachiyomi.domain.immersion.model.NonNegativeCounter
@@ -46,6 +45,23 @@ data class ImmersionAdapterDiagnostics(
     val workerFailureCount: NonNegativeCounter = NonNegativeCounter.ZERO,
 )
 
+data class ImmersionDurableDiagnostics(
+    val maximumQueueDepth: Int = 0,
+    val lastWriteLatencyMillis: Long? = null,
+    val lastWriteError: ImmersionDiagnosticErrorCode? = null,
+    val lastIndexError: ImmersionDiagnosticErrorCode? = null,
+    val lastRollupError: ImmersionDiagnosticErrorCode? = null,
+    val lastRepairAtEpochMillis: Long? = null,
+    val droppedCommandCount: NonNegativeCounter = NonNegativeCounter.ZERO,
+    val abandonedRecoveryCount: NonNegativeCounter = NonNegativeCounter.ZERO,
+) {
+    init {
+        require(maximumQueueDepth >= 0)
+        require(lastWriteLatencyMillis == null || lastWriteLatencyMillis >= 0)
+        require(lastRepairAtEpochMillis == null || lastRepairAtEpochMillis >= 0)
+    }
+}
+
 data class ImmersionStatsDiagnostics(
     val queueDepth: Int = 0,
     val maximumQueueDepth: Int = 0,
@@ -73,6 +89,10 @@ data class ImmersionStatsDiagnostics(
 }
 
 interface ImmersionStatsDiagnosticsPersistence {
+    fun readDurableDiagnostics(): ImmersionDurableDiagnostics
+
+    fun writeDurableDiagnostics(diagnostics: ImmersionDurableDiagnostics)
+
     fun readAdapterCounter(
         adapter: ImmersionCaptureAdapter,
         kind: ImmersionAdapterDiagnosticKind,
@@ -83,11 +103,49 @@ interface ImmersionStatsDiagnosticsPersistence {
         kind: ImmersionAdapterDiagnosticKind,
         value: Long,
     )
+
+    fun clear()
 }
 
 class PreferenceImmersionStatsDiagnosticsPersistence(
     preferenceStore: PreferenceStore,
 ) : ImmersionStatsDiagnosticsPersistence {
+    private val schemaVersion = preferenceStore.getInt(
+        Preference.appStateKey("immersion_stats_diagnostics_schema_version"),
+        0,
+    )
+    private val maximumQueueDepth = preferenceStore.getInt(
+        Preference.appStateKey("immersion_stats_diagnostics_maximum_queue_depth"),
+        0,
+    )
+    private val lastWriteLatencyMillis = preferenceStore.getLong(
+        Preference.appStateKey("immersion_stats_diagnostics_last_write_latency_ms"),
+        NULL_LONG,
+    )
+    private val lastWriteError = preferenceStore.getString(
+        Preference.appStateKey("immersion_stats_diagnostics_last_write_error"),
+        "",
+    )
+    private val lastIndexError = preferenceStore.getString(
+        Preference.appStateKey("immersion_stats_diagnostics_last_index_error"),
+        "",
+    )
+    private val lastRollupError = preferenceStore.getString(
+        Preference.appStateKey("immersion_stats_diagnostics_last_rollup_error"),
+        "",
+    )
+    private val lastRepairAtEpochMillis = preferenceStore.getLong(
+        Preference.appStateKey("immersion_stats_diagnostics_last_repair_at"),
+        NULL_LONG,
+    )
+    private val droppedCommandCount = preferenceStore.getLong(
+        Preference.appStateKey("immersion_stats_diagnostics_dropped_commands"),
+        0L,
+    )
+    private val abandonedRecoveryCount = preferenceStore.getLong(
+        Preference.appStateKey("immersion_stats_diagnostics_abandoned_recoveries"),
+        0L,
+    )
     private val adapterCounters: Map<AdapterDiagnosticKey, Preference<Long>> =
         ImmersionCaptureAdapter.entries.flatMap { adapter ->
             ImmersionAdapterDiagnosticKind.entries.map { kind ->
@@ -101,6 +159,38 @@ class PreferenceImmersionStatsDiagnosticsPersistence(
                 0L,
             )
         }
+
+    override fun readDurableDiagnostics(): ImmersionDurableDiagnostics {
+        if (schemaVersion.get() != DIAGNOSTICS_SCHEMA_VERSION) {
+            return ImmersionDurableDiagnostics()
+        }
+        return ImmersionDurableDiagnostics(
+            maximumQueueDepth = maximumQueueDepth.get().coerceAtLeast(0),
+            lastWriteLatencyMillis = lastWriteLatencyMillis.get().nullableNonNegative(),
+            lastWriteError = lastWriteError.get().diagnosticErrorOrNull(),
+            lastIndexError = lastIndexError.get().diagnosticErrorOrNull(),
+            lastRollupError = lastRollupError.get().diagnosticErrorOrNull(),
+            lastRepairAtEpochMillis = lastRepairAtEpochMillis.get().nullableNonNegative(),
+            droppedCommandCount = NonNegativeCounter(
+                droppedCommandCount.get().coerceAtLeast(0L),
+            ),
+            abandonedRecoveryCount = NonNegativeCounter(
+                abandonedRecoveryCount.get().coerceAtLeast(0L),
+            ),
+        )
+    }
+
+    override fun writeDurableDiagnostics(diagnostics: ImmersionDurableDiagnostics) {
+        schemaVersion.set(DIAGNOSTICS_SCHEMA_VERSION)
+        maximumQueueDepth.set(diagnostics.maximumQueueDepth)
+        lastWriteLatencyMillis.set(diagnostics.lastWriteLatencyMillis ?: NULL_LONG)
+        lastWriteError.set(diagnostics.lastWriteError?.name.orEmpty())
+        lastIndexError.set(diagnostics.lastIndexError?.name.orEmpty())
+        lastRollupError.set(diagnostics.lastRollupError?.name.orEmpty())
+        lastRepairAtEpochMillis.set(diagnostics.lastRepairAtEpochMillis ?: NULL_LONG)
+        droppedCommandCount.set(diagnostics.droppedCommandCount.value)
+        abandonedRecoveryCount.set(diagnostics.abandonedRecoveryCount.value)
+    }
 
     override fun readAdapterCounter(
         adapter: ImmersionCaptureAdapter,
@@ -116,25 +206,45 @@ class PreferenceImmersionStatsDiagnosticsPersistence(
         adapterCounters.getValue(AdapterDiagnosticKey(adapter, kind)).set(value)
     }
 
+    override fun clear() {
+        schemaVersion.delete()
+        maximumQueueDepth.delete()
+        lastWriteLatencyMillis.delete()
+        lastWriteError.delete()
+        lastIndexError.delete()
+        lastRollupError.delete()
+        lastRepairAtEpochMillis.delete()
+        droppedCommandCount.delete()
+        abandonedRecoveryCount.delete()
+        adapterCounters.values.forEach { it.delete() }
+    }
+
     private data class AdapterDiagnosticKey(
         val adapter: ImmersionCaptureAdapter,
         val kind: ImmersionAdapterDiagnosticKind,
     )
+
+    private companion object {
+        const val DIAGNOSTICS_SCHEMA_VERSION = 1
+        const val NULL_LONG = -1L
+    }
 }
 
 class ImmersionStatsDiagnosticsStore(
     private val persistence: ImmersionStatsDiagnosticsPersistence =
         NoOpImmersionStatsDiagnosticsPersistence,
 ) {
-    private val adapterCounterLock = Any()
+    private val persistenceLock = Any()
     private val mutableState = MutableStateFlow(
-        ImmersionStatsDiagnostics(adapterDiagnostics = loadAdapterDiagnostics()),
+        persistence.readDurableDiagnostics().toDiagnostics(
+            adapterDiagnostics = loadAdapterDiagnostics(),
+        ),
     )
     val state: StateFlow<ImmersionStatsDiagnostics> = mutableState.asStateFlow()
 
     fun setQueueDepth(depth: Int) {
         require(depth >= 0) { "Queue depth cannot be negative" }
-        mutableState.update {
+        updateDurableState {
             it.copy(
                 queueDepth = depth,
                 maximumQueueDepth = maxOf(it.maximumQueueDepth, depth),
@@ -144,14 +254,14 @@ class ImmersionStatsDiagnosticsStore(
 
     fun recordWriteLatency(durationMillis: Long) {
         require(durationMillis >= 0) { "Write latency cannot be negative" }
-        mutableState.update { it.copy(lastWriteLatencyMillis = durationMillis) }
+        updateDurableState { it.copy(lastWriteLatencyMillis = durationMillis) }
     }
 
     fun recordError(
         stage: ImmersionDiagnosticStage,
         code: ImmersionDiagnosticErrorCode,
     ) {
-        mutableState.update {
+        updateDurableState {
             when (stage) {
                 ImmersionDiagnosticStage.WRITE -> it.copy(lastWriteError = code)
                 ImmersionDiagnosticStage.INDEX -> it.copy(lastIndexError = code)
@@ -161,14 +271,14 @@ class ImmersionStatsDiagnosticsStore(
     }
 
     fun recordDroppedCommand() {
-        mutableState.update {
+        updateDurableState {
             it.copy(droppedCommandCount = it.droppedCommandCount + NonNegativeCounter(1))
         }
     }
 
     fun recordAbandonedRecovery(count: Long) {
         require(count >= 0) { "Recovered-session count cannot be negative" }
-        mutableState.update {
+        updateDurableState {
             it.copy(
                 abandonedRecoveryCount = it.abandonedRecoveryCount + NonNegativeCounter(count),
             )
@@ -177,12 +287,12 @@ class ImmersionStatsDiagnosticsStore(
 
     fun setRollupLag(eventCount: Long) {
         require(eventCount >= 0) { "Rollup lag cannot be negative" }
-        mutableState.update { it.copy(rollupLagEventCount = NonNegativeCounter(eventCount)) }
+        updateVolatileState { it.copy(rollupLagEventCount = NonNegativeCounter(eventCount)) }
     }
 
     fun addRollupLag(eventCount: Long) {
         require(eventCount >= 0) { "Rollup lag cannot be negative" }
-        mutableState.update {
+        updateVolatileState {
             it.copy(
                 rollupLagEventCount = it.rollupLagEventCount + NonNegativeCounter(eventCount),
             )
@@ -191,29 +301,35 @@ class ImmersionStatsDiagnosticsStore(
 
     fun recordRepair(epochMillis: Long) {
         require(epochMillis >= 0) { "Repair timestamp cannot be negative" }
-        mutableState.update { it.copy(lastRepairAtEpochMillis = epochMillis) }
+        updateDurableState { it.copy(lastRepairAtEpochMillis = epochMillis) }
     }
 
     fun recordAdapterDiagnostic(
         adapter: ImmersionCaptureAdapter,
         kind: ImmersionAdapterDiagnosticKind,
     ) {
-        synchronized(adapterCounterLock) {
+        synchronized(persistenceLock) {
             val current = mutableState.value.adapterDiagnostics
                 .getValue(adapter)
                 .counter(kind)
                 .value
             val updatedValue = if (current == Long.MAX_VALUE) Long.MAX_VALUE else current + 1L
             persistence.writeAdapterCounter(adapter, kind, updatedValue)
-            mutableState.update { diagnostics ->
-                diagnostics.copy(
-                    adapterDiagnostics = diagnostics.adapterDiagnostics + (
-                        adapter to diagnostics.adapterDiagnostics
-                            .getValue(adapter)
-                            .withCounter(kind, NonNegativeCounter(updatedValue))
-                        ),
-                )
-            }
+            val diagnostics = mutableState.value
+            mutableState.value = diagnostics.copy(
+                adapterDiagnostics = diagnostics.adapterDiagnostics + (
+                    adapter to diagnostics.adapterDiagnostics
+                        .getValue(adapter)
+                        .withCounter(kind, NonNegativeCounter(updatedValue))
+                    ),
+            )
+        }
+    }
+
+    fun clear() {
+        synchronized(persistenceLock) {
+            persistence.clear()
+            mutableState.value = ImmersionStatsDiagnostics()
         }
     }
 
@@ -239,9 +355,31 @@ class ImmersionStatsDiagnosticsStore(
         adapter: ImmersionCaptureAdapter,
         kind: ImmersionAdapterDiagnosticKind,
     ) = NonNegativeCounter(persistence.readAdapterCounter(adapter, kind).coerceAtLeast(0L))
+
+    private inline fun updateDurableState(
+        transform: (ImmersionStatsDiagnostics) -> ImmersionStatsDiagnostics,
+    ) {
+        synchronized(persistenceLock) {
+            val updated = transform(mutableState.value)
+            persistence.writeDurableDiagnostics(updated.toDurableDiagnostics())
+            mutableState.value = updated
+        }
+    }
+
+    private inline fun updateVolatileState(
+        transform: (ImmersionStatsDiagnostics) -> ImmersionStatsDiagnostics,
+    ) {
+        synchronized(persistenceLock) {
+            mutableState.value = transform(mutableState.value)
+        }
+    }
 }
 
 private object NoOpImmersionStatsDiagnosticsPersistence : ImmersionStatsDiagnosticsPersistence {
+    override fun readDurableDiagnostics() = ImmersionDurableDiagnostics()
+
+    override fun writeDurableDiagnostics(diagnostics: ImmersionDurableDiagnostics) = Unit
+
     override fun readAdapterCounter(
         adapter: ImmersionCaptureAdapter,
         kind: ImmersionAdapterDiagnosticKind,
@@ -252,7 +390,40 @@ private object NoOpImmersionStatsDiagnosticsPersistence : ImmersionStatsDiagnost
         kind: ImmersionAdapterDiagnosticKind,
         value: Long,
     ) = Unit
+
+    override fun clear() = Unit
 }
+
+private fun ImmersionDurableDiagnostics.toDiagnostics(
+    adapterDiagnostics: Map<ImmersionCaptureAdapter, ImmersionAdapterDiagnostics>,
+) = ImmersionStatsDiagnostics(
+    maximumQueueDepth = maximumQueueDepth,
+    lastWriteLatencyMillis = lastWriteLatencyMillis,
+    lastWriteError = lastWriteError,
+    lastIndexError = lastIndexError,
+    lastRollupError = lastRollupError,
+    lastRepairAtEpochMillis = lastRepairAtEpochMillis,
+    droppedCommandCount = droppedCommandCount,
+    abandonedRecoveryCount = abandonedRecoveryCount,
+    adapterDiagnostics = adapterDiagnostics,
+)
+
+private fun ImmersionStatsDiagnostics.toDurableDiagnostics() = ImmersionDurableDiagnostics(
+    maximumQueueDepth = maximumQueueDepth,
+    lastWriteLatencyMillis = lastWriteLatencyMillis,
+    lastWriteError = lastWriteError,
+    lastIndexError = lastIndexError,
+    lastRollupError = lastRollupError,
+    lastRepairAtEpochMillis = lastRepairAtEpochMillis,
+    droppedCommandCount = droppedCommandCount,
+    abandonedRecoveryCount = abandonedRecoveryCount,
+)
+
+private fun Long.nullableNonNegative(): Long? = takeIf { it >= 0L }
+
+private fun String.diagnosticErrorOrNull(): ImmersionDiagnosticErrorCode? =
+    takeIf(String::isNotBlank)
+        ?.let { stored -> runCatching { ImmersionDiagnosticErrorCode.valueOf(stored) }.getOrNull() }
 
 private fun emptyAdapterDiagnostics(): Map<ImmersionCaptureAdapter, ImmersionAdapterDiagnostics> =
     ImmersionCaptureAdapter.entries.associateWith { ImmersionAdapterDiagnostics() }

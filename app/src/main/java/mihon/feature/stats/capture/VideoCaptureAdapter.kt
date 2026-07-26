@@ -242,7 +242,9 @@ class VideoCaptureAdapter(
     private val animeId = captureTitle.animeId
     private val learningLanguage = captureTitle.languageTag
     private val commands = BoundedCaptureCommandQueue<AdapterCommand> { kind ->
-        diagnostics?.recordAdapterDiagnostic(ImmersionCaptureAdapter.VIDEO, kind)
+        if (!incognito) {
+            diagnostics?.recordAdapterDiagnostic(ImmersionCaptureAdapter.VIDEO, kind)
+        }
     }
     private val mutableCoverage = MutableStateFlow(VideoCoverageSnapshot())
     private val mutableProgress = MutableStateFlow(

@@ -1980,6 +1980,15 @@ class SqlDelightImmersionRepository(
         immersionQueries.countImmersionDirtyRollupRanges().executeAsOne()
     }
 
+    override suspend fun rollupBacklogEventCount(expectedRollupVersion: Int): Long {
+        require(expectedRollupVersion > 0) { "Rollup version must be positive" }
+        return handler.await {
+            immersionQueries
+                .countImmersionUnappliedRollupEvents(expectedRollupVersion.toLong())
+                .executeAsOne()
+        }
+    }
+
     override suspend fun previewAllStatsDeletion(): ImmersionDeletionPreview {
         val rawHandler = handler.requireRawHandler()
         return rawHandler.awaitRawDriver { it.previewAllImmersionDeletion() }

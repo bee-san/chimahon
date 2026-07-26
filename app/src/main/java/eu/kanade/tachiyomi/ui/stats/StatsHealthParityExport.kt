@@ -34,6 +34,7 @@ internal data class StatsHealthDiagnosticsExport(
     val droppedCommandCount: Long,
     val abandonedRecoveryCount: Long,
     val rollupBacklogRangeCount: Long,
+    val rollupBacklogEventCount: Long,
     val adapters: List<StatsAdapterDiagnosticsExport>,
 )
 
@@ -49,6 +50,8 @@ internal data class StatsAdapterDiagnosticsExport(
 internal data class StatsParityAggregateExport(
     val media: StatsParityMedia,
     val scope: StatsParityScope,
+    val observations: Int,
+    val evidenceAvailable: Boolean,
     val matched: Int,
     val diverged: Int,
     val nonComparable: Int,
@@ -58,6 +61,7 @@ internal data class StatsParityAggregateExport(
 internal enum class StatsParityMedia {
     NOVEL,
     MANGA,
+    VIDEO,
 }
 
 @Serializable
@@ -76,12 +80,14 @@ internal enum class StatsCaptureAdapter {
 internal fun statsHealthParityExport(
     diagnostics: ImmersionStatsDiagnostics,
     rollupBacklogRangeCount: Long,
+    rollupBacklogEventCount: Long,
     novelReport: NovelReconciliationReport,
     mangaReport: MangaReconciliationReport,
     createdAtEpochMillis: Long,
 ): StatsHealthParityExport {
     require(createdAtEpochMillis >= 0)
     require(rollupBacklogRangeCount >= 0)
+    require(rollupBacklogEventCount >= 0)
     val observations = buildList {
         novelReport.entries.forEach { entry ->
             add(
@@ -110,13 +116,18 @@ internal fun statsHealthParityExport(
     }
     return StatsHealthParityExport(
         createdAtEpochMillis = createdAtEpochMillis,
-        diagnostics = diagnostics.toExport(rollupBacklogRangeCount),
+        diagnostics = diagnostics.toExport(
+            rollupBacklogRangeCount = rollupBacklogRangeCount,
+            rollupBacklogEventCount = rollupBacklogEventCount,
+        ),
         parity = StatsParityMedia.entries.flatMap { media ->
             StatsParityScope.entries.map { scope ->
                 val scoped = observations.filter { it.media == media && it.scope == scope }
                 StatsParityAggregateExport(
                     media = media,
                     scope = scope,
+                    observations = scoped.size,
+                    evidenceAvailable = scoped.isNotEmpty(),
                     matched = scoped.count { it.outcome == StatsParityOutcome.MATCHED },
                     diverged = scoped.count { it.outcome == StatsParityOutcome.DIVERGED },
                     nonComparable = scoped.count {
@@ -131,6 +142,7 @@ internal fun statsHealthParityExport(
 internal fun statsHealthParityDocument(
     diagnostics: ImmersionStatsDiagnostics,
     rollupBacklogRangeCount: Long,
+    rollupBacklogEventCount: Long,
     novelReport: NovelReconciliationReport,
     mangaReport: MangaReconciliationReport,
     createdAtEpochMillis: Long = System.currentTimeMillis(),
@@ -138,6 +150,7 @@ internal fun statsHealthParityDocument(
     val payload = statsHealthParityExport(
         diagnostics = diagnostics,
         rollupBacklogRangeCount = rollupBacklogRangeCount,
+        rollupBacklogEventCount = rollupBacklogEventCount,
         novelReport = novelReport,
         mangaReport = mangaReport,
         createdAtEpochMillis = createdAtEpochMillis,
@@ -151,6 +164,7 @@ internal fun statsHealthParityDocument(
 
 private fun ImmersionStatsDiagnostics.toExport(
     rollupBacklogRangeCount: Long,
+    rollupBacklogEventCount: Long,
 ) = StatsHealthDiagnosticsExport(
     queueDepth = queueDepth,
     maximumQueueDepth = maximumQueueDepth,
@@ -162,6 +176,7 @@ private fun ImmersionStatsDiagnostics.toExport(
     droppedCommandCount = droppedCommandCount.value,
     abandonedRecoveryCount = abandonedRecoveryCount.value,
     rollupBacklogRangeCount = rollupBacklogRangeCount,
+    rollupBacklogEventCount = rollupBacklogEventCount,
     adapters = ImmersionCaptureAdapter.entries.map { adapter ->
         val counters = adapterDiagnostics.getValue(adapter)
         StatsAdapterDiagnosticsExport(
@@ -196,7 +211,7 @@ private enum class StatsParityOutcome {
     NON_COMPARABLE,
 }
 
-private const val STATS_HEALTH_PARITY_SCHEMA_VERSION = 2
+private const val STATS_HEALTH_PARITY_SCHEMA_VERSION = 3
 
 private val STATS_HEALTH_PARITY_JSON = Json {
     encodeDefaults = true

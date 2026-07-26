@@ -3002,6 +3002,17 @@ countImmersionDirtyRollupRanges:
 SELECT count(*)
 FROM immersion_rollup_dirty;
 
+countImmersionUnappliedRollupEvents:
+SELECT count(*)
+FROM immersion_event AS event
+JOIN immersion_session AS session ON session.id = event.session_id
+LEFT JOIN immersion_applied_event AS applied
+    ON applied.event_id = event.id
+    AND applied.rollup_version = :expectedRollupVersion
+WHERE
+    session.status != 'DELETED'
+    AND applied.event_id IS NULL;
+
 upsertImmersionRollupDirty:
 INSERT INTO immersion_rollup_dirty(local_date, title_id, reason, updated_at)
 VALUES (:localDate, :titleId, :reason, :updatedAt)

@@ -555,6 +555,26 @@ class MangaCaptureAdapterTest {
     }
 
     @Test
+    fun `incognito queue saturation is not persisted as a diagnostic`() = runTest {
+        val diagnostics = ImmersionStatsDiagnosticsStore()
+        val adapter = adapter(
+            recorder = FakeRecorder(),
+            incognito = true,
+            diagnostics = diagnostics,
+        )
+
+        repeat(129) { chapterId ->
+            adapter.onChapterCompleted(chapterId.toLong())
+        }
+
+        adapter.queueDiagnostics.value.droppedSemanticCommands shouldBe 1
+        diagnostics.state.value.adapterDiagnostics
+            .getValue(ImmersionCaptureAdapter.MANGA)
+            .droppedSemanticCommandCount shouldBe NonNegativeCounter.ZERO
+        adapter.finalize(legacy()).await()
+    }
+
+    @Test
     fun `recorder exception is diagnosed and later commands plus finalization still drain`() = runTest {
         val recorder = FakeRecorder(recordFailuresRemaining = 1)
         val adapter = adapter(recorder)
