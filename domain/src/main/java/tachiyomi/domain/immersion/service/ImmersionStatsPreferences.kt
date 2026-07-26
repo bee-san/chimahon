@@ -116,6 +116,10 @@ class ImmersionStatsPreferences(
 
     fun dashboardIncludeRereads() = preferenceStore.getBoolean(DASHBOARD_INCLUDE_REREADS, true)
 
+    fun dashboardMaturityTiers() = preferenceStore.getStringSet(DASHBOARD_MATURITY_TIERS, emptySet())
+
+    fun dashboardProvenanceStates() = preferenceStore.getStringSet(DASHBOARD_PROVENANCE_STATES, emptySet())
+
     fun dashboardSelectedTab() = preferenceStore.getString(DASHBOARD_SELECTED_TAB, "OVERVIEW")
 
     fun dashboardTrendScale() = preferenceStore.getEnum(
@@ -178,6 +182,8 @@ class ImmersionStatsPreferences(
         const val DASHBOARD_TITLE_ID = "immersion_stats_dashboard_title_id"
         const val DASHBOARD_CHARACTER_METRIC = "immersion_stats_dashboard_character_metric"
         const val DASHBOARD_INCLUDE_REREADS = "immersion_stats_dashboard_include_rereads"
+        const val DASHBOARD_MATURITY_TIERS = "immersion_stats_dashboard_maturity_tiers"
+        const val DASHBOARD_PROVENANCE_STATES = "immersion_stats_dashboard_provenance_states"
         const val DASHBOARD_SELECTED_TAB = "immersion_stats_dashboard_selected_tab"
         const val DASHBOARD_TREND_SCALE = "immersion_stats_dashboard_trend_scale"
         const val DASHBOARD_TREND_METRIC = "immersion_stats_dashboard_trend_metric"
