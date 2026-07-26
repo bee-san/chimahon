@@ -9,6 +9,9 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import mihon.feature.stats.capture.MangaReconciliationReport
 import mihon.feature.stats.capture.MangaReconciliationScope
+import mihon.feature.stats.capture.VideoReconciliationComparability
+import mihon.feature.stats.capture.VideoReconciliationReport
+import mihon.feature.stats.capture.VideoReconciliationScope
 import tachiyomi.domain.immersion.service.ImmersionCaptureAdapter
 import tachiyomi.domain.immersion.service.ImmersionExportDocument
 import tachiyomi.domain.immersion.service.ImmersionShadowResult
@@ -55,6 +58,13 @@ internal data class StatsParityAggregateExport(
     val matched: Int,
     val diverged: Int,
     val nonComparable: Int,
+    val nonComparableReasons: List<StatsParityNonComparableReasonExport>,
+)
+
+@Serializable
+internal data class StatsParityNonComparableReasonExport(
+    val reason: StatsParityNonComparableReason,
+    val observations: Int,
 )
 
 @Serializable
@@ -71,6 +81,13 @@ internal enum class StatsParityScope {
 }
 
 @Serializable
+internal enum class StatsParityNonComparableReason {
+    LEGACY_POLICY_NOT_EQUIVALENT,
+    MISSING_RECONCILIATION_RESULT,
+    NO_LEGACY_VIDEO_SESSION_OR_DAY_TOTALS,
+}
+
+@Serializable
 internal enum class StatsCaptureAdapter {
     NOVEL,
     MANGA,
@@ -83,6 +100,7 @@ internal fun statsHealthParityExport(
     rollupBacklogEventCount: Long,
     novelReport: NovelReconciliationReport,
     mangaReport: MangaReconciliationReport,
+    videoReport: VideoReconciliationReport,
     createdAtEpochMillis: Long,
 ): StatsHealthParityExport {
     require(createdAtEpochMillis >= 0)
@@ -91,25 +109,43 @@ internal fun statsHealthParityExport(
     val observations = buildList {
         novelReport.entries.forEach { entry ->
             add(
-                StatsParityObservation(
+                parityObservation(
                     media = StatsParityMedia.NOVEL,
                     scope = when (entry.scope) {
                         NovelReconciliationScope.SESSION -> StatsParityScope.SESSION
                         NovelReconciliationScope.DAY -> StatsParityScope.DAY
                     },
-                    outcome = parityOutcome(entry.legacyComparable, entry.result),
+                    legacyComparable = entry.legacyComparable,
+                    result = entry.result,
                 ),
             )
         }
         mangaReport.entries.forEach { entry ->
             add(
-                StatsParityObservation(
+                parityObservation(
                     media = StatsParityMedia.MANGA,
                     scope = when (entry.scope) {
                         MangaReconciliationScope.SESSION -> StatsParityScope.SESSION
                         MangaReconciliationScope.DAY -> StatsParityScope.DAY
                     },
-                    outcome = parityOutcome(entry.legacyComparable, entry.result),
+                    legacyComparable = entry.legacyComparable,
+                    result = entry.result,
+                ),
+            )
+        }
+        videoReport.entries.forEach { entry ->
+            add(
+                StatsParityObservation(
+                    media = StatsParityMedia.VIDEO,
+                    scope = when (entry.scope) {
+                        VideoReconciliationScope.SESSION -> StatsParityScope.SESSION
+                        VideoReconciliationScope.DAY -> StatsParityScope.DAY
+                    },
+                    outcome = StatsParityOutcome.NON_COMPARABLE,
+                    nonComparableReason = when (entry.comparability) {
+                        VideoReconciliationComparability.NO_LEGACY_VIDEO_SESSION_OR_DAY_TOTALS ->
+                            StatsParityNonComparableReason.NO_LEGACY_VIDEO_SESSION_OR_DAY_TOTALS
+                    },
                 ),
             )
         }
@@ -133,6 +169,11 @@ internal fun statsHealthParityExport(
                     nonComparable = scoped.count {
                         it.outcome == StatsParityOutcome.NON_COMPARABLE
                     },
+                    nonComparableReasons = StatsParityNonComparableReason.entries.mapNotNull { reason ->
+                        scoped.count { it.nonComparableReason == reason }
+                            .takeIf { it > 0 }
+                            ?.let { StatsParityNonComparableReasonExport(reason, it) }
+                    },
                 )
             }
         },
@@ -145,6 +186,7 @@ internal fun statsHealthParityDocument(
     rollupBacklogEventCount: Long,
     novelReport: NovelReconciliationReport,
     mangaReport: MangaReconciliationReport,
+    videoReport: VideoReconciliationReport,
     createdAtEpochMillis: Long = System.currentTimeMillis(),
 ): ImmersionExportDocument {
     val payload = statsHealthParityExport(
@@ -153,6 +195,7 @@ internal fun statsHealthParityDocument(
         rollupBacklogEventCount = rollupBacklogEventCount,
         novelReport = novelReport,
         mangaReport = mangaReport,
+        videoReport = videoReport,
         createdAtEpochMillis = createdAtEpochMillis,
     )
     return ImmersionExportDocument(
@@ -188,21 +231,31 @@ private fun ImmersionStatsDiagnostics.toExport(
     },
 )
 
-private fun parityOutcome(
+private fun parityObservation(
+    media: StatsParityMedia,
+    scope: StatsParityScope,
     legacyComparable: Boolean,
     result: ImmersionShadowResult?,
-): StatsParityOutcome {
-    if (!legacyComparable || result == null) return StatsParityOutcome.NON_COMPARABLE
-    return when (result) {
-        ImmersionShadowResult.Matched -> StatsParityOutcome.MATCHED
-        is ImmersionShadowResult.Diverged -> StatsParityOutcome.DIVERGED
-    }
-}
+): StatsParityObservation = StatsParityObservation(
+    media = media,
+    scope = scope,
+    outcome = when {
+        !legacyComparable || result == null -> StatsParityOutcome.NON_COMPARABLE
+        result == ImmersionShadowResult.Matched -> StatsParityOutcome.MATCHED
+        else -> StatsParityOutcome.DIVERGED
+    },
+    nonComparableReason = when {
+        !legacyComparable -> StatsParityNonComparableReason.LEGACY_POLICY_NOT_EQUIVALENT
+        result == null -> StatsParityNonComparableReason.MISSING_RECONCILIATION_RESULT
+        else -> null
+    },
+)
 
 private data class StatsParityObservation(
     val media: StatsParityMedia,
     val scope: StatsParityScope,
     val outcome: StatsParityOutcome,
+    val nonComparableReason: StatsParityNonComparableReason? = null,
 )
 
 private enum class StatsParityOutcome {
@@ -211,7 +264,7 @@ private enum class StatsParityOutcome {
     NON_COMPARABLE,
 }
 
-private const val STATS_HEALTH_PARITY_SCHEMA_VERSION = 3
+private const val STATS_HEALTH_PARITY_SCHEMA_VERSION = 4
 
 private val STATS_HEALTH_PARITY_JSON = Json {
     encodeDefaults = true

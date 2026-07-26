@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import mihon.feature.stats.capture.MangaCaptureReconciliationReporter
+import mihon.feature.stats.capture.VideoCaptureReconciliationReporter
 import tachiyomi.domain.immersion.model.ImmersionDeletionPreview
 import tachiyomi.domain.immersion.model.ImmersionIntegrityReport
 import tachiyomi.domain.immersion.model.ImmersionMaintenanceSummary
@@ -90,6 +91,7 @@ class StatsMaintenanceScreenModel(
                     ),
                     novelReport = NovelCaptureReconciliationReporter.report.value,
                     mangaReport = MangaCaptureReconciliationReporter.report.value,
+                    videoReport = VideoCaptureReconciliationReporter.report.value,
                 )
             }
             mutableExportDocuments.emit(document)

@@ -10,6 +10,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import tachiyomi.domain.immersion.model.CapabilityState
 import tachiyomi.domain.immersion.model.EventType
@@ -41,9 +42,15 @@ import tachiyomi.domain.immersion.service.ResumeReason
 import tachiyomi.domain.immersion.service.SessionContext
 import tachiyomi.domain.immersion.service.SessionHandle
 import tachiyomi.domain.immersion.service.SessionStartResult
+import java.time.ZoneId
 import java.util.UUID
 
 class VideoCaptureAdapterTest {
+
+    @BeforeEach
+    fun resetReconciliationEvidence() {
+        VideoCaptureReconciliationReporter.resetForTest()
+    }
 
     @Test
     fun `only active sequential cues count and duplicate observer callbacks do not`() = runTest {
@@ -132,6 +139,38 @@ class VideoCaptureAdapterTest {
         recorder.exposures(SourceKind.SUBTITLE_CUE).map { it.grossCharacters.value } shouldBe listOf(3L, 3L)
         recorder.exposures(SourceKind.SUBTITLE_CUE).map { it.uniqueSourceCharacters.value } shouldBe listOf(3L, 0L)
         recorder.exposures(SourceKind.SUBTITLE_CUE).map(CaptureCommand.Exposure::replayOrdinal) shouldBe listOf(0, 1)
+    }
+
+    @Test
+    fun `pause buffer seek and replay publish typed session and day evidence`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = playingAdapter(recorder, graceMillis = 1_000)
+        val replayedCue = cue(index = 4, start = 10_000, end = 12_000, text = "日本語")
+
+        adapter.onPlaybackPosition(10_000, 60_000)
+        adapter.onSubtitleCueActive(replayedCue)
+        adapter.setPlaying(false)
+        adapter.setPlaying(true)
+        adapter.setBuffering(true)
+        runCurrent()
+        advanceTimeBy(1_000)
+        runCurrent()
+        adapter.setBuffering(false)
+        adapter.setSeeking(true)
+        adapter.setSeeking(false)
+        adapter.onPlaybackPosition(10_000, 60_000)
+        adapter.onSubtitleCueActive(replayedCue)
+        adapter.finalize().await()
+
+        recorder.exposures(SourceKind.SUBTITLE_CUE).map(CaptureCommand.Exposure::replayOrdinal) shouldBe
+            listOf(0, 1)
+        val evidence = VideoCaptureReconciliationReporter.report.value.entries
+        evidence.map { it.scope }.toSet() shouldBe
+            setOf(VideoReconciliationScope.SESSION, VideoReconciliationScope.DAY)
+        evidence.all {
+            it.comparability ==
+                VideoReconciliationComparability.NO_LEGACY_VIDEO_SESSION_OR_DAY_TOTALS
+        } shouldBe true
     }
 
     @Test
@@ -491,6 +530,17 @@ class VideoCaptureAdapterTest {
         suppressedRecorder.commands shouldBe emptyList()
     }
 
+    @Test
+    fun `suppressed session publishes no reconciliation evidence`() = runTest {
+        val adapter = playingAdapter(FakeRecorder(suppressStart = true), incognito = true)
+
+        adapter.onPlaybackPosition(1_000, 60_000)
+        adapter.onSubtitleCueActive(cue())
+        adapter.finalize().await()
+
+        VideoCaptureReconciliationReporter.report.value shouldBe VideoReconciliationReport()
+    }
+
     private fun TestScope.playingAdapter(
         recorder: FakeRecorder,
         graceMillis: Long = 1_000,
@@ -526,6 +576,7 @@ class VideoCaptureAdapterTest {
         bufferingGraceMillis = graceMillis,
         incognito = incognito,
         clock = { 1_000 },
+        zoneId = { ZoneId.of("UTC") },
         workerScope = this,
         diagnostics = diagnostics,
     )
