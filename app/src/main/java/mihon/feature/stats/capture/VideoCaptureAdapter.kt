@@ -34,7 +34,9 @@ import tachiyomi.domain.immersion.model.VideoOcrSourceLocator
 import tachiyomi.domain.immersion.service.CaptureCommand
 import tachiyomi.domain.immersion.service.DefaultUnicodeCountPolicy
 import tachiyomi.domain.immersion.service.FinalizeReason
+import tachiyomi.domain.immersion.service.ImmersionCaptureAdapter
 import tachiyomi.domain.immersion.service.ImmersionRecorder
+import tachiyomi.domain.immersion.service.ImmersionStatsDiagnosticsStore
 import tachiyomi.domain.immersion.service.InteractionProvenance
 import tachiyomi.domain.immersion.service.PauseReason
 import tachiyomi.domain.immersion.service.RecordResult
@@ -221,6 +223,7 @@ class VideoCaptureAdapter(
     private val incognito: Boolean,
     private val clock: () -> Long = System::currentTimeMillis,
     workerScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    diagnostics: ImmersionStatsDiagnosticsStore? = null,
 ) {
     private val sourceKey = "video:${captureTitle.animeId}"
     private val titleId = TitleId(stableUuid(TITLE_NAMESPACE, "$sourceKey|${captureTitle.profileId}"))
@@ -238,7 +241,9 @@ class VideoCaptureAdapter(
     )
     private val animeId = captureTitle.animeId
     private val learningLanguage = captureTitle.languageTag
-    private val commands = BoundedCaptureCommandQueue<AdapterCommand>()
+    private val commands = BoundedCaptureCommandQueue<AdapterCommand> { kind ->
+        diagnostics?.recordAdapterDiagnostic(ImmersionCaptureAdapter.VIDEO, kind)
+    }
     private val mutableCoverage = MutableStateFlow(VideoCoverageSnapshot())
     private val mutableProgress = MutableStateFlow(
         VideoProgressSnapshot(

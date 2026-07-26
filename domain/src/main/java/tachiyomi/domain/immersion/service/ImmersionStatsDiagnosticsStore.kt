@@ -6,6 +6,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import tachiyomi.core.common.preference.Preference
+import tachiyomi.core.common.preference.PreferenceStore
 import tachiyomi.domain.immersion.model.NonNegativeCounter
 
 enum class ImmersionDiagnosticErrorCode {
@@ -26,6 +28,24 @@ enum class ImmersionDiagnosticStage {
     ROLLUP,
 }
 
+enum class ImmersionCaptureAdapter {
+    NOVEL,
+    MANGA,
+    VIDEO,
+}
+
+enum class ImmersionAdapterDiagnosticKind {
+    SNAPSHOT_DROPPED,
+    SEMANTIC_COMMAND_DROPPED,
+    WORKER_FAILURE,
+}
+
+data class ImmersionAdapterDiagnostics(
+    val droppedSnapshotCount: NonNegativeCounter = NonNegativeCounter.ZERO,
+    val droppedSemanticCommandCount: NonNegativeCounter = NonNegativeCounter.ZERO,
+    val workerFailureCount: NonNegativeCounter = NonNegativeCounter.ZERO,
+)
+
 data class ImmersionStatsDiagnostics(
     val queueDepth: Int = 0,
     val maximumQueueDepth: Int = 0,
@@ -37,6 +57,8 @@ data class ImmersionStatsDiagnostics(
     val droppedCommandCount: NonNegativeCounter = NonNegativeCounter.ZERO,
     val abandonedRecoveryCount: NonNegativeCounter = NonNegativeCounter.ZERO,
     val rollupLagEventCount: NonNegativeCounter = NonNegativeCounter.ZERO,
+    val adapterDiagnostics: Map<ImmersionCaptureAdapter, ImmersionAdapterDiagnostics> =
+        emptyAdapterDiagnostics(),
 ) {
     init {
         require(queueDepth >= 0) { "Queue depth cannot be negative" }
@@ -50,8 +72,64 @@ data class ImmersionStatsDiagnostics(
     }
 }
 
-class ImmersionStatsDiagnosticsStore {
-    private val mutableState = MutableStateFlow(ImmersionStatsDiagnostics())
+interface ImmersionStatsDiagnosticsPersistence {
+    fun readAdapterCounter(
+        adapter: ImmersionCaptureAdapter,
+        kind: ImmersionAdapterDiagnosticKind,
+    ): Long
+
+    fun writeAdapterCounter(
+        adapter: ImmersionCaptureAdapter,
+        kind: ImmersionAdapterDiagnosticKind,
+        value: Long,
+    )
+}
+
+class PreferenceImmersionStatsDiagnosticsPersistence(
+    preferenceStore: PreferenceStore,
+) : ImmersionStatsDiagnosticsPersistence {
+    private val adapterCounters: Map<AdapterDiagnosticKey, Preference<Long>> =
+        ImmersionCaptureAdapter.entries.flatMap { adapter ->
+            ImmersionAdapterDiagnosticKind.entries.map { kind ->
+                AdapterDiagnosticKey(adapter, kind)
+            }
+        }.associateWith { key ->
+            preferenceStore.getLong(
+                Preference.appStateKey(
+                    "immersion_stats_diagnostics_${key.adapter.name}_${key.kind.name}",
+                ),
+                0L,
+            )
+        }
+
+    override fun readAdapterCounter(
+        adapter: ImmersionCaptureAdapter,
+        kind: ImmersionAdapterDiagnosticKind,
+    ): Long = adapterCounters.getValue(AdapterDiagnosticKey(adapter, kind)).get().coerceAtLeast(0L)
+
+    override fun writeAdapterCounter(
+        adapter: ImmersionCaptureAdapter,
+        kind: ImmersionAdapterDiagnosticKind,
+        value: Long,
+    ) {
+        require(value >= 0L) { "Adapter diagnostic counter cannot be negative" }
+        adapterCounters.getValue(AdapterDiagnosticKey(adapter, kind)).set(value)
+    }
+
+    private data class AdapterDiagnosticKey(
+        val adapter: ImmersionCaptureAdapter,
+        val kind: ImmersionAdapterDiagnosticKind,
+    )
+}
+
+class ImmersionStatsDiagnosticsStore(
+    private val persistence: ImmersionStatsDiagnosticsPersistence =
+        NoOpImmersionStatsDiagnosticsPersistence,
+) {
+    private val adapterCounterLock = Any()
+    private val mutableState = MutableStateFlow(
+        ImmersionStatsDiagnostics(adapterDiagnostics = loadAdapterDiagnostics()),
+    )
     val state: StateFlow<ImmersionStatsDiagnostics> = mutableState.asStateFlow()
 
     fun setQueueDepth(depth: Int) {
@@ -115,4 +193,85 @@ class ImmersionStatsDiagnosticsStore {
         require(epochMillis >= 0) { "Repair timestamp cannot be negative" }
         mutableState.update { it.copy(lastRepairAtEpochMillis = epochMillis) }
     }
+
+    fun recordAdapterDiagnostic(
+        adapter: ImmersionCaptureAdapter,
+        kind: ImmersionAdapterDiagnosticKind,
+    ) {
+        synchronized(adapterCounterLock) {
+            val current = mutableState.value.adapterDiagnostics
+                .getValue(adapter)
+                .counter(kind)
+                .value
+            val updatedValue = if (current == Long.MAX_VALUE) Long.MAX_VALUE else current + 1L
+            persistence.writeAdapterCounter(adapter, kind, updatedValue)
+            mutableState.update { diagnostics ->
+                diagnostics.copy(
+                    adapterDiagnostics = diagnostics.adapterDiagnostics + (
+                        adapter to diagnostics.adapterDiagnostics
+                            .getValue(adapter)
+                            .withCounter(kind, NonNegativeCounter(updatedValue))
+                        ),
+                )
+            }
+        }
+    }
+
+    private fun loadAdapterDiagnostics(): Map<ImmersionCaptureAdapter, ImmersionAdapterDiagnostics> =
+        ImmersionCaptureAdapter.entries.associateWith { adapter ->
+            ImmersionAdapterDiagnostics(
+                droppedSnapshotCount = persistedCounter(
+                    adapter,
+                    ImmersionAdapterDiagnosticKind.SNAPSHOT_DROPPED,
+                ),
+                droppedSemanticCommandCount = persistedCounter(
+                    adapter,
+                    ImmersionAdapterDiagnosticKind.SEMANTIC_COMMAND_DROPPED,
+                ),
+                workerFailureCount = persistedCounter(
+                    adapter,
+                    ImmersionAdapterDiagnosticKind.WORKER_FAILURE,
+                ),
+            )
+        }
+
+    private fun persistedCounter(
+        adapter: ImmersionCaptureAdapter,
+        kind: ImmersionAdapterDiagnosticKind,
+    ) = NonNegativeCounter(persistence.readAdapterCounter(adapter, kind).coerceAtLeast(0L))
+}
+
+private object NoOpImmersionStatsDiagnosticsPersistence : ImmersionStatsDiagnosticsPersistence {
+    override fun readAdapterCounter(
+        adapter: ImmersionCaptureAdapter,
+        kind: ImmersionAdapterDiagnosticKind,
+    ): Long = 0L
+
+    override fun writeAdapterCounter(
+        adapter: ImmersionCaptureAdapter,
+        kind: ImmersionAdapterDiagnosticKind,
+        value: Long,
+    ) = Unit
+}
+
+private fun emptyAdapterDiagnostics(): Map<ImmersionCaptureAdapter, ImmersionAdapterDiagnostics> =
+    ImmersionCaptureAdapter.entries.associateWith { ImmersionAdapterDiagnostics() }
+
+private fun ImmersionAdapterDiagnostics.counter(
+    kind: ImmersionAdapterDiagnosticKind,
+): NonNegativeCounter = when (kind) {
+    ImmersionAdapterDiagnosticKind.SNAPSHOT_DROPPED -> droppedSnapshotCount
+    ImmersionAdapterDiagnosticKind.SEMANTIC_COMMAND_DROPPED -> droppedSemanticCommandCount
+    ImmersionAdapterDiagnosticKind.WORKER_FAILURE -> workerFailureCount
+}
+
+private fun ImmersionAdapterDiagnostics.withCounter(
+    kind: ImmersionAdapterDiagnosticKind,
+    value: NonNegativeCounter,
+): ImmersionAdapterDiagnostics = when (kind) {
+    ImmersionAdapterDiagnosticKind.SNAPSHOT_DROPPED -> copy(droppedSnapshotCount = value)
+    ImmersionAdapterDiagnosticKind.SEMANTIC_COMMAND_DROPPED -> copy(
+        droppedSemanticCommandCount = value,
+    )
+    ImmersionAdapterDiagnosticKind.WORKER_FAILURE -> copy(workerFailureCount = value)
 }

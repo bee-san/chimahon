@@ -84,6 +84,7 @@ class StatsMaintenanceScreenModel(
                 StatsExportKind.CHARACTERS_CSV -> exports.charactersCsv(StatsFilter())
                 StatsExportKind.HEALTH_PARITY_JSON -> statsHealthParityDocument(
                     diagnostics = diagnostics.state.value,
+                    rollupBacklogRangeCount = maintenance.rollupBacklogCount(),
                     novelReport = NovelCaptureReconciliationReporter.report.value,
                     mangaReport = MangaCaptureReconciliationReporter.report.value,
                 )

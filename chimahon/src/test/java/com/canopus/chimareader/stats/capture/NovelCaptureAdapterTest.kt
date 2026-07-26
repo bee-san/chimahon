@@ -29,11 +29,13 @@ import tachiyomi.domain.immersion.model.SourceUnitId
 import tachiyomi.domain.immersion.service.CaptureCommand
 import tachiyomi.domain.immersion.service.CaptureSuppressionReason
 import tachiyomi.domain.immersion.service.FinalizeReason
+import tachiyomi.domain.immersion.service.ImmersionCaptureAdapter
 import tachiyomi.domain.immersion.service.ImmersionDiagnosticErrorCode
 import tachiyomi.domain.immersion.service.ImmersionRecorder
 import tachiyomi.domain.immersion.service.ImmersionRecorderSnapshot
 import tachiyomi.domain.immersion.service.ImmersionSessionState
 import tachiyomi.domain.immersion.service.ImmersionShadowResult
+import tachiyomi.domain.immersion.service.ImmersionStatsDiagnosticsStore
 import tachiyomi.domain.immersion.service.InteractionProvenance
 import tachiyomi.domain.immersion.service.PauseReason
 import tachiyomi.domain.immersion.service.RecordResult
@@ -456,7 +458,8 @@ class NovelCaptureAdapterTest {
     @Test
     fun `recorder exception is diagnosed and later reading commands still drain`() = runTest {
         val recorder = FakeRecorder(recordFailuresRemaining = 1)
-        val adapter = adapter(recorder)
+        val diagnostics = ImmersionStatsDiagnosticsStore()
+        val adapter = adapter(recorder, diagnostics = diagnostics)
 
         adapter.start("chapter-1.xhtml", 0)
         adapter.onChapterChanged("chapter-2.xhtml", 10, NovelNavigationCause.SEARCH)
@@ -464,6 +467,9 @@ class NovelCaptureAdapterTest {
         adapter.finalize(legacy()).await()
 
         adapter.queueDiagnostics.value.workerFailures shouldBe 1
+        diagnostics.state.value.adapterDiagnostics
+            .getValue(ImmersionCaptureAdapter.NOVEL)
+            .workerFailureCount shouldBe NonNegativeCounter(1)
         recorder.commands.filterIsInstance<CaptureCommand.Activity>()
             .map(CaptureCommand.Activity::eventType) shouldBe listOf(EventType.UNIT_COMPLETED)
     }
@@ -526,6 +532,7 @@ class NovelCaptureAdapterTest {
     private fun TestScope.adapter(
         recorder: FakeRecorder,
         retention: RawTextRetention = RawTextRetention.UNTIL_DELETED,
+        diagnostics: ImmersionStatsDiagnosticsStore? = null,
     ) = NovelCaptureAdapter(
         book = NovelCaptureBook(
             documentId = "stable-book",
@@ -540,6 +547,7 @@ class NovelCaptureAdapterTest {
         clock = { 1_000 },
         zoneId = { ZoneId.of("UTC") },
         workerScope = this,
+        diagnostics = diagnostics,
     )
 
     private fun ranges(vararg values: NovelVisibleRange): String =

@@ -746,7 +746,9 @@ class SqlDelightImmersionRepositoryTest {
 
         repository.dirtyRollupRanges(20).map { it.start }.toSet() shouldBe
             setOf(ImmersionLocalDate(0), ImmersionLocalDate(2))
+        repository.rollupBacklogCount() shouldBe 2
         repository.rebuildRollups(range, 2, secondAt + 300)
+        repository.rollupBacklogCount() shouldBe 0
         repository.dailyRollups(range).single { it.date == ImmersionLocalDate(2) }.metrics.let {
             it.newWords shouldBe NonNegativeCounter(1)
             it.newCharacters shouldBe NonNegativeCounter(1)

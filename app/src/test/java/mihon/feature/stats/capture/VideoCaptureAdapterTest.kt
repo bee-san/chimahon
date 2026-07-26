@@ -28,10 +28,12 @@ import tachiyomi.domain.immersion.model.SourceUnitId
 import tachiyomi.domain.immersion.service.CaptureCommand
 import tachiyomi.domain.immersion.service.CaptureSuppressionReason
 import tachiyomi.domain.immersion.service.FinalizeReason
+import tachiyomi.domain.immersion.service.ImmersionCaptureAdapter
 import tachiyomi.domain.immersion.service.ImmersionDiagnosticErrorCode
 import tachiyomi.domain.immersion.service.ImmersionRecorder
 import tachiyomi.domain.immersion.service.ImmersionRecorderSnapshot
 import tachiyomi.domain.immersion.service.ImmersionSessionState
+import tachiyomi.domain.immersion.service.ImmersionStatsDiagnosticsStore
 import tachiyomi.domain.immersion.service.InteractionProvenance
 import tachiyomi.domain.immersion.service.PauseReason
 import tachiyomi.domain.immersion.service.RecordResult
@@ -434,13 +436,17 @@ class VideoCaptureAdapterTest {
     @Test
     fun `recorder exception is diagnosed and later playback commands still drain`() = runTest {
         val recorder = FakeRecorder(recordFailuresRemaining = 1)
-        val adapter = playingAdapter(recorder)
+        val diagnostics = ImmersionStatsDiagnosticsStore()
+        val adapter = playingAdapter(recorder, diagnostics = diagnostics)
 
         adapter.setSubtitleModeVisible(false)
         adapter.setSubtitleModeVisible(true)
         adapter.finalize().await()
 
         adapter.queueDiagnostics.value.workerFailures shouldBe 1
+        diagnostics.state.value.adapterDiagnostics
+            .getValue(ImmersionCaptureAdapter.VIDEO)
+            .workerFailureCount shouldBe NonNegativeCounter(1)
         recorder.activities().map(CaptureCommand.Activity::eventType) shouldBe
             listOf(EventType.SUBTITLE_MODE_CHANGED)
     }
@@ -489,7 +495,8 @@ class VideoCaptureAdapterTest {
         recorder: FakeRecorder,
         graceMillis: Long = 1_000,
         incognito: Boolean = false,
-    ): VideoCaptureAdapter = adapter(recorder, graceMillis, incognito).also {
+        diagnostics: ImmersionStatsDiagnosticsStore? = null,
+    ): VideoCaptureAdapter = adapter(recorder, graceMillis, incognito, diagnostics).also {
         it.onPlayableMedia()
         it.setPlaying(true)
     }
@@ -498,6 +505,7 @@ class VideoCaptureAdapterTest {
         recorder: FakeRecorder,
         graceMillis: Long = 1_000,
         incognito: Boolean = false,
+        diagnostics: ImmersionStatsDiagnosticsStore? = null,
     ) = VideoCaptureAdapter(
         captureTitle = VideoCaptureTitle(
             animeId = 1,
@@ -519,6 +527,7 @@ class VideoCaptureAdapterTest {
         incognito = incognito,
         clock = { 1_000 },
         workerScope = this,
+        diagnostics = diagnostics,
     )
 
     private fun cue(

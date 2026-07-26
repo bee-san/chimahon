@@ -136,6 +136,7 @@ import tachiyomi.domain.history.model.ReadingSession
 import tachiyomi.domain.history.repository.HistoryRepository
 import tachiyomi.domain.immersion.model.LanguageTag
 import tachiyomi.domain.immersion.service.ImmersionRecorder
+import tachiyomi.domain.immersion.service.ImmersionStatsDiagnosticsStore
 import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
 import tachiyomi.domain.immersion.service.InteractionProvenance
 import tachiyomi.domain.library.service.LibraryPreferences
@@ -206,6 +207,7 @@ class ReaderViewModel @JvmOverloads constructor(
     private val networkClient: okhttp3.OkHttpClient = Injekt.get<eu.kanade.tachiyomi.network.NetworkHelper>().client,
     private val immersionRecorder: ImmersionRecorder = Injekt.get(),
     private val immersionStatsPreferences: ImmersionStatsPreferences = Injekt.get(),
+    private val immersionStatsDiagnostics: ImmersionStatsDiagnosticsStore = Injekt.get(),
 ) : ViewModel() {
 
     private data class OcrCacheKey(
@@ -846,6 +848,7 @@ class ReaderViewModel @JvmOverloads constructor(
             rawTextRetention = immersionStatsPreferences::effectiveRawTextRetention,
             idleTimeoutMillis = immersionStatsPreferences.readerIdleTimeoutSeconds().get() * 1_000L,
             incognito = incognitoMode,
+            diagnostics = immersionStatsDiagnostics,
         )
         mangaCaptureAdapter = adapter
         viewModelScope.launch {
