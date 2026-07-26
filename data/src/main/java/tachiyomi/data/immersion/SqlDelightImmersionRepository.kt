@@ -150,6 +150,12 @@ class SqlDelightImmersionRepository(
         tableName: String,
         nextRowOffset: Int,
     ) -> Unit = { _, _, _ -> },
+    private val portableMergeRollupChunkObserver: suspend (
+        archiveId: String,
+        pass: Int,
+        range: LocalDateRange,
+    ) -> Unit = { _, _, _ -> },
+    private val portableMergeLifetimePageSize: Int = PORTABLE_ROLLUP_LIFETIME_PAGE_SIZE,
 ) : ImmersionRecorderRepository,
     ImmersionIndexRepository,
     ImmersionStatsRepository,
@@ -160,6 +166,10 @@ class SqlDelightImmersionRepository(
     ImmersionLegacyImportRepository {
 
     private val portableMergeMutex = Mutex()
+
+    init {
+        require(portableMergeLifetimePageSize > 0)
+    }
 
     override suspend fun isTitleCaptureExcluded(titleId: TitleId): Boolean =
         handler.await {
@@ -2587,138 +2597,47 @@ class SqlDelightImmersionRepository(
                     PortableMergeStage.ROLLUP_VALIDATE,
                     PortableMergeStage.VALIDATION_FAILED,
                     -> {
-                        checkpoint = handler.await(inTransaction = true) {
-                            val latest = checkNotNull(
-                                rawHandler.awaitRawDriver {
-                                    it.loadPortableMergeCheckpoint(archiveDigest)
-                                },
-                            )
-                            if (
-                                latest.stage != PortableMergeStage.ROLLUP_VALIDATE &&
-                                latest.stage != PortableMergeStage.VALIDATION_FAILED
-                            ) {
-                                return@await latest
-                            }
-                            val repairCursor =
-                                "portable-merge:${effectiveArchive.createdAtEpochMillis}:$archiveDigest"
-                            val rebuiltRows = rebuildAllRollupsInDatabase(
-                                repairCursor = repairCursor,
-                                updatedAtEpochMillis = mergedAtEpochMillis,
-                            )
-                            val firstFingerprint = rawHandler.awaitRawDriver {
-                                it.immersionRollupFingerprint()
-                            }
-                            val firstPass = PortableRollupFirstPassEvidence(
-                                rebuiltRollupRows = rebuiltRows,
-                                rowCount = firstFingerprint.rowCount,
-                                digest = firstFingerprint.digest,
-                            )
-                            latest.copy(
-                                stage = PortableMergeStage.ROLLUP_VERIFY,
-                                rebuiltRollupRows = rebuiltRows,
-                                verificationJson = Json.encodeToString(firstPass),
-                                lastErrorCode = null,
-                                updatedAt = mergedAtEpochMillis,
-                                completedAt = null,
-                            ).also { updated ->
-                                rawHandler.awaitRawDriver {
-                                    it.updatePortableMergeCheckpoint(updated)
-                                }
-                            }
-                        }
-                        if (checkpoint.stage == PortableMergeStage.ROLLUP_VERIFY) {
+                        val step = advancePortableRollupPass(
+                            rawHandler = rawHandler,
+                            archiveDigest = archiveDigest,
+                            archiveCreatedAt = effectiveArchive.createdAtEpochMillis,
+                            mergedAtEpochMillis = mergedAtEpochMillis,
+                            pass = PORTABLE_ROLLUP_FIRST_PASS,
+                        )
+                        checkpoint = step.checkpoint
+                        step.observerCheckpoint?.let { observer ->
                             portableMergeCheckpointObserver(
                                 archiveDigest,
-                                IMMERSION_ROLLUP_FIRST_PASS_CHECKPOINT,
-                                0,
+                                observer.name,
+                                observer.offset,
                             )
                         }
                     }
 
                     PortableMergeStage.ROLLUP_VERIFY -> {
-                        val validation = handler.await(inTransaction = true) {
-                            val latest = checkNotNull(
-                                rawHandler.awaitRawDriver {
-                                    it.loadPortableMergeCheckpoint(archiveDigest)
-                                },
-                            )
-                            if (latest.stage == PortableMergeStage.COMPLETE) {
-                                return@await PortableMergeValidation(
-                                    checkpoint = latest,
-                                    verification = latest.decodeVerification(),
-                                    completedByThisCall = false,
-                                )
-                            }
-                            check(latest.stage == PortableMergeStage.ROLLUP_VERIFY) {
-                                "Portable merge checkpoint moved before rollup verification"
-                            }
-                            val firstPass = Json.decodeFromString<PortableRollupFirstPassEvidence>(
-                                checkNotNull(latest.verificationJson) {
-                                    "Portable merge first-pass evidence is missing"
-                                },
-                            )
-                            val repairCursor =
-                                "portable-merge:${effectiveArchive.createdAtEpochMillis}:$archiveDigest"
-                            rebuildAllRollupsInDatabase(
-                                repairCursor = repairCursor,
-                                updatedAtEpochMillis = mergedAtEpochMillis,
-                            )
-                            val secondFingerprint = rawHandler.awaitRawDriver {
-                                it.immersionRollupFingerprint()
-                            }
-                            val integrity = selectImmersionIntegrityReportInDatabase(
-                                expectedRollupVersion = ImmersionStatsVersions.ROLLUP,
-                                foreignKeyViolations = rawHandler.awaitRawDriver {
-                                    it.immersionForeignKeyViolationCount()
-                                },
-                            )
-                            val entityCounts = rawHandler.awaitRawDriver {
-                                it.immersionMergeEntityCounts()
-                            }
-                            val databaseRevision = immersionQueries
-                                .selectImmersionRevision()
-                                .executeAsOne()
-                            val accountedRows = latest.accountedRows
-                            val verification = ImmersionMergeVerification(
-                                archiveDigest = archiveDigest,
-                                eligibleRows = latest.eligibleRowCount,
-                                accountedRows = accountedRows,
-                                firstRollupRows = firstPass.rowCount,
-                                secondRollupRows = secondFingerprint.rowCount,
-                                firstRollupDigest = firstPass.digest,
-                                secondRollupDigest = secondFingerprint.digest,
-                                entityCounts = entityCounts,
-                                integrity = integrity,
-                                evidenceVersion =
-                                ImmersionMergeVerification.CURRENT_EVIDENCE_VERSION,
-                                databaseRevision = databaseRevision,
-                            )
-                            val verificationJson = Json.encodeToString(verification)
-                            val updated = latest.copy(
-                                stage = if (verification.isHealthy) {
-                                    PortableMergeStage.COMPLETE
-                                } else {
-                                    PortableMergeStage.VALIDATION_FAILED
-                                },
-                                rebuiltRollupRows = firstPass.rebuiltRollupRows,
-                                verificationJson = verificationJson,
-                                lastErrorCode = verification.failureCode(),
-                                updatedAt = mergedAtEpochMillis,
-                                completedAt = mergedAtEpochMillis.takeIf {
-                                    verification.isHealthy
-                                },
-                            )
-                            rawHandler.awaitRawDriver {
-                                it.updatePortableMergeCheckpoint(updated)
-                            }
-                            PortableMergeValidation(
-                                checkpoint = updated,
-                                verification = verification,
-                                completedByThisCall = verification.isHealthy,
+                        val step = advancePortableRollupPass(
+                            rawHandler = rawHandler,
+                            archiveDigest = archiveDigest,
+                            archiveCreatedAt = effectiveArchive.createdAtEpochMillis,
+                            mergedAtEpochMillis = mergedAtEpochMillis,
+                            pass = PORTABLE_ROLLUP_SECOND_PASS,
+                        )
+                        checkpoint = step.checkpoint
+                        step.observerCheckpoint?.let { observer ->
+                            portableMergeCheckpointObserver(
+                                archiveDigest,
+                                observer.name,
+                                observer.offset,
                             )
                         }
-                        checkpoint = validation.checkpoint
-                        check(validation.verification.isHealthy) {
+                        if (
+                            checkpoint.stage != PortableMergeStage.COMPLETE &&
+                            checkpoint.stage != PortableMergeStage.VALIDATION_FAILED
+                        ) {
+                            continue
+                        }
+                        val verification = checkpoint.decodeVerification()
+                        check(verification.isHealthy) {
                             "Portable immersion merge failed verification: " +
                                 checkNotNull(checkpoint.lastErrorCode)
                         }
@@ -2726,7 +2645,7 @@ class SqlDelightImmersionRepository(
                             it.notifyListeners(*IMMERSION_PORTABLE_TABLES.toTypedArray())
                         }
                         return@withLock checkpoint.toReport(
-                            if (validation.completedByThisCall) {
+                            if (step.completedByThisCall) {
                                 completionDisposition
                             } else {
                                 ImmersionMergeDisposition.ALREADY_COMPLETE
@@ -2784,6 +2703,399 @@ class SqlDelightImmersionRepository(
             error("Portable merge state machine terminated unexpectedly")
         }
     }
+
+    private suspend fun advancePortableRollupPass(
+        rawHandler: AndroidDatabaseHandler,
+        archiveDigest: String,
+        archiveCreatedAt: Long,
+        mergedAtEpochMillis: Long,
+        pass: Int,
+    ): PortableRollupStepResult {
+        require(pass == PORTABLE_ROLLUP_FIRST_PASS || pass == PORTABLE_ROLLUP_SECOND_PASS)
+        val checkpoint = checkNotNull(
+            rawHandler.awaitRawDriver {
+                it.loadPortableMergeCheckpoint(archiveDigest)
+            },
+        )
+        if (
+            pass == PORTABLE_ROLLUP_FIRST_PASS &&
+            checkpoint.stage != PortableMergeStage.ROLLUP_VALIDATE &&
+            checkpoint.stage != PortableMergeStage.VALIDATION_FAILED
+        ) {
+            return PortableRollupStepResult(checkpoint)
+        }
+        if (
+            pass == PORTABLE_ROLLUP_SECOND_PASS &&
+            checkpoint.stage != PortableMergeStage.ROLLUP_VERIFY
+        ) {
+            return PortableRollupStepResult(checkpoint)
+        }
+
+        val progress = checkpoint.decodePortableRollupProgressOrNull()
+        if (progress == null) {
+            val firstPass = if (pass == PORTABLE_ROLLUP_SECOND_PASS) {
+                checkpoint.decodePortableRollupFirstPass()
+            } else {
+                null
+            }
+            if (
+                firstPass != null &&
+                firstPass.fingerprintVersion != PORTABLE_ROLLUP_FINGERPRINT_VERSION
+            ) {
+                return restartPortableRollupValidation(
+                    rawHandler = rawHandler,
+                    checkpoint = checkpoint,
+                    mergedAtEpochMillis = mergedAtEpochMillis,
+                )
+            }
+            return initializePortableRollupPass(
+                rawHandler = rawHandler,
+                checkpoint = checkpoint,
+                archiveCreatedAt = archiveCreatedAt,
+                mergedAtEpochMillis = mergedAtEpochMillis,
+                pass = pass,
+                firstPass = firstPass,
+            )
+        }
+        check(progress.pass == pass) {
+            "Portable rollup pass ${progress.pass} cannot resume as pass $pass"
+        }
+
+        progress.nextChunk()?.let { chunk ->
+            return rebuildPortableRollupChunk(
+                rawHandler = rawHandler,
+                checkpoint = checkpoint,
+                progress = progress,
+                chunk = chunk,
+                mergedAtEpochMillis = mergedAtEpochMillis,
+            )
+        }
+        if (!progress.lifetimeComplete) {
+            return fingerprintPortableLifetimeRollupPage(
+                rawHandler = rawHandler,
+                checkpoint = checkpoint,
+                progress = progress,
+                mergedAtEpochMillis = mergedAtEpochMillis,
+            )
+        }
+        return completePortableRollupPass(
+            rawHandler = rawHandler,
+            checkpoint = checkpoint,
+            progress = progress,
+            mergedAtEpochMillis = mergedAtEpochMillis,
+        )
+    }
+
+    private suspend fun restartPortableRollupValidation(
+        rawHandler: AndroidDatabaseHandler,
+        checkpoint: PortableMergeCheckpoint,
+        mergedAtEpochMillis: Long,
+    ): PortableRollupStepResult =
+        rawHandler.awaitRawDriver(inTransaction = true) { driver ->
+            val latest = checkNotNull(
+                driver.loadPortableMergeCheckpoint(checkpoint.archiveDigest),
+            )
+            if (!latest.matchesRollupCheckpoint(checkpoint)) {
+                return@awaitRawDriver PortableRollupStepResult(latest)
+            }
+            val updated = latest.copy(
+                stage = PortableMergeStage.ROLLUP_VALIDATE,
+                rebuiltRollupRows = 0,
+                verificationJson = null,
+                lastErrorCode = null,
+                updatedAt = mergedAtEpochMillis,
+                completedAt = null,
+            )
+            check(driver.compareAndSetPortableRollupCheckpoint(latest, updated)) {
+                "Portable rollup checkpoint moved while restarting validation"
+            }
+            PortableRollupStepResult(updated)
+        }
+
+    private suspend fun initializePortableRollupPass(
+        rawHandler: AndroidDatabaseHandler,
+        checkpoint: PortableMergeCheckpoint,
+        archiveCreatedAt: Long,
+        mergedAtEpochMillis: Long,
+        pass: Int,
+        firstPass: PortableRollupFirstPassEvidence?,
+    ): PortableRollupStepResult =
+        handler.await(inTransaction = true) {
+            val latest = checkNotNull(
+                rawHandler.awaitRawDriver {
+                    it.loadPortableMergeCheckpoint(checkpoint.archiveDigest)
+                },
+            )
+            if (!latest.matchesRollupCheckpoint(checkpoint)) {
+                return@await PortableRollupStepResult(latest)
+            }
+            val range = immersionRollupRebuildRange()
+            beginRollupRebuildInDatabase(
+                rollupVersion = ImmersionStatsVersions.ROLLUP,
+                repairCursor = portableRollupRepairCursor(
+                    archiveCreatedAt = archiveCreatedAt,
+                    archiveDigest = checkpoint.archiveDigest,
+                    pass = pass,
+                ),
+                updatedAtEpochMillis = mergedAtEpochMillis,
+                markSessionsDirty = false,
+            )
+            val progress = PortableRollupPassProgress.initial(
+                pass = pass,
+                range = range,
+                firstPass = firstPass,
+            )
+            val updated = latest.copy(
+                stage = if (pass == PORTABLE_ROLLUP_FIRST_PASS) {
+                    PortableMergeStage.ROLLUP_VALIDATE
+                } else {
+                    PortableMergeStage.ROLLUP_VERIFY
+                },
+                rebuiltRollupRows = if (pass == PORTABLE_ROLLUP_FIRST_PASS) {
+                    0
+                } else {
+                    latest.rebuiltRollupRows
+                },
+                verificationJson = Json.encodeToString(progress),
+                lastErrorCode = null,
+                updatedAt = mergedAtEpochMillis,
+                completedAt = null,
+            )
+            check(
+                rawHandler.awaitRawDriver {
+                    it.compareAndSetPortableRollupCheckpoint(latest, updated)
+                },
+            ) {
+                "Portable rollup checkpoint moved while initializing pass $pass"
+            }
+            PortableRollupStepResult(updated)
+        }
+
+    private suspend fun rebuildPortableRollupChunk(
+        rawHandler: AndroidDatabaseHandler,
+        checkpoint: PortableMergeCheckpoint,
+        progress: PortableRollupPassProgress,
+        chunk: LocalDateRange,
+        mergedAtEpochMillis: Long,
+    ): PortableRollupStepResult =
+        handler.await(inTransaction = true) {
+            val latest = checkNotNull(
+                rawHandler.awaitRawDriver {
+                    it.loadPortableMergeCheckpoint(checkpoint.archiveDigest)
+                },
+            )
+            if (!latest.matchesRollupCheckpoint(checkpoint)) {
+                return@await PortableRollupStepResult(latest)
+            }
+            val rebuilt = rebuildRollupsInDatabase(
+                range = chunk,
+                rollupVersion = ImmersionStatsVersions.ROLLUP,
+                nowEpochMillis = mergedAtEpochMillis,
+                accumulateLifetimeRollups = true,
+                completeRepair = false,
+            )
+            portableMergeRollupChunkObserver(
+                checkpoint.archiveDigest,
+                progress.pass,
+                chunk,
+            )
+            val fingerprint = rawHandler.awaitRawDriver {
+                it.immersionDailyRollupFingerprint(
+                    range = chunk,
+                    seedDigest = progress.digest,
+                )
+            }
+            check(rebuilt.rowCount == fingerprint.rowCount) {
+                "Portable rollup chunk row count changed while fingerprinting"
+            }
+            val advanced = progress.advance(chunk, rebuilt.rowCount, fingerprint)
+            val updated = latest.copy(
+                rebuiltRollupRows = if (progress.pass == PORTABLE_ROLLUP_FIRST_PASS) {
+                    advanced.rebuiltRollupRows
+                } else {
+                    latest.rebuiltRollupRows
+                },
+                verificationJson = Json.encodeToString(advanced),
+                lastErrorCode = null,
+                updatedAt = mergedAtEpochMillis,
+                completedAt = null,
+            )
+            check(
+                rawHandler.awaitRawDriver {
+                    it.compareAndSetPortableRollupCheckpoint(latest, updated)
+                },
+            ) {
+                "Portable rollup checkpoint moved while committing pass " +
+                    "${progress.pass} chunk ${progress.completedChunks + 1}"
+            }
+            PortableRollupStepResult(
+                checkpoint = updated,
+                observerCheckpoint = PortableRollupObserverCheckpoint(
+                    name = if (progress.pass == PORTABLE_ROLLUP_FIRST_PASS) {
+                        IMMERSION_ROLLUP_FIRST_PASS_CHUNK_CHECKPOINT
+                    } else {
+                        IMMERSION_ROLLUP_SECOND_PASS_CHUNK_CHECKPOINT
+                    },
+                    offset = advanced.completedChunks,
+                ),
+            )
+        }
+
+    private suspend fun fingerprintPortableLifetimeRollupPage(
+        rawHandler: AndroidDatabaseHandler,
+        checkpoint: PortableMergeCheckpoint,
+        progress: PortableRollupPassProgress,
+        mergedAtEpochMillis: Long,
+    ): PortableRollupStepResult =
+        rawHandler.awaitRawDriver(inTransaction = true) { driver ->
+            val latest = checkNotNull(
+                driver.loadPortableMergeCheckpoint(checkpoint.archiveDigest),
+            )
+            if (!latest.matchesRollupCheckpoint(checkpoint)) {
+                return@awaitRawDriver PortableRollupStepResult(latest)
+            }
+            val page = driver.immersionLifetimeRollupFingerprintPage(
+                afterScopeKey = progress.lifetimeCursor,
+                limit = portableMergeLifetimePageSize,
+                seedDigest = progress.digest,
+            )
+            val advanced = if (page.fingerprint.rowCount == 0L) {
+                progress.completeLifetimeFingerprint()
+            } else {
+                progress.advanceLifetimeFingerprint(page)
+            }
+            val updated = latest.copy(
+                verificationJson = Json.encodeToString(advanced),
+                lastErrorCode = null,
+                updatedAt = mergedAtEpochMillis,
+                completedAt = null,
+            )
+            check(driver.compareAndSetPortableRollupCheckpoint(latest, updated)) {
+                "Portable rollup checkpoint moved while fingerprinting lifetime pass " +
+                    progress.pass
+            }
+            PortableRollupStepResult(
+                checkpoint = updated,
+                observerCheckpoint = page.lastScopeKey?.let {
+                    PortableRollupObserverCheckpoint(
+                        name = if (progress.pass == PORTABLE_ROLLUP_FIRST_PASS) {
+                            IMMERSION_ROLLUP_FIRST_PASS_LIFETIME_CHECKPOINT
+                        } else {
+                            IMMERSION_ROLLUP_SECOND_PASS_LIFETIME_CHECKPOINT
+                        },
+                        offset = advanced.completedLifetimePages,
+                    )
+                },
+            )
+        }
+
+    private suspend fun completePortableRollupPass(
+        rawHandler: AndroidDatabaseHandler,
+        checkpoint: PortableMergeCheckpoint,
+        progress: PortableRollupPassProgress,
+        mergedAtEpochMillis: Long,
+    ): PortableRollupStepResult =
+        handler.await(inTransaction = true) {
+            val latest = checkNotNull(
+                rawHandler.awaitRawDriver {
+                    it.loadPortableMergeCheckpoint(checkpoint.archiveDigest)
+                },
+            )
+            if (!latest.matchesRollupCheckpoint(checkpoint)) {
+                return@await PortableRollupStepResult(latest)
+            }
+            immersionQueries.updateImmersionRepairState(
+                rollupVersion = ImmersionStatsVersions.ROLLUP.toLong(),
+                repairCursor = null,
+                updatedAt = mergedAtEpochMillis,
+            )
+            val fingerprint = PortableContentFingerprint(
+                rowCount = Math.addExact(progress.dailyRowCount, progress.lifetimeRowCount),
+                digest = progress.digest,
+            )
+            if (progress.pass == PORTABLE_ROLLUP_FIRST_PASS) {
+                val firstPass = PortableRollupFirstPassEvidence(
+                    rebuiltRollupRows = progress.rebuiltRollupRows,
+                    rowCount = fingerprint.rowCount,
+                    digest = fingerprint.digest,
+                    fingerprintVersion = PORTABLE_ROLLUP_FINGERPRINT_VERSION,
+                )
+                val updated = latest.copy(
+                    stage = PortableMergeStage.ROLLUP_VERIFY,
+                    rebuiltRollupRows = firstPass.rebuiltRollupRows,
+                    verificationJson = Json.encodeToString(firstPass),
+                    lastErrorCode = null,
+                    updatedAt = mergedAtEpochMillis,
+                    completedAt = null,
+                )
+                check(
+                    rawHandler.awaitRawDriver {
+                        it.compareAndSetPortableRollupCheckpoint(latest, updated)
+                    },
+                ) {
+                    "Portable rollup checkpoint moved while completing first pass"
+                }
+                return@await PortableRollupStepResult(
+                    checkpoint = updated,
+                    observerCheckpoint = PortableRollupObserverCheckpoint(
+                        name = IMMERSION_ROLLUP_FIRST_PASS_CHECKPOINT,
+                        offset = 0,
+                    ),
+                )
+            }
+
+            val firstPass = checkNotNull(progress.firstPass) {
+                "Portable rollup verification lost first-pass evidence"
+            }
+            val integrity = selectImmersionIntegrityReportInDatabase(
+                expectedRollupVersion = ImmersionStatsVersions.ROLLUP,
+                foreignKeyViolations = rawHandler.awaitRawDriver {
+                    it.immersionForeignKeyViolationCount()
+                },
+            )
+            val entityCounts = rawHandler.awaitRawDriver {
+                it.immersionMergeEntityCounts()
+            }
+            val databaseRevision = immersionQueries
+                .selectImmersionRevision()
+                .executeAsOne()
+            val verification = ImmersionMergeVerification(
+                archiveDigest = checkpoint.archiveDigest,
+                eligibleRows = latest.eligibleRowCount,
+                accountedRows = latest.accountedRows,
+                firstRollupRows = firstPass.rowCount,
+                secondRollupRows = fingerprint.rowCount,
+                firstRollupDigest = firstPass.digest,
+                secondRollupDigest = fingerprint.digest,
+                entityCounts = entityCounts,
+                integrity = integrity,
+                evidenceVersion = ImmersionMergeVerification.CURRENT_EVIDENCE_VERSION,
+                databaseRevision = databaseRevision,
+            )
+            val updated = latest.copy(
+                stage = if (verification.isHealthy) {
+                    PortableMergeStage.COMPLETE
+                } else {
+                    PortableMergeStage.VALIDATION_FAILED
+                },
+                rebuiltRollupRows = firstPass.rebuiltRollupRows,
+                verificationJson = Json.encodeToString(verification),
+                lastErrorCode = verification.failureCode(),
+                updatedAt = mergedAtEpochMillis,
+                completedAt = mergedAtEpochMillis.takeIf { verification.isHealthy },
+            )
+            check(
+                rawHandler.awaitRawDriver {
+                    it.compareAndSetPortableRollupCheckpoint(latest, updated)
+                },
+            ) {
+                "Portable rollup checkpoint moved while completing verification"
+            }
+            PortableRollupStepResult(
+                checkpoint = updated,
+                completedByThisCall = verification.isHealthy,
+            )
+        }
 
     override suspend fun deleteRawText(
         titleId: TitleId?,
@@ -3244,82 +3556,22 @@ class SqlDelightImmersionRepository(
         }
 
     private fun Database.immersionRollupRebuildRange(): LocalDateRange? {
-        val calendar = ImmersionAnalyticsCalendar()
-        var firstDate: ImmersionLocalDate? = null
-        var lastDate: ImmersionLocalDate? = null
-
-        fun include(date: ImmersionLocalDate) {
-            firstDate = firstDate?.let { minOf(it, date) } ?: date
-            lastDate = lastDate?.let { maxOf(it, date) } ?: date
-        }
-
-        immersionQueries
-            .selectImmersionRollupSessions(0, Long.MAX_VALUE)
-            .executeAsList()
-            .forEach { session ->
-                include(
-                    session.legacy_local_date?.let(::ImmersionLocalDate)
-                        ?: calendar.localDate(
-                            session.started_at,
-                            session.start_offset_seconds.toIntExact("session offset"),
-                        ),
-                )
-                session.ended_at?.let { endedAt ->
-                    include(
-                        calendar.localDate(
-                            endedAt,
-                            session.start_offset_seconds.toIntExact("session offset"),
-                        ),
-                    )
-                }
-            }
-        immersionQueries
-            .selectImmersionRollupEvents(0, Long.MAX_VALUE)
-            .executeAsList()
-            .forEach { event ->
-                val offsetSeconds = event.timezone_offset_seconds.toIntExact("event offset")
-                include(calendar.localDate(event.occurred_at, offsetSeconds))
-                calendar.splitDuration(
-                    event.occurred_at,
-                    event.active_duration_delta_ms,
-                    offsetSeconds,
-                ).keys.forEach(::include)
-            }
-
-        return firstDate?.let { first ->
-            LocalDateRange(first, checkNotNull(lastDate))
-        }
-    }
-
-    private fun Database.rebuildAllRollupsInDatabase(
-        repairCursor: String,
-        updatedAtEpochMillis: Long,
-    ): Long {
-        beginRollupRebuildInDatabase(
-            rollupVersion = ImmersionStatsVersions.ROLLUP,
-            repairCursor = repairCursor,
-            updatedAtEpochMillis = updatedAtEpochMillis,
-        )
-        val range = immersionRollupRebuildRange()
-        if (range == null) {
-            immersionQueries.updateImmersionRepairState(
-                rollupVersion = ImmersionStatsVersions.ROLLUP.toLong(),
-                repairCursor = null,
-                updatedAt = updatedAtEpochMillis,
+        val bounds = immersionQueries
+            .selectImmersionRollupRebuildBounds()
+            .executeAsOne()
+        return bounds.first_date?.let { first ->
+            LocalDateRange(
+                start = ImmersionLocalDate(first),
+                endInclusive = ImmersionLocalDate(checkNotNull(bounds.last_date)),
             )
-            return 0
         }
-        return rebuildRollupsInDatabase(
-            range = range,
-            rollupVersion = ImmersionStatsVersions.ROLLUP,
-            nowEpochMillis = updatedAtEpochMillis,
-        ).rowCount
     }
 
     private fun Database.beginRollupRebuildInDatabase(
         rollupVersion: Int,
         repairCursor: String?,
         updatedAtEpochMillis: Long,
+        markSessionsDirty: Boolean = true,
     ) {
         immersionQueries.ensureImmersionRollupState(
             schemaVersion = ImmersionStatsVersions.SCHEMA.toLong(),
@@ -3329,28 +3581,30 @@ class SqlDelightImmersionRepository(
             rollupVersion = rollupVersion.toLong(),
             updatedAt = updatedAtEpochMillis,
         )
-        val sessions = immersionQueries
-            .selectImmersionRollupSessions(0, Long.MAX_VALUE)
-            .executeAsList()
         immersionQueries.clearImmersionRollups()
         immersionQueries.clearImmersionLifetimeRollups()
         immersionQueries.clearImmersionAppliedEvents()
         immersionQueries.clearImmersionRollupDirty()
-        sessions.forEach {
-            markRollupDirty(
-                it.started_at,
-                it.start_offset_seconds.toIntExact("session offset"),
-                it.title_id,
-                "FULL_REBUILD",
-            )
-            it.ended_at?.let { endedAt ->
-                markRollupDirty(
-                    endedAt,
-                    it.start_offset_seconds.toIntExact("session offset"),
-                    it.title_id,
-                    "FULL_REBUILD",
-                )
-            }
+        if (markSessionsDirty) {
+            immersionQueries
+                .selectImmersionRollupSessions(0, Long.MAX_VALUE)
+                .executeAsList()
+                .forEach {
+                    markRollupDirty(
+                        it.started_at,
+                        it.start_offset_seconds.toIntExact("session offset"),
+                        it.title_id,
+                        "FULL_REBUILD",
+                    )
+                    it.ended_at?.let { endedAt ->
+                        markRollupDirty(
+                            endedAt,
+                            it.start_offset_seconds.toIntExact("session offset"),
+                            it.title_id,
+                            "FULL_REBUILD",
+                        )
+                    }
+                }
         }
         immersionQueries.updateImmersionRepairState(
             rollupVersion = rollupVersion.toLong(),
@@ -3363,6 +3617,8 @@ class SqlDelightImmersionRepository(
         range: tachiyomi.domain.immersion.model.LocalDateRange,
         rollupVersion: Int,
         nowEpochMillis: Long,
+        accumulateLifetimeRollups: Boolean = false,
+        completeRepair: Boolean = true,
     ): ImmersionRollupRebuildResult {
         val calendar = ImmersionAnalyticsCalendar()
         val fromEpochMillis = (
@@ -3613,20 +3869,31 @@ class SqlDelightImmersionRepository(
                     appliedAt = nowEpochMillis,
                 )
             }
-        immersionQueries.clearImmersionLifetimeRollups()
-        immersionQueries.rebuildImmersionLifetimeRollups(
-            rollupVersion.toLong(),
-            nowEpochMillis,
-        )
+        if (accumulateLifetimeRollups) {
+            immersionQueries.accumulateImmersionLifetimeRollups(
+                rollupVersion = rollupVersion.toLong(),
+                updatedAt = nowEpochMillis,
+                startDate = range.start.epochDay,
+                endDate = range.endInclusive.epochDay,
+            )
+        } else {
+            immersionQueries.clearImmersionLifetimeRollups()
+            immersionQueries.rebuildImmersionLifetimeRollups(
+                rollupVersion.toLong(),
+                nowEpochMillis,
+            )
+        }
         immersionQueries.deleteImmersionDirtyRollupRange(
             range.start.epochDay,
             range.endInclusive.epochDay,
         )
-        immersionQueries.updateImmersionRepairState(
-            rollupVersion = rollupVersion.toLong(),
-            repairCursor = null,
-            updatedAt = nowEpochMillis,
-        )
+        if (completeRepair) {
+            immersionQueries.updateImmersionRepairState(
+                rollupVersion = rollupVersion.toLong(),
+                repairCursor = null,
+                updatedAt = nowEpochMillis,
+            )
+        }
         return ImmersionRollupRebuildResult(
             range = range,
             eventCount = events.count().toLong(),
@@ -5087,6 +5354,25 @@ private data class PortableMergeCheckpoint(
                 "Completed portable merge checkpoint has no verification evidence"
             },
         )
+
+    fun decodePortableRollupProgressOrNull(): PortableRollupPassProgress? =
+        verificationJson?.let { encoded ->
+            runCatching {
+                Json.decodeFromString<PortableRollupPassProgress>(encoded)
+            }.getOrNull()
+        }
+
+    fun decodePortableRollupFirstPass(): PortableRollupFirstPassEvidence =
+        Json.decodeFromString<PortableRollupFirstPassEvidence>(
+            checkNotNull(verificationJson) {
+                "Portable merge first-pass evidence is missing"
+            },
+        )
+
+    fun matchesRollupCheckpoint(other: PortableMergeCheckpoint): Boolean =
+        archiveDigest == other.archiveDigest &&
+            stage == other.stage &&
+            verificationJson == other.verificationJson
 }
 
 private data class PortableMergeInitialization(
@@ -5094,10 +5380,15 @@ private data class PortableMergeInitialization(
     val wasExisting: Boolean,
 )
 
-private data class PortableMergeValidation(
+private data class PortableRollupStepResult(
     val checkpoint: PortableMergeCheckpoint,
-    val verification: ImmersionMergeVerification,
-    val completedByThisCall: Boolean,
+    val observerCheckpoint: PortableRollupObserverCheckpoint? = null,
+    val completedByThisCall: Boolean = false,
+)
+
+private data class PortableRollupObserverCheckpoint(
+    val name: String,
+    val offset: Int,
 )
 
 @Serializable
@@ -5105,17 +5396,154 @@ private data class PortableRollupFirstPassEvidence(
     val rebuiltRollupRows: Long,
     val rowCount: Long,
     val digest: String,
+    val fingerprintVersion: Int = 1,
 ) {
     init {
         require(rebuiltRollupRows >= 0)
         require(rowCount >= 0)
         require(digest.isNotBlank())
+        require(fingerprintVersion > 0)
+    }
+}
+
+@Serializable
+private data class PortableRollupPassProgress(
+    val formatVersion: Int,
+    val pass: Int,
+    val startEpochDay: Long?,
+    val endEpochDay: Long?,
+    val nextEpochDay: Long?,
+    val completedChunks: Int,
+    val rebuiltRollupRows: Long,
+    val dailyRowCount: Long,
+    val digest: String,
+    val lifetimeCursor: String? = null,
+    val completedLifetimePages: Int = 0,
+    val lifetimeRowCount: Long = 0,
+    val lifetimeComplete: Boolean = false,
+    val firstPass: PortableRollupFirstPassEvidence? = null,
+) {
+    init {
+        require(formatVersion == PORTABLE_ROLLUP_PROGRESS_FORMAT_VERSION)
+        require(pass == PORTABLE_ROLLUP_FIRST_PASS || pass == PORTABLE_ROLLUP_SECOND_PASS)
+        require((startEpochDay == null) == (endEpochDay == null))
+        require((startEpochDay == null) == (nextEpochDay == null))
+        if (startEpochDay != null) {
+            require(startEpochDay <= checkNotNull(endEpochDay))
+            require(checkNotNull(nextEpochDay) >= startEpochDay)
+        }
+        require(completedChunks >= 0)
+        require(rebuiltRollupRows >= 0)
+        require(dailyRowCount >= 0)
+        require(digest.isNotBlank())
+        require(completedLifetimePages >= 0)
+        require(lifetimeRowCount >= 0)
+        if (completedLifetimePages == 0) require(lifetimeCursor == null)
+        if (lifetimeComplete) require(nextChunk() == null)
+        require((pass == PORTABLE_ROLLUP_FIRST_PASS) == (firstPass == null))
+    }
+
+    fun nextChunk(): LocalDateRange? {
+        val next = nextEpochDay ?: return null
+        val end = checkNotNull(endEpochDay)
+        if (next > end) return null
+        val chunkEnd = minOf(
+            end,
+            Math.addExact(next, PORTABLE_ROLLUP_CHUNK_DAYS - 1L),
+        )
+        return LocalDateRange(
+            start = ImmersionLocalDate(next),
+            endInclusive = ImmersionLocalDate(chunkEnd),
+        )
+    }
+
+    fun advance(
+        chunk: LocalDateRange,
+        rebuiltRows: Long,
+        fingerprint: PortableContentFingerprint,
+    ): PortableRollupPassProgress {
+        check(chunk == nextChunk()) { "Portable rollup chunk does not match its cursor" }
+        require(rebuiltRows >= 0)
+        return copy(
+            nextEpochDay = Math.addExact(chunk.endInclusive.epochDay, 1),
+            completedChunks = Math.addExact(completedChunks, 1),
+            rebuiltRollupRows = Math.addExact(rebuiltRollupRows, rebuiltRows),
+            dailyRowCount = Math.addExact(dailyRowCount, fingerprint.rowCount),
+            digest = fingerprint.digest,
+        )
+    }
+
+    fun advanceLifetimeFingerprint(
+        page: PortableContentFingerprintPage,
+    ): PortableRollupPassProgress {
+        check(nextChunk() == null) {
+            "Portable lifetime fingerprint cannot start before daily chunks complete"
+        }
+        check(!lifetimeComplete) { "Portable lifetime fingerprint is already complete" }
+        check(page.fingerprint.rowCount > 0)
+        val lastScopeKey = checkNotNull(page.lastScopeKey)
+        check(lastScopeKey != lifetimeCursor) {
+            "Portable lifetime fingerprint cursor did not advance"
+        }
+        return copy(
+            lifetimeCursor = lastScopeKey,
+            completedLifetimePages = Math.addExact(completedLifetimePages, 1),
+            lifetimeRowCount = Math.addExact(
+                lifetimeRowCount,
+                page.fingerprint.rowCount,
+            ),
+            digest = page.fingerprint.digest,
+        )
+    }
+
+    fun completeLifetimeFingerprint(): PortableRollupPassProgress {
+        check(nextChunk() == null) {
+            "Portable lifetime fingerprint cannot complete before daily chunks"
+        }
+        check(!lifetimeComplete) { "Portable lifetime fingerprint is already complete" }
+        val output = ByteArrayOutputStream()
+        output.writeField(digest)
+        output.writeField("lifetime-complete")
+        output.writeLong(lifetimeRowCount)
+        return copy(
+            lifetimeComplete = true,
+            digest = output.sha256(),
+        )
+    }
+
+    companion object {
+        fun initial(
+            pass: Int,
+            range: LocalDateRange?,
+            firstPass: PortableRollupFirstPassEvidence?,
+        ): PortableRollupPassProgress {
+            val output = ByteArrayOutputStream()
+            output.writeField(PORTABLE_ROLLUP_FINGERPRINT_DOMAIN)
+            output.writeLong(ImmersionStatsVersions.ROLLUP.toLong())
+            return PortableRollupPassProgress(
+                formatVersion = PORTABLE_ROLLUP_PROGRESS_FORMAT_VERSION,
+                pass = pass,
+                startEpochDay = range?.start?.epochDay,
+                endEpochDay = range?.endInclusive?.epochDay,
+                nextEpochDay = range?.start?.epochDay,
+                completedChunks = 0,
+                rebuiltRollupRows = 0,
+                dailyRowCount = 0,
+                digest = output.sha256(),
+                firstPass = firstPass,
+            )
+        }
     }
 }
 
 private data class PortableContentFingerprint(
     val rowCount: Long,
     val digest: String,
+)
+
+private data class PortableContentFingerprintPage(
+    val fingerprint: PortableContentFingerprint,
+    val lastScopeKey: String?,
 )
 
 private fun ImmersionMergeVerification.failureCode(): String? =
@@ -5341,6 +5769,42 @@ private fun SqlDriver.updatePortableMergeCheckpoint(checkpoint: PortableMergeChe
     check(changed == 1L) { "Portable merge checkpoint disappeared" }
 }
 
+private fun SqlDriver.compareAndSetPortableRollupCheckpoint(
+    expected: PortableMergeCheckpoint,
+    updated: PortableMergeCheckpoint,
+): Boolean {
+    require(expected.archiveDigest == updated.archiveDigest)
+    require(expected.eligibleRowCount == updated.eligibleRowCount)
+    require(expected.accountedRows == updated.accountedRows)
+    return execute(
+        identifier = null,
+        sql = """
+            UPDATE immersion_portable_merge_checkpoint
+            SET
+                stage = ?,
+                rebuilt_rollup_rows = ?,
+                verification_json = ?,
+                last_error_code = ?,
+                updated_at = ?,
+                completed_at = ?
+            WHERE archive_digest = ?
+                AND stage = ?
+                AND verification_json IS ?
+        """.trimIndent(),
+        parameters = 9,
+    ) {
+        bindString(0, updated.stage.name)
+        bindLong(1, updated.rebuiltRollupRows)
+        bindString(2, updated.verificationJson)
+        bindString(3, updated.lastErrorCode)
+        bindLong(4, updated.updatedAt)
+        bindLong(5, updated.completedAt)
+        bindString(6, expected.archiveDigest)
+        bindString(7, expected.stage.name)
+        bindString(8, expected.verificationJson)
+    }.value == 1L
+}
+
 private fun app.cash.sqldelight.db.SqlPreparedStatement.bindPortableMergeCheckpoint(
     checkpoint: PortableMergeCheckpoint,
 ) {
@@ -5366,24 +5830,15 @@ private fun app.cash.sqldelight.db.SqlPreparedStatement.bindPortableMergeCheckpo
     bindLong(19, checkpoint.completedAt)
 }
 
-private fun SqlDriver.immersionRollupFingerprint(): PortableContentFingerprint {
-    val daily = tableContentFingerprint("immersion_daily_rollup")
-    val lifetime = tableContentFingerprint("immersion_lifetime_rollup")
-    val output = ByteArrayOutputStream()
-    output.writeField(daily.digest)
-    output.writeLong(daily.rowCount)
-    output.writeField(lifetime.digest)
-    output.writeLong(lifetime.rowCount)
-    return PortableContentFingerprint(
-        rowCount = Math.addExact(daily.rowCount, lifetime.rowCount),
-        digest = output.sha256(),
-    )
-}
-
-private fun SqlDriver.tableContentFingerprint(tableName: String): PortableContentFingerprint {
-    require(tableName in IMMERSION_ROLLUP_FINGERPRINT_TABLES)
-    val excludedColumns = IMMERSION_ROLLUP_FINGERPRINT_EXCLUDED_COLUMNS[tableName].orEmpty()
-    val columns = portableColumns(tableName).filterNot { it.name in excludedColumns }
+private fun SqlDriver.immersionDailyRollupFingerprint(
+    range: LocalDateRange,
+    seedDigest: String,
+): PortableContentFingerprint {
+    require(seedDigest.isNotBlank())
+    val tableName = "immersion_daily_rollup"
+    val columns = portableColumns(tableName).filterNot {
+        it.name in IMMERSION_ROLLUP_FINGERPRINT_EXCLUDED_COLUMNS
+    }
     val projection = columns.joinToString(", ") { it.name.quotedIdentifier() }
     val primaryKeyOrder = columns
         .filter { it.primaryKeyPosition > 0 }
@@ -5391,29 +5846,127 @@ private fun SqlDriver.tableContentFingerprint(tableName: String): PortableConten
         .joinToString(", ") { it.name.quotedIdentifier() }
     return executeQuery(
         identifier = null,
-        sql = "SELECT $projection FROM ${tableName.quotedIdentifier()} ORDER BY $primaryKeyOrder",
+        sql = """
+            SELECT $projection
+            FROM ${tableName.quotedIdentifier()}
+            WHERE local_date BETWEEN ? AND ?
+            ORDER BY local_date, $primaryKeyOrder
+        """.trimIndent(),
         mapper = { cursor ->
             var rowCount = 0L
-            val output = ByteArrayOutputStream()
-            output.writeField(tableName)
+            var digest = seedDigest
             while (cursor.next().value) {
                 val row = cursor.readPortableRow(
                     tableName = tableName,
                     columns = columns,
                     includePrivateText = true,
                 )
-                output.writeField(row.portableHash())
+                digest = portableRollupSemanticDigest(
+                    previousDigest = digest,
+                    rowKind = "daily",
+                    rowDigest = row.portableHash(),
+                )
                 rowCount = Math.addExact(rowCount, 1)
             }
             QueryResult.Value(
                 PortableContentFingerprint(
                     rowCount = rowCount,
-                    digest = output.sha256(),
+                    digest = digest,
                 ),
             )
         },
-        parameters = 0,
-    ).value
+        parameters = 2,
+    ) {
+        bindLong(0, range.start.epochDay)
+        bindLong(1, range.endInclusive.epochDay)
+    }.value
+}
+
+private fun portableRollupSemanticDigest(
+    previousDigest: String,
+    rowKind: String,
+    rowDigest: String,
+): String {
+    val output = ByteArrayOutputStream()
+    output.writeField(previousDigest)
+    output.writeField(rowKind)
+    output.writeField(rowDigest)
+    return output.sha256()
+}
+
+private fun SqlDriver.immersionLifetimeRollupFingerprintPage(
+    afterScopeKey: String?,
+    limit: Int,
+    seedDigest: String,
+): PortableContentFingerprintPage {
+    require(limit > 0)
+    require(seedDigest.isNotBlank())
+    val tableName = "immersion_lifetime_rollup"
+    val columns = portableColumns(tableName).filterNot {
+        it.name in IMMERSION_ROLLUP_FINGERPRINT_EXCLUDED_COLUMNS
+    }
+    val projection = columns.joinToString(", ") { it.name.quotedIdentifier() }
+    val scopeKeyIndex = columns.indexOfFirst { it.name == "scope_key" }
+    check(scopeKeyIndex >= 0)
+    val mapper = { cursor: app.cash.sqldelight.db.SqlCursor ->
+        var rowCount = 0L
+        var lastScopeKey: String? = null
+        var digest = seedDigest
+        while (cursor.next().value) {
+            lastScopeKey = checkNotNull(cursor.getString(scopeKeyIndex))
+            val row = cursor.readPortableRow(
+                tableName = tableName,
+                columns = columns,
+                includePrivateText = true,
+            )
+            digest = portableRollupSemanticDigest(
+                previousDigest = digest,
+                rowKind = "lifetime",
+                rowDigest = row.portableHash(),
+            )
+            rowCount = Math.addExact(rowCount, 1)
+        }
+        QueryResult.Value(
+            PortableContentFingerprintPage(
+                fingerprint = PortableContentFingerprint(
+                    rowCount = rowCount,
+                    digest = digest,
+                ),
+                lastScopeKey = lastScopeKey,
+            ),
+        )
+    }
+    return if (afterScopeKey == null) {
+        executeQuery(
+            identifier = null,
+            sql = """
+                SELECT $projection
+                FROM ${tableName.quotedIdentifier()}
+                ORDER BY scope_key
+                LIMIT ?
+            """.trimIndent(),
+            mapper = mapper,
+            parameters = 1,
+        ) {
+            bindLong(0, limit.toLong())
+        }.value
+    } else {
+        executeQuery(
+            identifier = null,
+            sql = """
+                SELECT $projection
+                FROM ${tableName.quotedIdentifier()}
+                WHERE scope_key > ?
+                ORDER BY scope_key
+                LIMIT ?
+            """.trimIndent(),
+            mapper = mapper,
+            parameters = 2,
+        ) {
+            bindString(0, afterScopeKey)
+            bindLong(1, limit.toLong())
+        }.value
+    }
 }
 
 private fun SqlDriver.immersionMergeEntityCounts(): ImmersionMergeEntityCounts =
@@ -6248,6 +6801,12 @@ private fun Boolean.toLong(): Long = if (this) 1 else 0
 private fun identityConflict(message: String) =
     ImmersionDataException(PersistenceErrorCode.IDENTITY_CONFLICT, message)
 
+private fun portableRollupRepairCursor(
+    archiveCreatedAt: Long,
+    archiveDigest: String,
+    pass: Int,
+): String = "portable-merge:$archiveCreatedAt:$archiveDigest:rollup-pass-$pass"
+
 private fun repairedAnkiEventId(operation: PendingAnkiOperation): EventId =
     EventId(
         UUID.nameUUIDFromBytes(
@@ -6266,6 +6825,22 @@ private const val IMMERSION_PORTABLE_MERGE_CHUNK_SIZE = 500
 private const val IMMERSION_INDEX_ID_CHUNK_SIZE = 500
 private const val IMMERSION_TOMBSTONE_TABLE = "immersion_tombstone"
 private const val IMMERSION_ROLLUP_FIRST_PASS_CHECKPOINT = "immersion_rollup_first_pass"
+private const val IMMERSION_ROLLUP_FIRST_PASS_CHUNK_CHECKPOINT =
+    "immersion_rollup_first_pass_chunk"
+private const val IMMERSION_ROLLUP_SECOND_PASS_CHUNK_CHECKPOINT =
+    "immersion_rollup_second_pass_chunk"
+private const val IMMERSION_ROLLUP_FIRST_PASS_LIFETIME_CHECKPOINT =
+    "immersion_rollup_first_pass_lifetime"
+private const val IMMERSION_ROLLUP_SECOND_PASS_LIFETIME_CHECKPOINT =
+    "immersion_rollup_second_pass_lifetime"
+private const val PORTABLE_ROLLUP_FIRST_PASS = 1
+private const val PORTABLE_ROLLUP_SECOND_PASS = 2
+private const val PORTABLE_ROLLUP_PROGRESS_FORMAT_VERSION = 1
+private const val PORTABLE_ROLLUP_FINGERPRINT_VERSION = 2
+private const val PORTABLE_ROLLUP_CHUNK_DAYS = 31L
+private const val PORTABLE_ROLLUP_LIFETIME_PAGE_SIZE = 256
+private const val PORTABLE_ROLLUP_FINGERPRINT_DOMAIN =
+    "chimahon:immersion:portable-rollup-semantic:v2"
 private const val IMMERSION_TITLE_EXCLUSION_TYPE = "TITLE"
 private const val IMMERSION_CAPTURE_EXCLUSION_SCOPE = "capture"
 private const val MILLIS_PER_DAY = 86_400_000L
@@ -6308,14 +6883,7 @@ private val IMMERSION_PRIVATE_TEXT_COLUMNS = setOf(
     "immersion_goal_check_in" to "note",
 )
 
-private val IMMERSION_ROLLUP_FINGERPRINT_TABLES = setOf(
-    "immersion_daily_rollup",
-    "immersion_lifetime_rollup",
-)
-
-private val IMMERSION_ROLLUP_FINGERPRINT_EXCLUDED_COLUMNS = mapOf(
-    "immersion_lifetime_rollup" to setOf("updated_at"),
-)
+private val IMMERSION_ROLLUP_FINGERPRINT_EXCLUDED_COLUMNS = setOf("updated_at")
 
 private val IMMERSION_SOURCE_IDENTITY_COLUMNS = setOf(
     "id",
