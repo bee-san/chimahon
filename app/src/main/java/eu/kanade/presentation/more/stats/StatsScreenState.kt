@@ -22,7 +22,9 @@ import tachiyomi.domain.immersion.model.AnalyticsWordRow
 import tachiyomi.domain.immersion.model.CharacterMetric
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
 import tachiyomi.domain.immersion.model.ImmersionSession
+import tachiyomi.domain.immersion.model.MaturityTier
 import tachiyomi.domain.immersion.model.MediaKind
+import tachiyomi.domain.immersion.model.ProvenanceState
 import tachiyomi.domain.immersion.model.SessionPage
 
 enum class StatsTab {
@@ -66,6 +68,8 @@ data class StatsFilterState(
     val characterMetric: CharacterMetric = CharacterMetric.GROSS,
     val includeLegacy: Boolean = true,
     val includeRereadsAndReplays: Boolean = true,
+    val maturityTiers: Set<MaturityTier> = emptySet(),
+    val provenanceStates: Set<ProvenanceState> = emptySet(),
     val titleId: String? = null,
 )
 

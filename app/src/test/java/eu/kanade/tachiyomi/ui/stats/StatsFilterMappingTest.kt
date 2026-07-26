@@ -9,7 +9,9 @@ import org.junit.jupiter.api.Test
 import tachiyomi.domain.immersion.model.AnkiMaturityAggregation
 import tachiyomi.domain.immersion.model.CharacterMetric
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
+import tachiyomi.domain.immersion.model.MaturityTier
 import tachiyomi.domain.immersion.model.MediaKind
+import tachiyomi.domain.immersion.model.ProvenanceState
 import tachiyomi.domain.immersion.model.StatsFilter
 import tachiyomi.domain.immersion.model.TitleId
 import java.time.LocalDate
@@ -26,6 +28,8 @@ class StatsFilterMappingTest {
             characterMetric = CharacterMetric.UNIQUE_SOURCE,
             includeLegacy = false,
             includeRereadsAndReplays = false,
+            maturityTiers = setOf(MaturityTier.LEARNING, MaturityTier.MATURE),
+            provenanceStates = setOf(ProvenanceState.AVAILABLE, ProvenanceState.PARTIAL),
             titleId = titleId,
         ).toStatsFilter(
             now = LocalDate.of(2026, 7, 26),
@@ -41,7 +45,24 @@ class StatsFilterMappingTest {
         filter.characterMetric shouldBe CharacterMetric.UNIQUE_SOURCE
         filter.includeLegacyAggregates shouldBe false
         filter.includeRereadsAndReplays shouldBe false
+        filter.maturityTiers shouldBe setOf(MaturityTier.LEARNING, MaturityTier.MATURE)
+        filter.provenanceStates shouldBe setOf(
+            ProvenanceState.AVAILABLE,
+            ProvenanceState.PARTIAL,
+        )
         filter.ankiMaturityAggregation shouldBe AnkiMaturityAggregation.MIN_INTERVAL
+    }
+
+    @Test
+    fun `empty UI selections preserve all maturity and provenance data`() {
+        val filter = StatsFilterState(rangePreset = StatsRangePreset.ALL).toStatsFilter(
+            now = LocalDate.of(2026, 7, 26),
+            profileLanguageCode = null,
+        )
+
+        filter.maturityTiers shouldBe emptySet()
+        filter.provenanceStates shouldBe emptySet()
+        filter.includeRereadsAndReplays shouldBe true
     }
 
     @Test

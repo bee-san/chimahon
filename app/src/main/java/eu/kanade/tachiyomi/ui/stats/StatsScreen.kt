@@ -149,6 +149,8 @@ class StatsScreen(
                 onCharacterMetricSelect = screenModel::selectCharacterMetric,
                 onIncludeLegacyChange = screenModel::setIncludeLegacy,
                 onIncludeRereadsChange = screenModel::setIncludeRereads,
+                onMaturityTiersSelect = screenModel::selectMaturityTiers,
+                onProvenanceStatesSelect = screenModel::selectProvenanceStates,
                 onTrendScaleSelect = screenModel::selectTrendScale,
                 onTrendMetricSelect = screenModel::selectTrendMetric,
                 onTitleTrendSelectionSelect = screenModel::selectTitleTrendSelection,

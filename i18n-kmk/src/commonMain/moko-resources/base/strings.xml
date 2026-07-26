@@ -317,6 +317,10 @@
     <string name="stats_refresh">Refresh statistics</string>
     <string name="stats_filters">Filters</string>
     <string name="stats_filter_summary">%1$s · %2$s · %3$s</string>
+    <string name="stats_filter_all">All</string>
+    <string name="stats_filter_maturity">Maturity: %1$s</string>
+    <string name="stats_filter_provenance">Source data: %1$s</string>
+    <string name="stats_filter_selected_count">%1$d selected</string>
     <string name="stats_range_today">Today</string>
     <string name="stats_range_seven_days">7 days</string>
     <string name="stats_range_thirty_days">30 days</string>

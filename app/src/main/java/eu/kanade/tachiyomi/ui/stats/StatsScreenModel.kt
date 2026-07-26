@@ -30,7 +30,9 @@ import tachiyomi.domain.immersion.model.CharacterMetric
 import tachiyomi.domain.immersion.model.ImmersionGoal
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
 import tachiyomi.domain.immersion.model.LanguageTag
+import tachiyomi.domain.immersion.model.MaturityTier
 import tachiyomi.domain.immersion.model.MediaKind
+import tachiyomi.domain.immersion.model.ProvenanceState
 import tachiyomi.domain.immersion.model.RawTextRetention
 import tachiyomi.domain.immersion.model.SessionPage
 import tachiyomi.domain.immersion.model.StatsFilter
@@ -94,6 +96,8 @@ class StatsScreenModel(
             characterMetric = preferences.dashboardCharacterMetric().get(),
             includeLegacy = preferences.includeLegacyAggregates().get(),
             includeRereadsAndReplays = preferences.dashboardIncludeRereads().get(),
+            maturityTiers = preferences.dashboardMaturityTiers().get().enumSet(),
+            provenanceStates = preferences.dashboardProvenanceStates().get().enumSet(),
             titleId = selectedTitleId?.value,
         )
         mutableState.value = StatsScreenState.Success(
@@ -263,6 +267,16 @@ class StatsScreenModel(
     fun setIncludeRereads(include: Boolean) {
         preferences.dashboardIncludeRereads().set(include)
         updateFilter { it.copy(includeRereadsAndReplays = include) }
+    }
+
+    fun selectMaturityTiers(tiers: Set<MaturityTier>) {
+        preferences.dashboardMaturityTiers().set(tiers.mapTo(linkedSetOf()) { it.name })
+        updateFilter { it.copy(maturityTiers = tiers) }
+    }
+
+    fun selectProvenanceStates(states: Set<ProvenanceState>) {
+        preferences.dashboardProvenanceStates().set(states.mapTo(linkedSetOf()) { it.name })
+        updateFilter { it.copy(provenanceStates = states) }
     }
 
     fun selectTrendScale(scale: AnalyticsBucketScale) {
@@ -1494,6 +1508,9 @@ private inline fun <reified T : Enum<T>> String.enumOrNull(): T? =
 
 private inline fun <reified T : Enum<T>> String.enumOrDefault(default: T): T =
     enumOrNull() ?: default
+
+private inline fun <reified T : Enum<T>> Set<String>.enumSet(): Set<T> =
+    mapNotNullTo(linkedSetOf()) { it.enumOrNull<T>() }
 
 private fun String.toImmersionLocalDateOrNull(): ImmersionLocalDate? =
     takeIf(String::isNotBlank)

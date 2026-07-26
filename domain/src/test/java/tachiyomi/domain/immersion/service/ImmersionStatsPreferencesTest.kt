@@ -116,6 +116,8 @@ class ImmersionStatsPreferencesTest {
         first.dashboardTitleId().set("00000000-0000-0000-0000-000000000001")
         first.dashboardCharacterMetric().set(CharacterMetric.UNIQUE_SOURCE)
         first.dashboardIncludeRereads().set(false)
+        first.dashboardMaturityTiers().set(setOf("LEARNING", "MATURE"))
+        first.dashboardProvenanceStates().set(setOf("AVAILABLE", "PARTIAL"))
         first.dashboardSelectedTab().set("VOCABULARY")
         first.dashboardTrendScale().set(AnalyticsBucketScale.WEEK)
         first.dashboardTrendMetric().set("ACTIVE_TIME")
@@ -132,6 +134,8 @@ class ImmersionStatsPreferencesTest {
         restored.dashboardTitleId().get() shouldBe "00000000-0000-0000-0000-000000000001"
         restored.dashboardCharacterMetric().get() shouldBe CharacterMetric.UNIQUE_SOURCE
         restored.dashboardIncludeRereads().get() shouldBe false
+        restored.dashboardMaturityTiers().get() shouldBe setOf("LEARNING", "MATURE")
+        restored.dashboardProvenanceStates().get() shouldBe setOf("AVAILABLE", "PARTIAL")
         restored.dashboardSelectedTab().get() shouldBe "VOCABULARY"
         restored.dashboardTrendScale().get() shouldBe AnalyticsBucketScale.WEEK
         restored.dashboardTrendMetric().get() shouldBe "ACTIVE_TIME"

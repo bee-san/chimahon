@@ -49,6 +49,7 @@ import androidx.compose.material.icons.outlined.TextFields
 import androidx.compose.material.icons.outlined.Translate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
@@ -168,6 +169,8 @@ fun StatsScreenContent(
     onCharacterMetricSelect: (CharacterMetric) -> Unit,
     onIncludeLegacyChange: (Boolean) -> Unit,
     onIncludeRereadsChange: (Boolean) -> Unit,
+    onMaturityTiersSelect: (Set<MaturityTier>) -> Unit,
+    onProvenanceStatesSelect: (Set<ProvenanceState>) -> Unit,
     onTrendScaleSelect: (AnalyticsBucketScale) -> Unit,
     onTrendMetricSelect: (StatsTrendMetric) -> Unit,
     onTitleTrendSelectionSelect: (AnalyticsTitleSeriesSelection) -> Unit,
@@ -219,6 +222,8 @@ fun StatsScreenContent(
             onCharacterMetricSelect = onCharacterMetricSelect,
             onIncludeLegacyChange = onIncludeLegacyChange,
             onIncludeRereadsChange = onIncludeRereadsChange,
+            onMaturityTiersSelect = onMaturityTiersSelect,
+            onProvenanceStatesSelect = onProvenanceStatesSelect,
             onDefinitions = { showDefinitions = true },
         )
         if (state.isRefreshing) {
@@ -332,6 +337,8 @@ private fun FilterSummary(
     onCharacterMetricSelect: (CharacterMetric) -> Unit,
     onIncludeLegacyChange: (Boolean) -> Unit,
     onIncludeRereadsChange: (Boolean) -> Unit,
+    onMaturityTiersSelect: (Set<MaturityTier>) -> Unit,
+    onProvenanceStatesSelect: (Set<ProvenanceState>) -> Unit,
     onDefinitions: () -> Unit,
 ) {
     val range = rangeLabel(state.filter.rangePreset)
@@ -451,6 +458,32 @@ private fun FilterSummary(
                         options = CharacterMetric.entries,
                         optionLabel = { characterMetricLabel(it) },
                         onSelect = onCharacterMetricSelect,
+                    )
+                    MultiSelectFilterMenuChip(
+                        label = stringResource(
+                            KMR.strings.stats_filter_maturity,
+                            filterSelectionLabel(
+                                selected = state.filter.maturityTiers,
+                                optionLabel = { maturityLabel(it) },
+                            ),
+                        ),
+                        selected = state.filter.maturityTiers,
+                        options = MaturityTier.entries,
+                        optionLabel = { maturityLabel(it) },
+                        onSelectionChange = onMaturityTiersSelect,
+                    )
+                    MultiSelectFilterMenuChip(
+                        label = stringResource(
+                            KMR.strings.stats_filter_provenance,
+                            filterSelectionLabel(
+                                selected = state.filter.provenanceStates,
+                                optionLabel = { provenanceLabel(it) },
+                            ),
+                        ),
+                        selected = state.filter.provenanceStates,
+                        options = ProvenanceState.entries,
+                        optionLabel = { provenanceLabel(it) },
+                        onSelectionChange = onProvenanceStatesSelect,
                     )
                 }
                 ToggleRow(
@@ -2719,6 +2752,64 @@ private fun <T> FilterMenuChip(
         }
     }
 }
+
+@Composable
+private fun <T> MultiSelectFilterMenuChip(
+    label: String,
+    selected: Set<T>,
+    options: List<T>,
+    optionLabel: @Composable (T) -> String,
+    onSelectionChange: (Set<T>) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        FilterChip(
+            selected = selected.isNotEmpty(),
+            onClick = { expanded = true },
+            label = { Text(label) },
+            trailingIcon = { Icon(Icons.Outlined.ArrowDropDown, contentDescription = null) },
+        )
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text(stringResource(KMR.strings.stats_filter_all)) },
+                leadingIcon = {
+                    Checkbox(
+                        checked = selected.isEmpty(),
+                        onCheckedChange = { onSelectionChange(emptySet()) },
+                    )
+                },
+                onClick = { onSelectionChange(emptySet()) },
+            )
+            options.forEach { option ->
+                val next = toggleStatsFilterSelection(selected, option, options)
+                DropdownMenuItem(
+                    text = { Text(optionLabel(option)) },
+                    leadingIcon = {
+                        Checkbox(
+                            checked = option in selected,
+                            onCheckedChange = { onSelectionChange(next) },
+                        )
+                    },
+                    onClick = { onSelectionChange(next) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun <T> filterSelectionLabel(
+    selected: Set<T>,
+    optionLabel: @Composable (T) -> String,
+): String =
+    when (val summary = selected.statsFilterSelectionSummary()) {
+        StatsFilterSelectionSummary.All -> stringResource(KMR.strings.stats_filter_all)
+        is StatsFilterSelectionSummary.Single -> optionLabel(summary.value)
+        is StatsFilterSelectionSummary.Multiple -> stringResource(
+            KMR.strings.stats_filter_selected_count,
+            summary.count,
+        )
+    }
 
 @Composable
 private fun ToggleRow(text: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {

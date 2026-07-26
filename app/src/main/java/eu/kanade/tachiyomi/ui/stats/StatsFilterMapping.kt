@@ -33,7 +33,9 @@ internal fun StatsFilterState.toStatsFilter(
         includeLegacyAggregates = includeLegacy,
         characterMetric = characterMetric,
         includeRereadsAndReplays = includeRereadsAndReplays,
+        maturityTiers = maturityTiers,
         ankiMaturityAggregation = ankiMaturityAggregation,
+        provenanceStates = provenanceStates,
     )
 
 internal fun StatsFilterState.dateRange(now: LocalDate): LocalDateRange? {
