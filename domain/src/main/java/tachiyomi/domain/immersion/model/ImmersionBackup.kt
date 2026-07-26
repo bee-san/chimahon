@@ -94,6 +94,8 @@ data class ImmersionMergeReport(
     val skippedByTombstoneRows: Long,
     val quarantinedConflicts: Long,
     val rebuiltRollupRows: Long,
+    val disposition: ImmersionMergeDisposition,
+    val verification: ImmersionMergeVerification,
 ) {
     init {
         require(insertedRows >= 0)
@@ -101,6 +103,67 @@ data class ImmersionMergeReport(
         require(skippedByTombstoneRows >= 0)
         require(quarantinedConflicts >= 0)
         require(rebuiltRollupRows >= 0)
+    }
+}
+
+@Serializable
+enum class ImmersionMergeDisposition {
+    COMPLETED,
+    RESUMED,
+    ALREADY_COMPLETE,
+}
+
+@Serializable
+data class ImmersionMergeVerification(
+    val archiveDigest: String,
+    val eligibleRows: Long,
+    val accountedRows: Long,
+    val firstRollupRows: Long,
+    val secondRollupRows: Long,
+    val firstRollupDigest: String,
+    val secondRollupDigest: String,
+    val entityCounts: ImmersionMergeEntityCounts,
+    val integrity: ImmersionIntegrityReport,
+) {
+    init {
+        require(archiveDigest.isNotBlank())
+        require(eligibleRows >= 0)
+        require(accountedRows >= 0)
+        require(firstRollupRows >= 0)
+        require(secondRollupRows >= 0)
+        require(firstRollupDigest.isNotBlank())
+        require(secondRollupDigest.isNotBlank())
+    }
+
+    val isHealthy: Boolean
+        get() = eligibleRows == accountedRows &&
+            firstRollupRows == secondRollupRows &&
+            firstRollupDigest == secondRollupDigest &&
+            integrity.isHealthy
+}
+
+@Serializable
+data class ImmersionMergeEntityCounts(
+    val titles: Long,
+    val sessions: Long,
+    val events: Long,
+    val sourceUnits: Long,
+    val words: Long,
+    val characters: Long,
+    val lookups: Long,
+    val ankiOperations: Long,
+    val goals: Long,
+) {
+    init {
+        require(titles >= 0)
+        require(sessions >= 0)
+        require(events >= 0)
+        require(sourceUnits >= 0)
+        require(words >= 0)
+        require(characters >= 0)
+        require(lookups >= 0)
+        require(ankiOperations >= 0)
+        require(goals >= 0)
     }
 }
 

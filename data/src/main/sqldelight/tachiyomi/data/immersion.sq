@@ -701,6 +701,53 @@ CREATE TABLE immersion_merge_conflict(
 CREATE INDEX immersion_merge_conflict_time_index
 ON immersion_merge_conflict(detected_at DESC, table_name, identity_key);
 
+CREATE TABLE immersion_portable_merge_checkpoint(
+    archive_digest TEXT NOT NULL PRIMARY KEY,
+    protocol_version INTEGER NOT NULL,
+    archive_created_at INTEGER NOT NULL,
+    archive_format_version INTEGER NOT NULL,
+    archive_schema_version INTEGER NOT NULL,
+    includes_raw_text INTEGER NOT NULL,
+    stage TEXT NOT NULL,
+    table_ordinal INTEGER NOT NULL DEFAULT 0,
+    next_row_offset INTEGER NOT NULL DEFAULT 0,
+    eligible_row_count INTEGER NOT NULL,
+    inserted_rows INTEGER NOT NULL DEFAULT 0,
+    unchanged_rows INTEGER NOT NULL DEFAULT 0,
+    skipped_by_tombstone_rows INTEGER NOT NULL DEFAULT 0,
+    quarantined_conflicts INTEGER NOT NULL DEFAULT 0,
+    rebuilt_rollup_rows INTEGER NOT NULL DEFAULT 0,
+    verification_json TEXT,
+    last_error_code TEXT,
+    started_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    completed_at INTEGER,
+    CHECK(protocol_version > 0),
+    CHECK(archive_format_version > 0),
+    CHECK(archive_schema_version > 0),
+    CHECK(includes_raw_text IN (0, 1)),
+    CHECK(stage IN (
+        'TOMBSTONES',
+        'TABLES',
+        'FINALIZE',
+        'SEARCH',
+        'ROLLUP_VALIDATE',
+        'VALIDATION_FAILED',
+        'COMPLETE'
+    )),
+    CHECK(table_ordinal >= 0),
+    CHECK(next_row_offset >= 0),
+    CHECK(eligible_row_count >= 0),
+    CHECK(inserted_rows >= 0),
+    CHECK(unchanged_rows >= 0),
+    CHECK(skipped_by_tombstone_rows >= 0),
+    CHECK(quarantined_conflicts >= 0),
+    CHECK(rebuilt_rollup_rows >= 0)
+);
+
+CREATE INDEX immersion_portable_merge_checkpoint_time_index
+ON immersion_portable_merge_checkpoint(updated_at DESC, archive_digest);
+
 resolveImmersionMergeConflictsKeepingLocal:
 UPDATE immersion_merge_conflict
 SET resolution_state = 'RESOLVED_KEEP_LOCAL'
@@ -1984,6 +2031,9 @@ DELETE FROM immersion_lifetime_rollup;
 
 clearImmersionAppliedEvents:
 DELETE FROM immersion_applied_event;
+
+clearImmersionRollupDirty:
+DELETE FROM immersion_rollup_dirty;
 
 updateImmersionRepairState:
 UPDATE immersion_rollup_state

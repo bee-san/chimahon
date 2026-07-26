@@ -484,6 +484,9 @@ class BackupRestorer(
             archive = archive,
             mergedAtEpochMillis = System.currentTimeMillis(),
         )
+        check(report.verification.isHealthy) {
+            context.stringResource(KMR.strings.stats_restore_verification_failed)
+        }
         if (report.quarantinedConflicts > 0) {
             errors += Date() to context.stringResource(
                 KMR.strings.stats_backup_conflicts,

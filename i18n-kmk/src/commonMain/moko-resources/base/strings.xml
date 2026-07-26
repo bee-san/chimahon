@@ -569,6 +569,7 @@
     <string name="stats_backup_conflicts">%1$d conflicting immersion-statistics rows were quarantined for review.</string>
     <string name="stats_merge_conflicts">Keep local values for merge conflicts</string>
     <string name="stats_restore_low_space">Immersion-statistics restore needs at least %1$s of free app storage.</string>
+    <string name="stats_restore_verification_failed">Immersion-statistics restore did not pass its integrity checks.</string>
     <string name="stats_maintenance_title">Stats data and privacy</string>
     <string name="stats_storage_summary">Storage summary</string>
     <string name="stats_storage_summary_value">%1$s database · %2$s sessions · %3$s events · %4$s source units</string>
