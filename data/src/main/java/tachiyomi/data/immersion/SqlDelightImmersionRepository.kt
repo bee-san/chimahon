@@ -98,6 +98,7 @@ import tachiyomi.domain.immersion.model.LegacyImportResultState
 import tachiyomi.domain.immersion.model.LocalDateRange
 import tachiyomi.domain.immersion.model.LookupEvent
 import tachiyomi.domain.immersion.model.LookupStatus
+import tachiyomi.domain.immersion.model.MAX_RECORDED_IMMERSION_EVENT_ACTIVE_DURATION_MILLIS
 import tachiyomi.domain.immersion.model.MaturityTier
 import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.MillisecondDuration
@@ -165,8 +166,6 @@ class SqlDelightImmersionRepository(
     ImmersionAnkiRepository,
     ImmersionLegacyImportRepository {
 
-    private val portableMergeMutex = Mutex()
-
     init {
         require(portableMergeLifetimePageSize > 0)
     }
@@ -222,13 +221,16 @@ class SqlDelightImmersionRepository(
             upsertSourceInDatabase(source)
         }
 
-    override suspend fun appendExposure(event: ExposureEvent): PersistenceResult =
-        handler.await(inTransaction = true) {
+    override suspend fun appendExposure(event: ExposureEvent): PersistenceResult {
+        event.requireSupportedActiveDuration()
+        return handler.await(inTransaction = true) {
             appendExposureInDatabase(event)
         }
+    }
 
     override suspend fun appendExposureBatch(events: List<ExposureEvent>): List<PersistenceResult> {
         if (events.isEmpty()) return emptyList()
+        events.forEach(RecordedImmersionEvent::requireSupportedActiveDuration)
         return handler.await(inTransaction = true) {
             events.map { appendExposureInDatabase(it) }
         }
@@ -236,6 +238,7 @@ class SqlDelightImmersionRepository(
 
     override suspend fun appendEventBatch(events: List<RecordedImmersionEvent>): List<PersistenceResult> {
         if (events.isEmpty()) return emptyList()
+        events.forEach(RecordedImmersionEvent::requireSupportedActiveDuration)
         return handler.await(inTransaction = true) {
             events.map { event ->
                 when (event) {
@@ -1704,8 +1707,10 @@ class SqlDelightImmersionRepository(
     ): ImmersionRollupRebuildResult {
         require(rollupVersion > 0)
         require(nowEpochMillis >= 0)
-        return handler.await(inTransaction = true) {
-            rebuildRollupsInDatabase(range, rollupVersion, nowEpochMillis)
+        return IMMERSION_ROLLUP_MUTATION_MUTEX.withLock {
+            handler.await(inTransaction = true) {
+                rebuildRollupsInDatabase(range, rollupVersion, nowEpochMillis)
+            }
         }
     }
 
@@ -1907,7 +1912,11 @@ class SqlDelightImmersionRepository(
         foreignKeyViolations: Long,
     ): ImmersionIntegrityReport {
         val row = immersionQueries
-            .selectImmersionIntegrityReport(expectedRollupVersion.toLong())
+            .selectImmersionIntegrityReport(
+                expectedRollupVersion = expectedRollupVersion.toLong(),
+                maxEventActiveDurationMillis =
+                MAX_RECORDED_IMMERSION_EVENT_ACTIVE_DURATION_MILLIS,
+            )
             .executeAsOne()
         return mapCorruption("immersion integrity report") {
             ImmersionIntegrityReport(
@@ -1922,6 +1931,7 @@ class SqlDelightImmersionRepository(
                 rollupSessionMismatches = NonNegativeCounter(row.rollup_session_mismatches),
                 dirtyRollupRanges = NonNegativeCounter(row.dirty_rollup_ranges),
                 repairInProgress = NonNegativeCounter(row.repair_in_progress),
+                overLimitEventDurations = NonNegativeCounter(row.over_limit_event_durations),
             )
         }
     }
@@ -2274,12 +2284,14 @@ class SqlDelightImmersionRepository(
     ) {
         require(rollupVersion > 0) { "Rollup version must be positive" }
         require(updatedAtEpochMillis >= 0) { "Repair timestamp cannot be negative" }
-        handler.await(inTransaction = true) {
-            beginRollupRebuildInDatabase(
-                rollupVersion = rollupVersion,
-                repairCursor = repairCursor,
-                updatedAtEpochMillis = updatedAtEpochMillis,
-            )
+        IMMERSION_ROLLUP_MUTATION_MUTEX.withLock {
+            handler.await(inTransaction = true) {
+                beginRollupRebuildInDatabase(
+                    rollupVersion = rollupVersion,
+                    repairCursor = repairCursor,
+                    updatedAtEpochMillis = updatedAtEpochMillis,
+                )
+            }
         }
     }
 
@@ -2307,7 +2319,7 @@ class SqlDelightImmersionRepository(
         archive: ImmersionPortableArchive,
         mergedAtEpochMillis: Long,
     ): ImmersionMergeReport {
-        return portableMergeMutex.withLock {
+        return IMMERSION_ROLLUP_MUTATION_MUTEX.withLock {
             require(mergedAtEpochMillis >= 0)
             require(archive.formatVersion <= IMMERSION_PORTABLE_FORMAT_VERSION) {
                 "Immersion backup format ${archive.formatVersion} is newer than supported " +
@@ -2734,7 +2746,15 @@ class SqlDelightImmersionRepository(
         val progress = checkpoint.decodePortableRollupProgressOrNull()
         if (progress == null) {
             val firstPass = if (pass == PORTABLE_ROLLUP_SECOND_PASS) {
-                checkpoint.decodePortableRollupFirstPass()
+                runCatching {
+                    checkpoint.decodePortableRollupFirstPass()
+                }.getOrElse {
+                    return restartPortableRollupValidation(
+                        rawHandler = rawHandler,
+                        checkpoint = checkpoint,
+                        mergedAtEpochMillis = mergedAtEpochMillis,
+                    )
+                }
             } else {
                 null
             }
@@ -2761,29 +2781,37 @@ class SqlDelightImmersionRepository(
             "Portable rollup pass ${progress.pass} cannot resume as pass $pass"
         }
 
-        progress.nextChunk()?.let { chunk ->
-            return rebuildPortableRollupChunk(
+        return try {
+            progress.nextChunk()?.let { chunk ->
+                return rebuildPortableRollupChunk(
+                    rawHandler = rawHandler,
+                    checkpoint = checkpoint,
+                    progress = progress,
+                    chunk = chunk,
+                    mergedAtEpochMillis = mergedAtEpochMillis,
+                )
+            }
+            if (!progress.lifetimeComplete) {
+                return fingerprintPortableLifetimeRollupPage(
+                    rawHandler = rawHandler,
+                    checkpoint = checkpoint,
+                    progress = progress,
+                    mergedAtEpochMillis = mergedAtEpochMillis,
+                )
+            }
+            completePortableRollupPass(
                 rawHandler = rawHandler,
                 checkpoint = checkpoint,
                 progress = progress,
-                chunk = chunk,
                 mergedAtEpochMillis = mergedAtEpochMillis,
             )
-        }
-        if (!progress.lifetimeComplete) {
-            return fingerprintPortableLifetimeRollupPage(
+        } catch (_: PortableRollupRevisionChangedException) {
+            restartPortableRollupValidation(
                 rawHandler = rawHandler,
                 checkpoint = checkpoint,
-                progress = progress,
                 mergedAtEpochMillis = mergedAtEpochMillis,
             )
         }
-        return completePortableRollupPass(
-            rawHandler = rawHandler,
-            checkpoint = checkpoint,
-            progress = progress,
-            mergedAtEpochMillis = mergedAtEpochMillis,
-        )
     }
 
     private suspend fun restartPortableRollupValidation(
@@ -2843,6 +2871,7 @@ class SqlDelightImmersionRepository(
             val progress = PortableRollupPassProgress.initial(
                 pass = pass,
                 range = range,
+                databaseRevision = immersionQueries.selectImmersionRevision().executeAsOne(),
                 firstPass = firstPass,
             )
             val updated = latest.copy(
@@ -2887,6 +2916,9 @@ class SqlDelightImmersionRepository(
             if (!latest.matchesRollupCheckpoint(checkpoint)) {
                 return@await PortableRollupStepResult(latest)
             }
+            progress.requireDatabaseRevision(
+                immersionQueries.selectImmersionRevision().executeAsOne(),
+            )
             val rebuilt = rebuildRollupsInDatabase(
                 range = chunk,
                 rollupVersion = ImmersionStatsVersions.ROLLUP,
@@ -2954,6 +2986,7 @@ class SqlDelightImmersionRepository(
             if (!latest.matchesRollupCheckpoint(checkpoint)) {
                 return@awaitRawDriver PortableRollupStepResult(latest)
             }
+            progress.requireDatabaseRevision(driver.immersionRevision())
             val page = driver.immersionLifetimeRollupFingerprintPage(
                 afterScopeKey = progress.lifetimeCursor,
                 limit = portableMergeLifetimePageSize,
@@ -3004,6 +3037,9 @@ class SqlDelightImmersionRepository(
             if (!latest.matchesRollupCheckpoint(checkpoint)) {
                 return@await PortableRollupStepResult(latest)
             }
+            progress.requireDatabaseRevision(
+                immersionQueries.selectImmersionRevision().executeAsOne(),
+            )
             immersionQueries.updateImmersionRepairState(
                 rollupVersion = ImmersionStatsVersions.ROLLUP.toLong(),
                 repairCursor = null,
@@ -3557,7 +3593,9 @@ class SqlDelightImmersionRepository(
 
     private fun Database.immersionRollupRebuildRange(): LocalDateRange? {
         val bounds = immersionQueries
-            .selectImmersionRollupRebuildBounds()
+            .selectImmersionRollupRebuildBounds(
+                MAX_RECORDED_IMMERSION_EVENT_ACTIVE_DURATION_MILLIS,
+            )
             .executeAsOne()
         return bounds.first_date?.let { first ->
             LocalDateRange(
@@ -3621,14 +3659,20 @@ class SqlDelightImmersionRepository(
         completeRepair: Boolean = true,
     ): ImmersionRollupRebuildResult {
         val calendar = ImmersionAnalyticsCalendar()
+        // Event durations end at occurred_at and span backwards. The supported
+        // duration cap keeps this occurred_at query window index-bounded; normal
+        // appends enforce the cap and integrity rejects older/imported violations.
         val fromEpochMillis = (
             Math.multiplyExact(range.start.epochDay, MILLIS_PER_DAY) -
-                MAX_ROLLUP_EVENT_DURATION_MILLIS -
+                MAX_RECORDED_IMMERSION_EVENT_ACTIVE_DURATION_MILLIS -
                 MAX_ZONE_OFFSET_MILLIS
             ).coerceAtLeast(0)
         val untilEpochMillis = Math.addExact(
-            Math.multiplyExact(Math.addExact(range.endInclusive.epochDay, 1), MILLIS_PER_DAY),
-            MAX_ZONE_OFFSET_MILLIS,
+            Math.addExact(
+                Math.multiplyExact(Math.addExact(range.endInclusive.epochDay, 1), MILLIS_PER_DAY),
+                MAX_ZONE_OFFSET_MILLIS,
+            ),
+            MAX_RECORDED_IMMERSION_EVENT_ACTIVE_DURATION_MILLIS,
         )
         val aggregates = linkedMapOf<RollupKey, MutableRollup>()
 
@@ -3695,7 +3739,12 @@ class SqlDelightImmersionRepository(
         }
 
         val events = immersionQueries
-            .selectImmersionRollupEvents(fromEpochMillis, untilEpochMillis)
+            .selectImmersionRollupEvents(
+                fromEpochMillis = fromEpochMillis,
+                untilEpochMillis = untilEpochMillis,
+                maxEventActiveDurationMillis =
+                MAX_RECORDED_IMMERSION_EVENT_ACTIVE_DURATION_MILLIS,
+            )
             .executeAsList()
         events.forEach { event ->
             val eventDate = calendar.localDate(
@@ -5061,6 +5110,12 @@ private fun ExposureEvent.payloadHash(): String {
         .joinToString("") { "%02x".format(it) }
 }
 
+private fun RecordedImmersionEvent.requireSupportedActiveDuration() {
+    require(activeDuration.value <= MAX_RECORDED_IMMERSION_EVENT_ACTIVE_DURATION_MILLIS) {
+        "Event active duration exceeds the supported maximum"
+    }
+}
+
 private fun SessionEvent.payloadHash(): String {
     val output = ByteArrayOutputStream()
     output.writeField(id.value)
@@ -5410,6 +5465,7 @@ private data class PortableRollupFirstPassEvidence(
 private data class PortableRollupPassProgress(
     val formatVersion: Int,
     val pass: Int,
+    val databaseRevision: Long,
     val startEpochDay: Long?,
     val endEpochDay: Long?,
     val nextEpochDay: Long?,
@@ -5426,6 +5482,7 @@ private data class PortableRollupPassProgress(
     init {
         require(formatVersion == PORTABLE_ROLLUP_PROGRESS_FORMAT_VERSION)
         require(pass == PORTABLE_ROLLUP_FIRST_PASS || pass == PORTABLE_ROLLUP_SECOND_PASS)
+        require(databaseRevision >= 0)
         require((startEpochDay == null) == (endEpochDay == null))
         require((startEpochDay == null) == (nextEpochDay == null))
         if (startEpochDay != null) {
@@ -5455,6 +5512,12 @@ private data class PortableRollupPassProgress(
             start = ImmersionLocalDate(next),
             endInclusive = ImmersionLocalDate(chunkEnd),
         )
+    }
+
+    fun requireDatabaseRevision(actualRevision: Long) {
+        if (actualRevision != databaseRevision) {
+            throw PortableRollupRevisionChangedException()
+        }
     }
 
     fun advance(
@@ -5515,6 +5578,7 @@ private data class PortableRollupPassProgress(
         fun initial(
             pass: Int,
             range: LocalDateRange?,
+            databaseRevision: Long,
             firstPass: PortableRollupFirstPassEvidence?,
         ): PortableRollupPassProgress {
             val output = ByteArrayOutputStream()
@@ -5523,6 +5587,7 @@ private data class PortableRollupPassProgress(
             return PortableRollupPassProgress(
                 formatVersion = PORTABLE_ROLLUP_PROGRESS_FORMAT_VERSION,
                 pass = pass,
+                databaseRevision = databaseRevision,
                 startEpochDay = range?.start?.epochDay,
                 endEpochDay = range?.endInclusive?.epochDay,
                 nextEpochDay = range?.start?.epochDay,
@@ -5535,6 +5600,8 @@ private data class PortableRollupPassProgress(
         }
     }
 }
+
+private class PortableRollupRevisionChangedException : IllegalStateException()
 
 private data class PortableContentFingerprint(
     val rowCount: Long,
@@ -6018,6 +6085,15 @@ private fun SqlDriver.immersionForeignKeyViolationCount(): Long =
         },
         parameters = 0,
     ).value
+
+private fun SqlDriver.immersionRevision(): Long =
+    singleLong(
+        """
+        SELECT revision
+        FROM immersion_rollup_state
+        WHERE scope_key = 'global'
+        """.trimIndent(),
+    )
 
 private fun ImmersionPortableArchive.withoutUnlinkedAnkiOperations(): ImmersionPortableArchive =
     copy(
@@ -6835,7 +6911,7 @@ private const val IMMERSION_ROLLUP_SECOND_PASS_LIFETIME_CHECKPOINT =
     "immersion_rollup_second_pass_lifetime"
 private const val PORTABLE_ROLLUP_FIRST_PASS = 1
 private const val PORTABLE_ROLLUP_SECOND_PASS = 2
-private const val PORTABLE_ROLLUP_PROGRESS_FORMAT_VERSION = 1
+private const val PORTABLE_ROLLUP_PROGRESS_FORMAT_VERSION = 2
 private const val PORTABLE_ROLLUP_FINGERPRINT_VERSION = 2
 private const val PORTABLE_ROLLUP_CHUNK_DAYS = 31L
 private const val PORTABLE_ROLLUP_LIFETIME_PAGE_SIZE = 256
@@ -6845,11 +6921,12 @@ private const val IMMERSION_TITLE_EXCLUSION_TYPE = "TITLE"
 private const val IMMERSION_CAPTURE_EXCLUSION_SCOPE = "capture"
 private const val MILLIS_PER_DAY = 86_400_000L
 private const val MAX_ZONE_OFFSET_MILLIS = 18L * 60L * 60L * 1_000L
-private const val MAX_ROLLUP_EVENT_DURATION_MILLIS = 7L * MILLIS_PER_DAY
 private const val UTF8 = "UTF-8"
 private const val MIN_TIMEZONE_OFFSET_SECONDS = -18 * 60 * 60
 private const val MAX_TIMEZONE_OFFSET_SECONDS = 18 * 60 * 60
 private const val ANKI_REPAIR_EVENT_NAMESPACE = "chimahon-immersion-anki-repair-event"
+
+private val IMMERSION_ROLLUP_MUTATION_MUTEX = Mutex()
 
 private val IMMERSION_PORTABLE_TABLES = listOf(
     "immersion_title",

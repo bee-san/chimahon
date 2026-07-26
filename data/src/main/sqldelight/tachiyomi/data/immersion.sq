@@ -2149,6 +2149,11 @@ SELECT
         FROM immersion_lifetime_rollup
         WHERE rollup_version != :expectedRollupVersion
     ) AS rollup_version_mismatches,
+    (
+        SELECT count(*)
+        FROM immersion_event
+        WHERE active_duration_delta_ms > :maxEventActiveDurationMillis
+    ) AS over_limit_event_durations,
     CASE
         WHEN (
             SELECT count(*)
@@ -2782,6 +2787,7 @@ LEFT JOIN immersion_source_exposure AS exposure ON exposure.event_id = event.id
 WHERE
     event.occurred_at >= :fromEpochMillis
     AND event.occurred_at < :untilEpochMillis
+    AND event.active_duration_delta_ms <= :maxEventActiveDurationMillis
     AND session.status != 'DELETED'
 ORDER BY event.occurred_at, event.id;
 
@@ -2801,7 +2807,11 @@ WITH rollup_instants(epoch_millis, offset_seconds, local_date_override) AS (
     WHERE session.status != 'DELETED'
     UNION ALL
     SELECT
-        max(0, event.occurred_at - event.active_duration_delta_ms),
+        max(
+            0,
+            event.occurred_at -
+                min(event.active_duration_delta_ms, :maxEventActiveDurationMillis)
+        ),
         event.timezone_offset_seconds,
         NULL
     FROM immersion_event AS event
