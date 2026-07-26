@@ -85,6 +85,9 @@ class StatsMaintenanceScreenModel(
                 StatsExportKind.HEALTH_PARITY_JSON -> statsHealthParityDocument(
                     diagnostics = diagnostics.state.value,
                     rollupBacklogRangeCount = maintenance.rollupBacklogCount(),
+                    rollupBacklogEventCount = maintenance.rollupBacklogEventCount(
+                        ImmersionStatsVersions.ROLLUP,
+                    ),
                     novelReport = NovelCaptureReconciliationReporter.report.value,
                     mangaReport = MangaCaptureReconciliationReporter.report.value,
                 )

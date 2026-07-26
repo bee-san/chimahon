@@ -1059,21 +1059,22 @@ private class BoundedNovelCommandQueue<T : Any>(
         command: T,
         policy: NovelCommandQueuePolicy,
     ): NovelCommandOfferResult {
-        lock.withLock {
-            if (!accepting || closed) return NovelCommandOfferResult.CLOSED
+        var diagnostic: ImmersionAdapterDiagnosticKind? = null
+        val result = lock.withLock {
+            if (!accepting || closed) return@withLock NovelCommandOfferResult.CLOSED
             if (coalesce(command, policy)) {
                 coalescedCommands += 1
                 publishDiagnostics()
                 signalWorker()
-                return NovelCommandOfferResult.COALESCED
+                return@withLock NovelCommandOfferResult.COALESCED
             }
 
             if (pending.size >= capacity && policy is NovelCommandQueuePolicy.LatestSnapshot) {
                 if (!evictOldestSnapshot()) {
                     droppedSnapshots += 1
-                    onDiagnostic(ImmersionAdapterDiagnosticKind.SNAPSHOT_DROPPED)
+                    diagnostic = ImmersionAdapterDiagnosticKind.SNAPSHOT_DROPPED
                     publishDiagnostics()
-                    return NovelCommandOfferResult.SNAPSHOT_DROPPED
+                    return@withLock NovelCommandOfferResult.SNAPSHOT_DROPPED
                 }
             }
 
@@ -1088,15 +1089,15 @@ private class BoundedNovelCommandQueue<T : Any>(
             if (pending.size >= capacity || overflow.isNotEmpty()) {
                 if (policy is NovelCommandQueuePolicy.LatestSnapshot) {
                     droppedSnapshots += 1
-                    onDiagnostic(ImmersionAdapterDiagnosticKind.SNAPSHOT_DROPPED)
+                    diagnostic = ImmersionAdapterDiagnosticKind.SNAPSHOT_DROPPED
                     publishDiagnostics()
-                    return NovelCommandOfferResult.SNAPSHOT_DROPPED
+                    return@withLock NovelCommandOfferResult.SNAPSHOT_DROPPED
                 }
                 if (overflow.size >= overflowCapacity) {
                     droppedSemanticCommands += 1
-                    onDiagnostic(ImmersionAdapterDiagnosticKind.SEMANTIC_COMMAND_DROPPED)
+                    diagnostic = ImmersionAdapterDiagnosticKind.SEMANTIC_COMMAND_DROPPED
                     publishDiagnostics()
-                    return NovelCommandOfferResult.SEMANTIC_DROPPED
+                    return@withLock NovelCommandOfferResult.SEMANTIC_DROPPED
                 }
                 val generation = ++semanticGeneration
                 overflow.addLast(QueueEntry(command, policy, generation))
@@ -1104,7 +1105,7 @@ private class BoundedNovelCommandQueue<T : Any>(
                 highWatermark = maxOf(highWatermark, pending.size + overflow.size)
                 publishDiagnostics()
                 signalWorker()
-                return NovelCommandOfferResult.SEMANTIC_OVERFLOW
+                return@withLock NovelCommandOfferResult.SEMANTIC_OVERFLOW
             }
 
             val generation = if (policy is NovelCommandQueuePolicy.LatestSnapshot) {
@@ -1116,8 +1117,10 @@ private class BoundedNovelCommandQueue<T : Any>(
             highWatermark = maxOf(highWatermark, pending.size + overflow.size)
             publishDiagnostics()
             signalWorker()
-            return NovelCommandOfferResult.ACCEPTED
+            NovelCommandOfferResult.ACCEPTED
         }
+        diagnostic?.let(onDiagnostic)
+        return result
     }
 
     fun finish(command: T): Boolean = lock.withLock {
@@ -1167,9 +1170,9 @@ private class BoundedNovelCommandQueue<T : Any>(
     fun recordWorkerFailure() {
         lock.withLock {
             workerFailures += 1
-            onDiagnostic(ImmersionAdapterDiagnosticKind.WORKER_FAILURE)
             publishDiagnostics()
         }
+        onDiagnostic(ImmersionAdapterDiagnosticKind.WORKER_FAILURE)
     }
 
     private fun coalesce(

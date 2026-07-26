@@ -2611,6 +2611,30 @@ class SqlDelightImmersionRepositoryTest {
     }
 
     @Test
+    fun `rollup backlog reports unapplied events separately from dirty ranges`() = runTest {
+        prepareSession()
+        repository.appendExposure(exposure(sequence = 1, eventNumber = 2))
+        repository.finalizeSession(
+            sessionId = SESSION_ID,
+            status = SessionStatus.COMPLETED,
+            endedAtEpochMillis = 2_000,
+            elapsedDuration = MillisecondDuration(1_000),
+        )
+
+        repository.rollupBacklogEventCount(expectedRollupVersion = 2) shouldBe 1
+
+        val date = ImmersionLocalDate(0)
+        repository.rebuildRollups(
+            range = LocalDateRange(date, date),
+            rollupVersion = 2,
+            nowEpochMillis = 3_000,
+        )
+
+        repository.rollupBacklogEventCount(expectedRollupVersion = 2) shouldBe 0
+        repository.rollupBacklogCount() shouldBe 0
+    }
+
+    @Test
     fun `rollup rebuild splits midnight and serves deterministic analytics pages`() = runTest {
         val midnight = Instant.parse("2026-07-02T00:00:00Z").toEpochMilli()
         val range = LocalDateRange(

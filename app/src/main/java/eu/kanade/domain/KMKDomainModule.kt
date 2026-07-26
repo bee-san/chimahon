@@ -84,6 +84,7 @@ class KMKDomainModule : InjektModule {
                 handler = get(),
                 onAllStatsReset = {
                     get<PreferenceAnkiOperationRepairStore>().clear()
+                    get<ImmersionStatsDiagnosticsStore>().clear()
                 },
                 onSessionDeleted = { sessionId ->
                     get<PreferenceAnkiOperationRepairStore>().removeForSession(sessionId)

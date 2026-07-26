@@ -298,7 +298,9 @@ class MangaCaptureAdapter(
     )
     private val mangaId = captureTitle.mangaId
     private val commands = BoundedCaptureCommandQueue<AdapterCommand> { kind ->
-        diagnostics?.recordAdapterDiagnostic(ImmersionCaptureAdapter.MANGA, kind)
+        if (!incognito) {
+            diagnostics?.recordAdapterDiagnostic(ImmersionCaptureAdapter.MANGA, kind)
+        }
     }
     private val mutableCoverage = MutableStateFlow(MangaOcrCoverageSnapshot())
     private val activeLookupSources = AtomicReference(ActiveLookupSources())
@@ -838,21 +840,22 @@ internal class BoundedCaptureCommandQueue<T : Any>(
         command: T,
         policy: CaptureCommandQueuePolicy,
     ): CaptureCommandOfferResult {
-        lock.withLock {
-            if (!accepting || closed) return CaptureCommandOfferResult.CLOSED
+        var diagnostic: ImmersionAdapterDiagnosticKind? = null
+        val result = lock.withLock {
+            if (!accepting || closed) return@withLock CaptureCommandOfferResult.CLOSED
             if (coalesce(command, policy)) {
                 coalescedCommands += 1
                 publishDiagnostics()
                 signalWorker()
-                return CaptureCommandOfferResult.COALESCED
+                return@withLock CaptureCommandOfferResult.COALESCED
             }
 
             if (pending.size >= capacity && policy is CaptureCommandQueuePolicy.LatestSnapshot) {
                 if (!evictOldestSnapshot()) {
                     droppedSnapshots += 1
-                    onDiagnostic(ImmersionAdapterDiagnosticKind.SNAPSHOT_DROPPED)
+                    diagnostic = ImmersionAdapterDiagnosticKind.SNAPSHOT_DROPPED
                     publishDiagnostics()
-                    return CaptureCommandOfferResult.SNAPSHOT_DROPPED
+                    return@withLock CaptureCommandOfferResult.SNAPSHOT_DROPPED
                 }
             }
 
@@ -867,15 +870,15 @@ internal class BoundedCaptureCommandQueue<T : Any>(
             if (pending.size >= capacity || overflow.isNotEmpty()) {
                 if (policy is CaptureCommandQueuePolicy.LatestSnapshot) {
                     droppedSnapshots += 1
-                    onDiagnostic(ImmersionAdapterDiagnosticKind.SNAPSHOT_DROPPED)
+                    diagnostic = ImmersionAdapterDiagnosticKind.SNAPSHOT_DROPPED
                     publishDiagnostics()
-                    return CaptureCommandOfferResult.SNAPSHOT_DROPPED
+                    return@withLock CaptureCommandOfferResult.SNAPSHOT_DROPPED
                 }
                 if (overflow.size >= overflowCapacity) {
                     droppedSemanticCommands += 1
-                    onDiagnostic(ImmersionAdapterDiagnosticKind.SEMANTIC_COMMAND_DROPPED)
+                    diagnostic = ImmersionAdapterDiagnosticKind.SEMANTIC_COMMAND_DROPPED
                     publishDiagnostics()
-                    return CaptureCommandOfferResult.SEMANTIC_DROPPED
+                    return@withLock CaptureCommandOfferResult.SEMANTIC_DROPPED
                 }
                 val generation = ++semanticGeneration
                 overflow.addLast(QueueEntry(command, policy, generation))
@@ -883,7 +886,7 @@ internal class BoundedCaptureCommandQueue<T : Any>(
                 highWatermark = maxOf(highWatermark, pending.size + overflow.size)
                 publishDiagnostics()
                 signalWorker()
-                return CaptureCommandOfferResult.SEMANTIC_OVERFLOW
+                return@withLock CaptureCommandOfferResult.SEMANTIC_OVERFLOW
             }
 
             val generation = if (policy is CaptureCommandQueuePolicy.LatestSnapshot) {
@@ -895,8 +898,10 @@ internal class BoundedCaptureCommandQueue<T : Any>(
             highWatermark = maxOf(highWatermark, pending.size + overflow.size)
             publishDiagnostics()
             signalWorker()
-            return CaptureCommandOfferResult.ACCEPTED
+            CaptureCommandOfferResult.ACCEPTED
         }
+        diagnostic?.let(onDiagnostic)
+        return result
     }
 
     fun finish(command: T): Boolean = lock.withLock {
@@ -946,9 +951,9 @@ internal class BoundedCaptureCommandQueue<T : Any>(
     fun recordWorkerFailure() {
         lock.withLock {
             workerFailures += 1
-            onDiagnostic(ImmersionAdapterDiagnosticKind.WORKER_FAILURE)
             publishDiagnostics()
         }
+        onDiagnostic(ImmersionAdapterDiagnosticKind.WORKER_FAILURE)
     }
 
     private fun coalesce(

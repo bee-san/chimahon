@@ -261,6 +261,8 @@ interface ImmersionMaintenanceRepository {
 
     suspend fun rollupBacklogCount(): Long
 
+    suspend fun rollupBacklogEventCount(expectedRollupVersion: Int): Long
+
     suspend fun previewAllStatsDeletion(): ImmersionDeletionPreview
 
     suspend fun resetAllStats(

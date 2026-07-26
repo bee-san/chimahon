@@ -31,6 +31,7 @@ class StatsHealthParityExportTest {
         val export = statsHealthParityExport(
             diagnostics = diagnostics(),
             rollupBacklogRangeCount = 7,
+            rollupBacklogEventCount = 11,
             novelReport = novelReport(),
             mangaReport = mangaReport(),
             createdAtEpochMillis = 123,
@@ -40,6 +41,8 @@ class StatsHealthParityExportTest {
             StatsParityAggregateExport(
                 media = StatsParityMedia.NOVEL,
                 scope = StatsParityScope.SESSION,
+                observations = 2,
+                evidenceAvailable = true,
                 matched = 1,
                 diverged = 1,
                 nonComparable = 0,
@@ -47,6 +50,8 @@ class StatsHealthParityExportTest {
             StatsParityAggregateExport(
                 media = StatsParityMedia.NOVEL,
                 scope = StatsParityScope.DAY,
+                observations = 1,
+                evidenceAvailable = true,
                 matched = 0,
                 diverged = 0,
                 nonComparable = 1,
@@ -54,6 +59,8 @@ class StatsHealthParityExportTest {
             StatsParityAggregateExport(
                 media = StatsParityMedia.MANGA,
                 scope = StatsParityScope.SESSION,
+                observations = 1,
+                evidenceAvailable = true,
                 matched = 0,
                 diverged = 0,
                 nonComparable = 1,
@@ -61,7 +68,27 @@ class StatsHealthParityExportTest {
             StatsParityAggregateExport(
                 media = StatsParityMedia.MANGA,
                 scope = StatsParityScope.DAY,
+                observations = 1,
+                evidenceAvailable = true,
                 matched = 1,
+                diverged = 0,
+                nonComparable = 0,
+            ),
+            StatsParityAggregateExport(
+                media = StatsParityMedia.VIDEO,
+                scope = StatsParityScope.SESSION,
+                observations = 0,
+                evidenceAvailable = false,
+                matched = 0,
+                diverged = 0,
+                nonComparable = 0,
+            ),
+            StatsParityAggregateExport(
+                media = StatsParityMedia.VIDEO,
+                scope = StatsParityScope.DAY,
+                observations = 0,
+                evidenceAvailable = false,
+                matched = 0,
                 diverged = 0,
                 nonComparable = 0,
             ),
@@ -69,6 +96,7 @@ class StatsHealthParityExportTest {
         export.diagnostics.droppedCommandCount shouldBe 2
         export.diagnostics.lastWriteErrorCode shouldBe "DATABASE_BUSY"
         export.diagnostics.rollupBacklogRangeCount shouldBe 7
+        export.diagnostics.rollupBacklogEventCount shouldBe 11
         export.diagnostics.adapters shouldContainExactly listOf(
             StatsAdapterDiagnosticsExport(
                 adapter = StatsCaptureAdapter.NOVEL,
@@ -110,6 +138,7 @@ class StatsHealthParityExportTest {
     private fun healthDocument() = statsHealthParityDocument(
         diagnostics = diagnostics(),
         rollupBacklogRangeCount = 7,
+        rollupBacklogEventCount = 11,
         novelReport = novelReport(),
         mangaReport = mangaReport(),
         createdAtEpochMillis = 123,
