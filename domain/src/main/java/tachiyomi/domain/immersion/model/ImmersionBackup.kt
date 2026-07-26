@@ -124,6 +124,8 @@ data class ImmersionMergeVerification(
     val secondRollupDigest: String,
     val entityCounts: ImmersionMergeEntityCounts,
     val integrity: ImmersionIntegrityReport,
+    val evidenceVersion: Int = 0,
+    val databaseRevision: Long? = null,
 ) {
     init {
         require(archiveDigest.isNotBlank())
@@ -133,13 +135,21 @@ data class ImmersionMergeVerification(
         require(secondRollupRows >= 0)
         require(firstRollupDigest.isNotBlank())
         require(secondRollupDigest.isNotBlank())
+        require(evidenceVersion >= 0)
+        require(databaseRevision == null || databaseRevision >= 0)
     }
 
     val isHealthy: Boolean
-        get() = eligibleRows == accountedRows &&
+        get() = evidenceVersion == CURRENT_EVIDENCE_VERSION &&
+            databaseRevision != null &&
+            eligibleRows == accountedRows &&
             firstRollupRows == secondRollupRows &&
             firstRollupDigest == secondRollupDigest &&
-            integrity.isHealthy
+            integrity.isFullyHealthy
+
+    companion object {
+        const val CURRENT_EVIDENCE_VERSION = 2
+    }
 }
 
 @Serializable

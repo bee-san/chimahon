@@ -309,6 +309,11 @@ data class ImmersionIntegrityReport(
     val negativeCounters: NonNegativeCounter,
     val rollupVersionMismatches: NonNegativeCounter,
     val foreignKeyViolations: NonNegativeCounter = NonNegativeCounter.ZERO,
+    val rollupStateMismatches: NonNegativeCounter = NonNegativeCounter.ZERO,
+    val unappliedEvents: NonNegativeCounter = NonNegativeCounter.ZERO,
+    val rollupSessionMismatches: NonNegativeCounter = NonNegativeCounter.ZERO,
+    val dirtyRollupRanges: NonNegativeCounter = NonNegativeCounter.ZERO,
+    val repairInProgress: NonNegativeCounter = NonNegativeCounter.ZERO,
 ) {
     val isHealthy: Boolean
         get() = orphanedEvents == NonNegativeCounter.ZERO &&
@@ -316,7 +321,17 @@ data class ImmersionIntegrityReport(
             duplicateSessionSequences == NonNegativeCounter.ZERO &&
             negativeCounters == NonNegativeCounter.ZERO &&
             rollupVersionMismatches == NonNegativeCounter.ZERO &&
-            foreignKeyViolations == NonNegativeCounter.ZERO
+            foreignKeyViolations == NonNegativeCounter.ZERO &&
+            rollupStateMismatches == NonNegativeCounter.ZERO
+
+    val isRollupConsistent: Boolean
+        get() = unappliedEvents == NonNegativeCounter.ZERO &&
+            rollupSessionMismatches == NonNegativeCounter.ZERO &&
+            dirtyRollupRanges == NonNegativeCounter.ZERO &&
+            repairInProgress == NonNegativeCounter.ZERO
+
+    val isFullyHealthy: Boolean
+        get() = isHealthy && isRollupConsistent
 }
 
 @Serializable
