@@ -139,6 +139,7 @@ import tachiyomi.domain.history.repository.HistoryRepository
 import tachiyomi.domain.immersion.model.LanguageTag
 import tachiyomi.domain.immersion.service.ImmersionRecorder
 import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
+import tachiyomi.domain.immersion.service.InteractionProvenance
 import tachiyomi.domain.library.service.LibraryPreferences
 import tachiyomi.domain.manga.interactor.GetFlatMetadataById
 import tachiyomi.domain.manga.interactor.GetManga
@@ -966,6 +967,20 @@ class ReaderViewModel @JvmOverloads constructor(
             page = MangaPageKey(chapterId, page.index),
             availability = if (blocks.isEmpty()) MangaOcrAvailability.FAILED else MangaOcrAvailability.AVAILABLE,
             blocks = blocks.mapNotNull { it.toMangaCaptureBlock() },
+        )
+    }
+
+    fun mangaOcrLookupProvenance(
+        page: ReaderPage?,
+        block: eu.kanade.tachiyomi.ui.reader.viewer.OcrTextBlock?,
+        blockIndex: Int,
+    ): InteractionProvenance? {
+        val chapterId = page?.chapter?.chapter?.id ?: return null
+        val captureBlock = block?.toMangaCaptureBlock() ?: return null
+        return mangaCaptureAdapter?.lookupProvenance(
+            page = MangaPageKey(chapterId, page.index),
+            block = captureBlock,
+            blockIndex = blockIndex,
         )
     }
 

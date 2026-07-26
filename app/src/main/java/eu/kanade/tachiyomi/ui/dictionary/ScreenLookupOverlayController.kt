@@ -430,6 +430,7 @@ internal fun ScreenLookupOverlay(
                     onRequestSentenceAudio = onRequestSentenceAudio,
                     usePopup = false,
                     titleId = titleId,
+                    allowAmbientInteractionAttribution = false,
                     onTermMatched = { count, off ->
                         matchedCharCount = count
                         matchOffset = off

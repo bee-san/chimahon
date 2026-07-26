@@ -166,6 +166,7 @@ import tachiyomi.domain.immersion.model.LanguageTag
 import tachiyomi.domain.immersion.service.FinalizeReason
 import tachiyomi.domain.immersion.service.ImmersionRecorder
 import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
+import tachiyomi.domain.immersion.service.InteractionProvenance
 import tachiyomi.domain.source.anime.service.AnimeSourceManager
 import tachiyomi.domain.track.anime.interactor.GetAnimeTracks
 import tachiyomi.i18n.MR
@@ -393,8 +394,10 @@ class PlayerViewModel @JvmOverloads constructor(
     private var videoCaptureEpisodeId: Long? = null
     private var videoCaptureCollectors: Job? = null
     private var videoOcrFramePositionMillis = 0L
+    private var videoOcrLookupFrame: VideoOcrFrameCapture? = null
     private var nextDynamicCaptureCueIndex = 1_000_000
     private val dynamicCaptureCues = mutableMapOf<VideoSubtitleRole, DynamicCaptureCue>()
+    private val videoSubtitleLookupCuesByDisplayIndex = mutableMapOf<Int, VideoSubtitleCueCapture>()
     private var secondarySubtitleText = ""
     val customButtons = _customButtons.asStateFlow()
 
@@ -1467,7 +1470,22 @@ class PlayerViewModel @JvmOverloads constructor(
                 rawText = rawText,
             )
         }
+        if (role == VideoSubtitleRole.PRIMARY) {
+            activeSubtitleCueIndex.value?.let { displayIndex ->
+                videoSubtitleLookupCuesByDisplayIndex[displayIndex] = cue
+            }
+        }
         adapter.onSubtitleCueActive(cue)
+    }
+
+    internal fun snapshotSubtitleLookupProvenance(
+        displayCueIndex: Int?,
+        displayedText: String,
+    ): InteractionProvenance? {
+        val captureCue = displayCueIndex?.let(videoSubtitleLookupCuesByDisplayIndex::get) ?: return null
+        if (captureCue.trackId != selectedSubtitles.value.first.toString()) return null
+        if (captureCue.text.normalizedSubtitleCueText() != displayedText.normalizedSubtitleCueText()) return null
+        return videoCaptureAdapter?.snapshotSubtitleLookupProvenance(captureCue)
     }
 
     fun selectSubtitleCue(index: Int) {
@@ -1607,6 +1625,7 @@ class PlayerViewModel @JvmOverloads constructor(
         if (_isCapturingOcr.value) return
         _isCapturingOcr.value = true
         _suppressTap.value = true
+        videoOcrLookupFrame = null
         videoOcrFramePositionMillis = (pos.value * 1_000).toLong().coerceAtLeast(0)
         if (_controlsShown.value) {
             hideControls()
@@ -1626,38 +1645,44 @@ class PlayerViewModel @JvmOverloads constructor(
 
     fun dismissOcrScreenshot() {
         _ocrScreenshot.value = null
+        videoOcrLookupFrame = null
         videoCaptureAdapter?.onVideoOcrHidden()
     }
 
-    fun onVideoOcrVisible(blocks: List<OcrTextBlock>) {
+    fun onVideoOcrVisible(blocks: List<OcrTextBlock>): List<OcrTextBlock> {
         val frameIdentity = buildString {
             append("episode:")
             append(currentEpisode.value?.id ?: -1)
             append(":")
             append(videoOcrFramePositionMillis)
         }
-        videoCaptureAdapter?.onVideoOcrVisible(
-            VideoOcrFrameCapture(
-                timestampMillis = videoOcrFramePositionMillis,
-                frameIdentity = frameIdentity,
-                regions = blocks.mapIndexedNotNull { index, block ->
-                    block.orderedFullText.takeIf(String::isNotBlank)?.let { text ->
-                        VideoOcrRegionCapture(
-                            regionId = block.blockId ?: index.toString(),
-                            text = text,
-                            engineId = block.engineId,
-                            engineVersion = block.engineVersion,
-                            languageTag = block.language,
-                            confidence = block.confidence,
-                        )
-                    }
-                },
-                capability = CapabilityState.AVAILABLE,
-            ),
+        val attributableBlocks = blocks.mapIndexed { index, block ->
+            block.copy(blockId = block.blockId?.takeIf(String::isNotBlank) ?: index.toString())
+        }
+        val captureFrame = VideoOcrFrameCapture(
+            timestampMillis = videoOcrFramePositionMillis,
+            frameIdentity = frameIdentity,
+            regions = attributableBlocks.mapNotNull { block ->
+                block.orderedFullText.takeIf(String::isNotBlank)?.let { text ->
+                    VideoOcrRegionCapture(
+                        regionId = requireNotNull(block.blockId),
+                        text = text,
+                        engineId = block.engineId,
+                        engineVersion = block.engineVersion,
+                        languageTag = block.language,
+                        confidence = block.confidence,
+                    )
+                }
+            },
+            capability = CapabilityState.AVAILABLE,
         )
+        videoOcrLookupFrame = captureFrame
+        videoCaptureAdapter?.onVideoOcrVisible(captureFrame)
+        return attributableBlocks
     }
 
     fun onVideoOcrUnavailable() {
+        videoOcrLookupFrame = null
         videoCaptureAdapter?.onVideoOcrVisible(
             VideoOcrFrameCapture(
                 timestampMillis = videoOcrFramePositionMillis,
@@ -1666,6 +1691,21 @@ class PlayerViewModel @JvmOverloads constructor(
                 capability = CapabilityState.UNAVAILABLE,
             ),
         )
+    }
+
+    internal fun snapshotVideoOcrLookupProvenance(
+        block: OcrTextBlock,
+        blockIndex: Int,
+    ): InteractionProvenance? {
+        val frame = videoOcrLookupFrame ?: return null
+        val regionId = block.blockId?.takeIf(String::isNotBlank) ?: blockIndex.toString()
+        val region = frame.regions.firstOrNull { candidate ->
+            candidate.regionId == regionId &&
+                candidate.engineId == block.engineId &&
+                candidate.engineVersion == block.engineVersion &&
+                candidate.text == block.orderedFullText
+        } ?: return null
+        return videoCaptureAdapter?.snapshotOcrLookupProvenance(frame, region)
     }
 
     fun hideSeekBar() {
@@ -2775,6 +2815,8 @@ class PlayerViewModel @JvmOverloads constructor(
         videoCaptureAdapter?.finalize(FinalizeReason.TITLE_CHANGED)
         videoCaptureCollectors?.cancel()
         dynamicCaptureCues.clear()
+        videoSubtitleLookupCuesByDisplayIndex.clear()
+        videoOcrLookupFrame = null
         secondarySubtitleText = ""
 
         val profile = dictionaryPreferences.profileResolver.resolve(
@@ -2844,6 +2886,8 @@ class PlayerViewModel @JvmOverloads constructor(
         videoCaptureAdapter?.finalize(reason)
         videoCaptureAdapter = null
         videoCaptureEpisodeId = null
+        videoSubtitleLookupCuesByDisplayIndex.clear()
+        videoOcrLookupFrame = null
         videoCaptureCollectors?.cancel()
         videoCaptureCollectors = null
     }

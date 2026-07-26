@@ -19,6 +19,8 @@ import eu.kanade.tachiyomi.ui.player.PlayerViewModel
 import eu.kanade.tachiyomi.ui.reader.viewer.OcrLookupPopup
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import tachiyomi.domain.immersion.service.InteractionProvenance
+import tachiyomi.domain.immersion.service.LookupIntentToken
 import tachiyomi.presentation.core.util.collectAsState
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
@@ -39,6 +41,8 @@ internal data class SubtitleLookupRequest(
     val lineTop: Float,
     val lineWidth: Float,
     val lineHeight: Float,
+    val interactionProvenance: InteractionProvenance?,
+    val lookupToken: LookupIntentToken,
     val matchedCharCount: Int = 0,
     val matchOffset: Int = 0,
     val cueStartSeconds: Double? = null,
@@ -117,5 +121,8 @@ internal fun PlayerSubtitleLookupPopup(
         onTermMatched = onTermMatched,
         modifier = modifier,
         titleId = anime?.id?.toString(),
+        interactionProvenance = request?.interactionProvenance,
+        allowAmbientInteractionAttribution = false,
+        initialLookupToken = request?.lookupToken,
     )
 }

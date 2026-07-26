@@ -16,15 +16,47 @@ import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import tachiyomi.domain.immersion.model.AnkiOperationStatus
 import tachiyomi.domain.immersion.model.AnkiOperationType
 import tachiyomi.domain.immersion.service.AnkiOperationRecorder
+import tachiyomi.domain.immersion.service.InteractionProvenance
+import tachiyomi.domain.immersion.service.LookupIntentToken
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
+
+internal sealed interface AnkiInteractionTelemetryAttribution {
+    data object Ambient : AnkiInteractionTelemetryAttribution
+
+    data object Suppressed : AnkiInteractionTelemetryAttribution
+
+    data class Explicit(
+        val provenance: InteractionProvenance,
+    ) : AnkiInteractionTelemetryAttribution
+}
+
+internal fun LookupIntentToken?.toAnkiInteractionTelemetryAttribution(
+    allowAmbientAttribution: Boolean = true,
+): AnkiInteractionTelemetryAttribution {
+    if (this == null) {
+        return if (allowAmbientAttribution) {
+            AnkiInteractionTelemetryAttribution.Ambient
+        } else {
+            AnkiInteractionTelemetryAttribution.Suppressed
+        }
+    }
+    val capturedSessionId = sessionId ?: return AnkiInteractionTelemetryAttribution.Suppressed
+    return AnkiInteractionTelemetryAttribution.Explicit(
+        InteractionProvenance(
+            sessionId = capturedSessionId,
+            sourceUnitId = sourceUnitId,
+        ),
+    )
+}
 
 // =============================================================================
 // Legacy FieldType enum for UI backwards compatibility
@@ -279,11 +311,32 @@ object AnkiCardCreator {
         syncOnCreate: Boolean = false,
         profileId: String = "",
         titleId: String? = null,
+        lookupToken: LookupIntentToken? = null,
+        allowAmbientInteractionAttribution: Boolean = true,
     ): AnkiResult {
         android.util.Log.d(TAG, "addToAnki: deck=$deck, model=$model, forceOpen=$forceOpen, glossaryIndex=$glossaryIndex")
 
-        val operationRecorder = Injekt.get<AnkiOperationRecorder>()
-        val operation = operationRecorder.begin(result.term.expression, result.term.reading)
+        val trackedOperation = when (
+            val attribution = lookupToken.toAnkiInteractionTelemetryAttribution(
+                allowAmbientAttribution = allowAmbientInteractionAttribution,
+            )
+        ) {
+            AnkiInteractionTelemetryAttribution.Ambient -> {
+                Injekt.get<AnkiOperationRecorder>().let { recorder ->
+                    recorder to recorder.begin(result.term.expression, result.term.reading)
+                }
+            }
+            is AnkiInteractionTelemetryAttribution.Explicit -> {
+                Injekt.get<AnkiOperationRecorder>().let { recorder ->
+                    recorder to recorder.begin(
+                        expression = result.term.expression,
+                        reading = result.term.reading,
+                        provenance = attribution.provenance,
+                    )
+                }
+            }
+            AnkiInteractionTelemetryAttribution.Suppressed -> null
+        }
         fun finish(outcome: AnkiResult): AnkiResult {
             val (operationType, status, noteId, errorCode) = when (outcome) {
                 is AnkiResult.Success -> OperationResult(
@@ -315,13 +368,15 @@ object AnkiCardCreator {
                     AnkiOperationStatus.NOT_CONFIGURED,
                 )
             }
-            operationRecorder.complete(
-                token = operation,
-                operationType = operationType,
-                status = status,
-                noteId = noteId,
-                errorCode = errorCode,
-            )
+            trackedOperation?.let { (recorder, operation) ->
+                recorder.complete(
+                    token = operation,
+                    operationType = operationType,
+                    status = status,
+                    noteId = noteId,
+                    errorCode = errorCode,
+                )
+            }
             return outcome
         }
 
@@ -520,6 +575,9 @@ object AnkiCardCreator {
             } finally {
                 addLocks.remove(lockKey, addLock)
             }
+        } catch (e: CancellationException) {
+            trackedOperation?.let { (recorder, operation) -> recorder.abandon(operation) }
+            throw e
         } catch (e: SecurityException) {
             finish(AnkiResult.PermissionDenied)
         } catch (e: Exception) {

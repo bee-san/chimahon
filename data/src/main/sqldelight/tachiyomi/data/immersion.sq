@@ -402,7 +402,7 @@ CREATE TABLE immersion_anki_operation(
     FOREIGN KEY(word_id) REFERENCES immersion_word(id) ON DELETE SET NULL
 );
 
-CREATE UNIQUE INDEX immersion_anki_operation_note_success_index
+CREATE INDEX immersion_anki_operation_note_success_index
 ON immersion_anki_operation(note_id, type)
 WHERE success = 1 AND note_id IS NOT NULL AND type IN ('CREATE', 'UPDATE');
 
@@ -1162,6 +1162,10 @@ SELECT *
 FROM immersion_anki_operation
 WHERE id = :id;
 
+deleteImmersionAnkiOperationById:
+DELETE FROM immersion_anki_operation
+WHERE id = :id;
+
 insertUnlinkedImmersionAnkiOperation:
 INSERT OR IGNORE INTO immersion_anki_operation(
     id,
@@ -1197,6 +1201,16 @@ VALUES (
     :occurredAt,
     'UNLINKED_AFTER_LOCAL_WRITE_FAILURE'
 );
+
+linkRepairedImmersionAnkiOperation:
+UPDATE immersion_anki_operation
+SET
+    event_id = :eventId,
+    session_id = :sessionId,
+    source_unit_id = :sourceUnitId,
+    occurred_at = :occurredAt,
+    error_code = :errorCode
+WHERE id = :id AND event_id IS NULL;
 
 selectImmersionEventById:
 SELECT *
@@ -1273,6 +1287,17 @@ SET
 WHERE
     id = :sessionId
     AND status = 'ACTIVE'
+    AND last_sequence + 1 = :sequence;
+
+advanceImmersionSessionForRepairedInteraction:
+UPDATE immersion_session
+SET
+    cards_created = cards_created + :cardsCreatedDelta,
+    cards_updated = cards_updated + :cardsUpdatedDelta,
+    last_sequence = :sequence
+WHERE
+    id = :sessionId
+    AND status IN ('ACTIVE', 'COMPLETED', 'ABANDONED')
     AND last_sequence + 1 = :sequence;
 
 incrementImmersionRevision:

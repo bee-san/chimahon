@@ -115,11 +115,14 @@ import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import tachiyomi.domain.immersion.model.LookupStatus
+import tachiyomi.domain.immersion.service.LookupTelemetry
 import tachiyomi.presentation.core.components.material.padding
 import tachiyomi.presentation.core.i18n.stringResource
 import tachiyomi.presentation.core.util.collectAsState
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
+import java.util.UUID
 import kotlin.math.abs
 
 @Suppress("CompositionLocalAllowlist")
@@ -140,6 +143,7 @@ fun PlayerControls(
     val gesturePreferences = remember { Injekt.get<GesturePreferences>() }
     val audioPreferences = remember { Injekt.get<AudioPreferences>() }
     val subtitlePreferences = remember { Injekt.get<SubtitlePreferences>() }
+    val lookupTelemetry = remember { Injekt.get<LookupTelemetry>() }
     val interactionSource = remember { MutableInteractionSource() }
     val controlsShown by viewModel.controlsShown.collectAsState()
     val areControlsLocked by viewModel.areControlsLocked.collectAsState()
@@ -191,10 +195,27 @@ fun PlayerControls(
         animationSpec = if (overlayTarget > 0f) playerControlsEnterAnimationSpec() else playerControlsExitAnimationSpec(),
         label = "controls_transparent_overlay",
     )
+    fun releaseSubtitleLookupRequest() {
+        subtitleLookupRequest
+            ?.lookupToken
+            ?.let { lookupTelemetry.complete(it, LookupStatus.CANCELLED) }
+        subtitleLookupRequest = null
+    }
+
+    fun dismissSubtitleLookup() {
+        releaseSubtitleLookupRequest()
+        if (!wasPlayerAlreadyPause) viewModel.unpause()
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            releaseSubtitleLookupRequest()
+        }
+    }
+
     val openSubtitleLookup: (SubtitleLookupSelection) -> Unit = openSubtitleLookup@{ subtitleLookup ->
         if (subtitleLookupRequest?.matchesTap(subtitleLookup) == true) {
-            subtitleLookupRequest = null
-            if (!wasPlayerAlreadyPause) viewModel.unpause()
+            dismissSubtitleLookup()
             return@openSubtitleLookup
         }
         val currentPanel = viewModel.panelShown.value
@@ -205,8 +226,19 @@ fun PlayerControls(
         ) {
             return@openSubtitleLookup
         }
+        val interactionProvenance = viewModel.snapshotSubtitleLookupProvenance(
+            displayCueIndex = subtitleLookup.cueIndex,
+            displayedText = subtitleLookup.fullText,
+        )
         wasPlayerAlreadyPause = viewModel.paused.value
         viewModel.pause()
+        releaseSubtitleLookupRequest()
+        val lookupToken = lookupTelemetry.begin(
+            intentId = UUID.randomUUID().toString(),
+            query = subtitleLookup.lookupString,
+            provenance = interactionProvenance,
+            allowAmbientFallback = false,
+        )
         subtitleLookupRequest = SubtitleLookupRequest(
             lookupString = subtitleLookup.lookupString,
             fullText = subtitleLookup.fullText,
@@ -225,6 +257,8 @@ fun PlayerControls(
             lineHeight = subtitleLookup.lineHeight,
             cueStartSeconds = subtitleLookup.cueStartSeconds,
             cueEndSeconds = subtitleLookup.cueEndSeconds,
+            interactionProvenance = interactionProvenance,
+            lookupToken = lookupToken,
         )
     }
     val togglePanel: (Panels) -> Unit = { panel ->
@@ -249,8 +283,7 @@ fun PlayerControls(
     Box(Modifier.fillMaxSize()) {
         if (subtitleLookupRequest != null) {
             Box(Modifier.fillMaxSize().clickable {
-                subtitleLookupRequest = null
-                if (!wasPlayerAlreadyPause) viewModel.unpause()
+                dismissSubtitleLookup()
             })
         }
         PlayerSubtitleTextLayer(
@@ -807,10 +840,7 @@ fun PlayerControls(
         PlayerSubtitleLookupPopup(
             viewModel = viewModel,
             request = subtitleLookupRequest,
-            onDismiss = {
-                subtitleLookupRequest = null
-                if (!wasPlayerAlreadyPause) viewModel.unpause()
-            },
+            onDismiss = ::dismissSubtitleLookup,
             onTermMatched = { count, offset ->
                 subtitleLookupRequest = subtitleLookupRequest?.copy(
                     matchedCharCount = count,
@@ -1023,6 +1053,7 @@ private data class SubtitleLookupSelection(
     val lineTop: Float,
     val lineWidth: Float,
     val lineHeight: Float,
+    val cueIndex: Int? = null,
     val cueStartSeconds: Double? = null,
     val cueEndSeconds: Double? = null,
 )
@@ -1063,6 +1094,7 @@ private fun TextLayoutResult.subtitleLookupSelectionForTap(
         lineTop = lineBounds.top,
         lineWidth = lineBounds.width,
         lineHeight = lineBounds.height,
+        cueIndex = cue?.index,
         cueStartSeconds = cue?.positionSeconds?.plus(subtitleDelaySeconds),
         cueEndSeconds = cue?.endPositionSeconds?.plus(subtitleDelaySeconds),
     )

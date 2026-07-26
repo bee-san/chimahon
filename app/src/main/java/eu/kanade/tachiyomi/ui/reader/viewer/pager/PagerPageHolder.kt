@@ -39,6 +39,7 @@ import tachiyomi.core.common.util.system.ImageUtil
 import tachiyomi.core.common.util.system.logcat
 import tachiyomi.decoder.ImageDecoder
 import tachiyomi.i18n.MR
+import java.util.IdentityHashMap
 import kotlin.math.max
 
 /**
@@ -87,6 +88,7 @@ class PagerPageHolder(
     private var mergedPage2H: Int = 0
     private var mergedCenterMargin: Int = 0
     private var mergedIsLTR: Boolean = true
+    private val mergedOcrSourcePages = IdentityHashMap<OcrTextBlock, ReaderPage>()
 
     /**
      * Job for loading the page.
@@ -108,9 +110,33 @@ class PagerPageHolder(
         loadJob = scope.launch { loadPageAndProcessStatus(1) }
         extraLoadJob = scope.launch { loadPageAndProcessStatus(2) }
 
-        onShowOcrPopup = { lookupString, fullText, charOffset, anchorX, anchorY, anchorWidth, anchorHeight, isVertical, mediaInfo, block ->
+        onShowOcrPopup = { lookupString, fullText, charOffset, anchorX, anchorY, anchorWidth, anchorHeight, isVertical, mediaInfo, block, blockIndex ->
             val sourcePage = block?.let { getPageForBlock(it) } ?: page
-            viewer.onShowOcrPopup?.invoke(lookupString, fullText, charOffset, anchorX, anchorY, anchorWidth, anchorHeight, isVertical, mediaInfo, sourcePage)
+            val sourceBlockIndex = if (
+                block?.blockId != null ||
+                extraPage == null ||
+                mergedPage1W <= 0 ||
+                page.fullPage ||
+                page.isolatedPage
+            ) {
+                blockIndex
+            } else {
+                -1
+            }
+            viewer.onShowOcrPopup?.invoke(
+                lookupString,
+                fullText,
+                charOffset,
+                anchorX,
+                anchorY,
+                anchorWidth,
+                anchorHeight,
+                isVertical,
+                mediaInfo,
+                sourcePage,
+                block,
+                sourceBlockIndex,
+            )
         }
         onShowOcrSelectionPanel = { text, anchorX, anchorY, anchorWidth, anchorHeight ->
             viewer.onShowOcrSelectionPanel?.invoke(text, anchorX, anchorY, anchorWidth, anchorHeight)
@@ -575,8 +601,18 @@ class PagerPageHolder(
                 val rawBlocks2 = viewModel.getOcrBlocks(ep)
                 viewModel.onVisibleOcrResult(page, rawBlocks1)
                 viewModel.onVisibleOcrResult(ep, rawBlocks2)
-                var merged = OcrCoordinateMapper.mapToMerged(
+                var mappedPage = OcrCoordinateMapper.mapToMerged(
                     blocks1 = rawBlocks1,
+                    page1W = mergedPage1W,
+                    page1H = mergedPage1H,
+                    blocks2 = emptyList(),
+                    page2W = mergedPage2W,
+                    page2H = mergedPage2H,
+                    isLTR = mergedIsLTR,
+                    centerMarginPx = mergedCenterMargin,
+                )
+                var mappedExtraPage = OcrCoordinateMapper.mapToMerged(
+                    blocks1 = emptyList(),
                     page1W = mergedPage1W,
                     page1H = mergedPage1H,
                     blocks2 = rawBlocks2,
@@ -588,11 +624,20 @@ class PagerPageHolder(
 
                 // Apply crop remap if needed
                 val cropRect = pageCropRect
-                if (cropBordersEnabled && merged.isNotEmpty() && cropRect != null) {
-                    merged = OcrCoordinateMapper.remapToCrop(merged, cropRect)
-                    logcat { "OCR merge crop-remap done: ${merged.size} blocks" }
+                if (cropBordersEnabled && cropRect != null) {
+                    mappedPage = OcrCoordinateMapper.remapToCrop(mappedPage, cropRect)
+                    mappedExtraPage = OcrCoordinateMapper.remapToCrop(mappedExtraPage, cropRect)
+                    logcat { "OCR merge crop-remap done: ${mappedPage.size + mappedExtraPage.size} blocks" }
                 }
 
+                val merged = if (mergedIsLTR) {
+                    mappedPage + mappedExtraPage
+                } else {
+                    mappedExtraPage + mappedPage
+                }
+                mergedOcrSourcePages.clear()
+                mappedPage.forEach { mergedOcrSourcePages[it] = page }
+                mappedExtraPage.forEach { mergedOcrSourcePages[it] = ep }
                 setOcrBlocks(merged)
                 return
             }
@@ -652,6 +697,7 @@ class PagerPageHolder(
             }
 
             viewModel.onVisibleOcrResult(page, blocks)
+            mergedOcrSourcePages.clear()
             setOcrBlocks(blocks)
         } catch (e: CancellationException) {
             throw e
@@ -716,6 +762,7 @@ class PagerPageHolder(
     }
 
     private fun getPageForBlock(block: OcrTextBlock): ReaderPage {
+        mergedOcrSourcePages[block]?.let { return it }
         val ep = extraPage ?: return page
         if (mergedPage1W <= 0) return page
 

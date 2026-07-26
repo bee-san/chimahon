@@ -45,11 +45,16 @@ import eu.kanade.tachiyomi.ui.reader.viewer.toOrderedOffset
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import tachiyomi.domain.immersion.model.LookupStatus
+import tachiyomi.domain.immersion.service.InteractionProvenance
+import tachiyomi.domain.immersion.service.LookupIntentToken
+import tachiyomi.domain.immersion.service.LookupTelemetry
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.i18n.stringResource
 import tachiyomi.presentation.core.util.collectAsState
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
+import java.util.UUID
 import kotlin.math.min
 import tachiyomi.core.common.i18n.stringResource as contextStringResource
 
@@ -67,6 +72,7 @@ internal fun PlayerVideoOcrOverlay(
     val localDensity = LocalDensity.current
     val dictionaryPreferences = remember { Injekt.get<DictionaryPreferences>() }
     val repository = remember { Injekt.get<DictionaryRepository>() }
+    val lookupTelemetry = remember { Injekt.get<LookupTelemetry>() }
     val source by viewModel.currentSource.collectAsState()
     val anime by viewModel.currentAnime.collectAsState()
     val episode by viewModel.currentEpisode.collectAsState()
@@ -102,8 +108,21 @@ internal fun PlayerVideoOcrOverlay(
     var isLoading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var selection by remember { mutableStateOf<OcrSelection?>(null) }
+    var selectionProvenance by remember { mutableStateOf<InteractionProvenance?>(null) }
+    var selectionLookupToken by remember { mutableStateOf<LookupIntentToken?>(null) }
     var showTapHint by remember { mutableStateOf(false) }
     var lookupNonce by remember { mutableIntStateOf(0) }
+
+    fun cancelSelectionLookup() {
+        selectionLookupToken?.let { lookupTelemetry.complete(it, LookupStatus.CANCELLED) }
+        selectionLookupToken = null
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            selectionLookupToken?.let { lookupTelemetry.complete(it, LookupStatus.CANCELLED) }
+        }
+    }
 
     BoxWithConstraints(
         modifier = Modifier.fillMaxSize(),
@@ -115,6 +134,9 @@ internal fun PlayerVideoOcrOverlay(
             isLoading = true
             error = null
             blocks = emptyList()
+            cancelSelectionLookup()
+            selection = null
+            selectionProvenance = null
             showTapHint = false
             val engineId = if (dictionaryPreferences.ocrEngine().get() == "local") {
                 "mokuro"
@@ -131,9 +153,9 @@ internal fun PlayerVideoOcrOverlay(
                         .toScreenLookupBlocks(language.bcp47, engineId, 1)
                 }
             }.onSuccess { ocrBlocks ->
-                viewModel.onVideoOcrVisible(ocrBlocks)
+                val attributableBlocks = viewModel.onVideoOcrVisible(ocrBlocks)
                 blocks = remapToScreenArea(
-                    ocrBlocks,
+                    attributableBlocks,
                     imgWidth = screenshot.width,
                     imgHeight = screenshot.height,
                     screenWidth = widthPx,
@@ -169,17 +191,30 @@ internal fun PlayerVideoOcrOverlay(
                 val orderedCharOffset = tapped.toOrderedOffset(charOffset)
                 val text = tapped.orderedFullText
                 if (selection?.block == tapped && selection?.sentenceOffset == orderedCharOffset) {
+                    cancelSelectionLookup()
                     selection = null
+                    selectionProvenance = null
                     showTapHint = false
                     matchedCharCount = 0
                     matchOffset = 0
                 } else if (orderedCharOffset in text.indices && isLookupStartChar(text[orderedCharOffset])) {
                     val lookupString = extractOcrLookupString(text, orderedCharOffset)
                     if (lookupString.isNotBlank()) {
+                        cancelSelectionLookup()
                         lookupNonce++
                         showTapHint = false
                         matchedCharCount = 0
                         matchOffset = 0
+                        val blockIndex = blocks.indexOfFirst { it === tapped }
+                        selectionProvenance = blockIndex.takeIf { it >= 0 }?.let { index ->
+                            viewModel.snapshotVideoOcrLookupProvenance(tapped, index)
+                        }
+                        selectionLookupToken = lookupTelemetry.begin(
+                            intentId = UUID.randomUUID().toString(),
+                            query = lookupString,
+                            provenance = selectionProvenance,
+                            allowAmbientFallback = false,
+                        )
                         selection = OcrSelection(
                             block = tapped,
                             lookupString = lookupString,
@@ -191,11 +226,15 @@ internal fun PlayerVideoOcrOverlay(
                             anchorHeight = (tapped.ymax - tapped.ymin) * heightPx,
                         )
                     } else {
+                        cancelSelectionLookup()
                         selection = null
+                        selectionProvenance = null
                         showTapHint = false
                     }
                 } else {
+                    cancelSelectionLookup()
                     selection = null
+                    selectionProvenance = null
                     showTapHint = false
                 }
             },
@@ -225,7 +264,11 @@ internal fun PlayerVideoOcrOverlay(
                     lookupString = selected.lookupString,
                     fullText = selected.sentence,
                     charOffset = selected.sentenceOffset,
-                    onDismiss = { selection = null },
+                    onDismiss = {
+                        cancelSelectionLookup()
+                        selection = null
+                        selectionProvenance = null
+                    },
                     webView = webView,
                     repository = repository,
                     anchorX = selected.anchorX,
@@ -242,6 +285,9 @@ internal fun PlayerVideoOcrOverlay(
                     onRequestSentenceAudio = { viewModel.captureVideoOcrAudioForAnki() },
                     usePopup = false,
                     titleId = anime?.id?.toString(),
+                    interactionProvenance = selectionProvenance,
+                    allowAmbientInteractionAttribution = false,
+                    initialLookupToken = selectionLookupToken,
                     onTermMatched = { count, off ->
                         matchedCharCount = count
                         matchOffset = off

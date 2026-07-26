@@ -66,6 +66,8 @@ class WebtoonViewer(
             isVertical: Boolean,
             mediaInfo: MediaInfo?,
             sourcePage: ReaderPage?,
+            sourceBlock: OcrTextBlock?,
+            sourceBlockIndex: Int,
         ) -> Unit
     )? = null
 

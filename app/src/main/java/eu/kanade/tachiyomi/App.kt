@@ -261,6 +261,7 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
         }
         AnkiInventorySyncJob.setupTask(this)
         ImmersionRollupJob.setupTask(this)
+        ImmersionRollupJob.start(this)
         mihon.feature.stats.retention.ImmersionRetentionJob.setupTask(this)
         // Chimahon <--
     }

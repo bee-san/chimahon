@@ -102,8 +102,21 @@ class WebtoonPageHolder(
         frame.onImageLoaded = { onImageDecoded() }
         frame.onImageLoadError = { error -> setError(error) }
         frame.onScaleChanged = { viewer.activity.hideMenu() }
-        frame.onShowOcrPopup = { lookupString, fullText, charOffset, anchorX, anchorY, anchorWidth, anchorHeight, isVertical, mediaInfo, _ ->
-            viewer.onShowOcrPopup?.invoke(lookupString, fullText, charOffset, anchorX, anchorY, anchorWidth, anchorHeight, isVertical, mediaInfo, page)
+        frame.onShowOcrPopup = { lookupString, fullText, charOffset, anchorX, anchorY, anchorWidth, anchorHeight, isVertical, mediaInfo, block, blockIndex ->
+            viewer.onShowOcrPopup?.invoke(
+                lookupString,
+                fullText,
+                charOffset,
+                anchorX,
+                anchorY,
+                anchorWidth,
+                anchorHeight,
+                isVertical,
+                mediaInfo,
+                page,
+                block,
+                blockIndex,
+            )
         }
         frame.onShowOcrSelectionPanel = { text, anchorX, anchorY, anchorWidth, anchorHeight ->
             viewer.onShowOcrSelectionPanel?.invoke(text, anchorX, anchorY, anchorWidth, anchorHeight)

@@ -37,6 +37,7 @@ import tachiyomi.domain.immersion.model.AnkiOperationType
 import tachiyomi.domain.immersion.model.AnkiSnapshotStatus
 import tachiyomi.domain.immersion.model.CharacterCoverage
 import tachiyomi.domain.immersion.model.CharacterVolume
+import tachiyomi.domain.immersion.model.EventId
 import tachiyomi.domain.immersion.model.EventType
 import tachiyomi.domain.immersion.model.ExposureEvent
 import tachiyomi.domain.immersion.model.ImmersionAnkiItem
@@ -115,10 +116,15 @@ import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.time.Instant
+import java.time.ZoneId
 import java.util.Locale
+import java.util.UUID
 
 class SqlDelightImmersionRepository(
     private val handler: DatabaseHandler,
+    private val onAllStatsReset: () -> Unit = {},
+    private val onSessionDeleted: (SessionId) -> Unit = {},
 ) : ImmersionRecorderRepository,
     ImmersionIndexRepository,
     ImmersionStatsRepository,
@@ -1215,6 +1221,145 @@ class SqlDelightImmersionRepository(
         }
     }
 
+    suspend fun repairAnkiOperation(
+        operation: PendingAnkiOperation,
+        repairedAtEpochMillis: Long = System.currentTimeMillis(),
+        repairZoneId: ZoneId = ZoneId.systemDefault(),
+    ): Boolean {
+        require(operation.status == AnkiOperationStatus.SUCCESS) {
+            "Only externally successful Anki operations require repair"
+        }
+        require(repairedAtEpochMillis >= 0) { "Repair timestamp cannot be negative" }
+        val sessionId = operation.token.sessionId ?: return true
+        return handler.await(inTransaction = true) {
+            val existing = immersionQueries
+                .selectImmersionAnkiOperationById(operation.token.operationId.value)
+                .executeAsOneOrNull()
+            if (existing != null && (
+                    existing.type != operation.operationType.name ||
+                        existing.status != operation.status.name ||
+                        existing.note_id != operation.noteId ||
+                        existing.expression_hash != operation.token.expressionHash
+                    )
+            ) {
+                throw identityConflict(
+                    "Anki operation ${operation.token.operationId.value} conflicts with an existing identity",
+                )
+            }
+            if (existing?.event_id != null) return@await true
+
+            val session = immersionQueries
+                .selectImmersionSessionById(sessionId.value)
+                .executeAsOneOrNull()
+            if (session == null || session.status == SessionStatus.DELETED.name) {
+                if (existing != null) {
+                    immersionQueries.deleteImmersionAnkiOperationById(operation.token.operationId.value)
+                }
+                return@await true
+            }
+            val sourceUnitId = operation.token.sourceUnitId?.let { requestedSourceId ->
+                val source = immersionQueries
+                    .selectImmersionSourceUnitById(requestedSourceId.value)
+                    .executeAsOneOrNull()
+                    ?: return@let null
+                if (source.title_id != session.title_id) {
+                    throw identityConflict("Anki repair source title does not match its session")
+                }
+                requestedSourceId
+            }
+            val sequence = Math.addExact(session.last_sequence, 1)
+            val capturedOccurredAt = operation.token.occurredAtEpochMillis.takeIf { it > 0 }
+            val occurredAt = capturedOccurredAt ?: repairedAtEpochMillis
+            val timezoneOffsetSeconds = operation.token.timezoneOffsetSeconds
+                .takeIf {
+                    capturedOccurredAt != null &&
+                        it in MIN_TIMEZONE_OFFSET_SECONDS..MAX_TIMEZONE_OFFSET_SECONDS
+                }
+                ?: repairZoneId.rules
+                    .getOffset(Instant.ofEpochMilli(occurredAt))
+                    .totalSeconds
+            val event = AnkiOperationEvent(
+                id = repairedAnkiEventId(operation),
+                sessionId = sessionId,
+                sequence = sequence,
+                occurredAtEpochMillis = occurredAt,
+                timezoneOffsetSeconds = timezoneOffsetSeconds,
+                operationId = operation.token.operationId,
+                sourceUnitId = sourceUnitId,
+                expressionHash = operation.token.expressionHash,
+                normalizedExpression = operation.token.normalizedExpression,
+                normalizedReading = operation.token.normalizedReading,
+                operationType = operation.operationType,
+                status = operation.status,
+                noteId = operation.noteId,
+                errorCode = operation.errorCode,
+            )
+            val cardsCreated = (operation.operationType == AnkiOperationType.CREATE).toLong()
+            val cardsUpdated = (operation.operationType == AnkiOperationType.UPDATE).toLong()
+            immersionQueries.insertImmersionInteractionEvent(
+                id = event.id.value,
+                sessionId = event.sessionId.value,
+                sequence = event.sequence,
+                occurredAt = event.occurredAtEpochMillis,
+                timezoneOffsetSeconds = event.timezoneOffsetSeconds.toLong(),
+                type = event.type.name,
+                sourceUnitId = event.sourceUnitId?.value,
+                ankiOperationId = event.operationId.value,
+                lookupDelta = 0,
+                cardsCreatedDelta = cardsCreated,
+                cardsUpdatedDelta = cardsUpdated,
+                payloadHash = event.payloadHash(),
+                localDate = event.localDateEpochDay(),
+            )
+            if (existing == null) {
+                immersionQueries.insertImmersionAnkiOperation(
+                    id = event.operationId.value,
+                    eventId = event.id.value,
+                    sessionId = event.sessionId.value,
+                    sourceUnitId = event.sourceUnitId?.value,
+                    noteId = event.noteId,
+                    cardId = event.cardId,
+                    deckId = event.deckId,
+                    type = event.operationType.name,
+                    status = event.status.name,
+                    success = 1L,
+                    expressionHash = event.expressionHash,
+                    normalizedExpression = event.normalizedExpression,
+                    normalizedReading = event.normalizedReading,
+                    occurredAt = event.occurredAtEpochMillis,
+                    errorCode = event.errorCode,
+                )
+            } else {
+                immersionQueries.linkRepairedImmersionAnkiOperation(
+                    eventId = event.id.value,
+                    sessionId = event.sessionId.value,
+                    sourceUnitId = event.sourceUnitId?.value,
+                    occurredAt = event.occurredAtEpochMillis,
+                    errorCode = event.errorCode,
+                    id = event.operationId.value,
+                )
+                if (immersionQueries.selectImmersionChanges().executeAsOne() != 1L) {
+                    throw identityConflict("Anki operation ${event.operationId.value} could not be linked")
+                }
+            }
+            immersionQueries.advanceImmersionSessionForRepairedInteraction(
+                cardsCreatedDelta = cardsCreated,
+                cardsUpdatedDelta = cardsUpdated,
+                sequence = event.sequence,
+                sessionId = event.sessionId.value,
+            )
+            if (immersionQueries.selectImmersionChanges().executeAsOne() != 1L) {
+                throw ImmersionDataException(
+                    PersistenceErrorCode.SEQUENCE_CONFLICT,
+                    "Anki repair could not claim session sequence ${event.sequence}",
+                )
+            }
+            markEventRollupDirty(event, session.title_id, "ANKI_REPAIR")
+            immersionQueries.incrementImmersionRevision(repairedAtEpochMillis)
+            true
+        }
+    }
+
     suspend fun storeUnlinkedAnkiOperation(
         operation: PendingAnkiOperation,
         occurredAtEpochMillis: Long = System.currentTimeMillis(),
@@ -1314,7 +1459,7 @@ class SqlDelightImmersionRepository(
         require(deviceId.isNotBlank())
         require(deletedAtEpochMillis >= 0)
         val rawHandler = handler.requireRawHandler()
-        return rawHandler.awaitRawDriver(inTransaction = true) { driver ->
+        val preview = rawHandler.awaitRawDriver(inTransaction = true) { driver ->
             val preview = driver.previewAllImmersionDeletion()
             IMMERSION_TOMBSTONE_IDENTITIES.forEach { (tableName, identity) ->
                 driver.execute(
@@ -1357,10 +1502,12 @@ class SqlDelightImmersionRepository(
             driver.notifyListeners(*IMMERSION_PORTABLE_TABLES.toTypedArray())
             preview
         }
+        onAllStatsReset()
+        return preview
     }
 
-    override suspend fun deleteSession(sessionId: SessionId): Boolean =
-        handler.await(inTransaction = true) {
+    override suspend fun deleteSession(sessionId: SessionId): Boolean {
+        val deleted = handler.await(inTransaction = true) {
             val session = immersionQueries.selectImmersionSessionById(sessionId.value).executeAsOneOrNull()
             val sourceUnitIds = immersionQueries
                 .selectImmersionSourceIdsForSession(sessionId.value)
@@ -1407,6 +1554,9 @@ class SqlDelightImmersionRepository(
             }
             deleted
         }
+        if (deleted) onSessionDeleted(sessionId)
+        return deleted
+    }
 
     override suspend fun beginRollupRebuild(
         rollupVersion: Int,
@@ -1463,7 +1613,7 @@ class SqlDelightImmersionRepository(
             createdAtEpochMillis = createdAtEpochMillis,
             includesRawText = includeRawText,
             tables = tables,
-        )
+        ).withoutUnlinkedAnkiOperations()
     }
 
     override suspend fun mergePortableArchive(
@@ -1482,7 +1632,11 @@ class SqlDelightImmersionRepository(
         require(archive.tables.all { it.name in IMMERSION_PORTABLE_TABLES }) {
             "Immersion backup contains an unknown table"
         }
-        val incoming = archive.tables.associateBy { it.name }
+        val incoming = archive
+            .withoutUnlinkedAnkiOperations()
+            .canonicalizeLookupSuccessMetrics()
+            .tables
+            .associateBy { it.name }
         val rawHandler = handler.requireRawHandler()
         var insertedRows = 0L
         var unchangedRows = 0L
@@ -1530,17 +1684,20 @@ class SqlDelightImmersionRepository(
                     quarantinedConflicts += result.conflicts
                 }
             }
+        rawHandler.awaitRawDriver(inTransaction = true) { driver ->
+            driver.repairLookupSuccessMetrics(mergedAtEpochMillis)
+        }
         rawHandler.awaitRawDriver(inTransaction = true) { it.rebuildImmersionSourceSearchIndex() }
 
-        val range = availableDateRange(StatsFilter())
+        beginRollupRebuild(
+            rollupVersion = ImmersionStatsVersions.ROLLUP,
+            repairCursor = "portable-merge:${archive.createdAtEpochMillis}",
+            updatedAtEpochMillis = mergedAtEpochMillis,
+        )
+        val range = rawHandler.awaitRawDriver { it.immersionSourceDateRange() }
         val rebuiltRows = if (range == null) {
             0L
         } else {
-            beginRollupRebuild(
-                rollupVersion = ImmersionStatsVersions.ROLLUP,
-                repairCursor = "portable-merge:${archive.createdAtEpochMillis}",
-                updatedAtEpochMillis = mergedAtEpochMillis,
-            )
             rebuildRollups(
                 range = range,
                 rollupVersion = ImmersionStatsVersions.ROLLUP,
@@ -2602,7 +2759,7 @@ class SqlDelightImmersionRepository(
         }
         val session = immersionQueries.selectImmersionSessionById(event.sessionId.value).executeAsOneOrNull()
             ?: throw identityConflict("Session ${event.sessionId.value} does not exist")
-        val lookupDelta = if (event.status == LookupStatus.CANCELLED) 0L else 1L
+        val successfulLookupDelta = (event.status == LookupStatus.SUCCESS).toLong()
         immersionQueries.insertImmersionInteractionEvent(
             id = event.id.value,
             sessionId = event.sessionId.value,
@@ -2612,7 +2769,7 @@ class SqlDelightImmersionRepository(
             type = event.type.name,
             sourceUnitId = event.sourceUnitId?.value,
             ankiOperationId = null,
-            lookupDelta = lookupDelta,
+            lookupDelta = successfulLookupDelta,
             cardsCreatedDelta = 0,
             cardsUpdatedDelta = 0,
             payloadHash = payloadHash,
@@ -2633,7 +2790,7 @@ class SqlDelightImmersionRepository(
             status = event.status.name,
             occurredAt = event.occurredAtEpochMillis,
         )
-        advanceInteraction(event, session.last_sequence, lookupDelta, 0, 0)
+        advanceInteraction(event, session.last_sequence, successfulLookupDelta, 0, 0)
         return PersistenceResult.Applied
     }
 
@@ -3369,6 +3526,101 @@ private data class PortableMergeCounts(
     )
 }
 
+private fun ImmersionPortableArchive.withoutUnlinkedAnkiOperations(): ImmersionPortableArchive =
+    copy(
+        tables = tables.map { table ->
+            if (table.name != "immersion_anki_operation") {
+                table
+            } else {
+                val eventIdIndex = table.columnIndex("event_id")
+                table.copy(
+                    rows = table.rows.filter { row ->
+                        row.cells[eventIdIndex].kind != ImmersionPortableCellKind.NULL
+                    },
+                )
+            }
+        },
+    )
+
+private fun ImmersionPortableArchive.canonicalizeLookupSuccessMetrics(): ImmersionPortableArchive {
+    val lookupTable = tables.firstOrNull { it.name == "immersion_lookup" } ?: return this
+    val eventIdIndex = lookupTable.columnIndex("event_id")
+    val sessionIdIndex = lookupTable.columnIndex("session_id")
+    val statusIndex = lookupTable.columnIndex("status")
+    val statusByEventId = lookupTable.rows.associate { row ->
+        row.cells[eventIdIndex].portableIdentityValue() to
+            row.cells[statusIndex].portableIdentityValue()
+    }
+    val successfulLookupsBySession = lookupTable.rows
+        .groupingBy { row -> row.cells[sessionIdIndex].portableIdentityValue() }
+        .fold(0L) { count, row ->
+            count + (row.cells[statusIndex].portableIdentityValue() == LookupStatus.SUCCESS.name).toLong()
+        }
+    return copy(
+        tables = tables.map { table ->
+            when (table.name) {
+                "immersion_event" -> {
+                    val idIndex = table.columnIndex("id")
+                    val typeIndex = table.columnIndex("type")
+                    val lookupDeltaIndex = table.columnIndex("lookup_delta")
+                    table.copy(
+                        rows = table.rows.map { row ->
+                            val eventId = row.cells[idIndex].portableIdentityValue()
+                            val status = statusByEventId[eventId]
+                            if (row.cells[typeIndex].portableIdentityValue() != EventType.LOOKUP.name) {
+                                row
+                            } else {
+                                row.withInteger(
+                                    lookupDeltaIndex,
+                                    (status == LookupStatus.SUCCESS.name).toLong(),
+                                )
+                            }
+                        },
+                    )
+                }
+                "immersion_session" -> {
+                    val idIndex = table.columnIndex("id")
+                    val lookupCountIndex = table.columnIndex("lookup_count")
+                    val legacyImportIndex = table.columnIndex("legacy_import")
+                    table.copy(
+                        rows = table.rows.map { row ->
+                            if (row.cells[legacyImportIndex].integerValue != 0L) {
+                                row
+                            } else {
+                                row.withInteger(
+                                    lookupCountIndex,
+                                    successfulLookupsBySession[
+                                        row.cells[idIndex].portableIdentityValue(),
+                                    ] ?: 0,
+                                )
+                            }
+                        },
+                    )
+                }
+                else -> table
+            }
+        },
+    )
+}
+
+private fun ImmersionPortableTable.columnIndex(name: String): Int =
+    columns.indexOfFirst { it.name == name }.also { index ->
+        require(index >= 0) { "Portable table ${this.name} is missing column $name" }
+    }
+
+private fun ImmersionPortableRow.withInteger(
+    index: Int,
+    value: Long,
+): ImmersionPortableRow =
+    copy(
+        cells = cells.toMutableList().also { cells ->
+            cells[index] = ImmersionPortableCell(
+                kind = ImmersionPortableCellKind.INTEGER,
+                integerValue = value,
+            )
+        },
+    )
+
 private fun SqlDriver.mergePortableTable(
     table: ImmersionPortableTable,
     archiveIncludesRawText: Boolean,
@@ -3440,6 +3692,94 @@ private fun SqlDriver.mergePortableTable(
         totals + PortableMergeCounts(conflicts = 1)
     }
 }
+
+private fun SqlDriver.repairLookupSuccessMetrics(updatedAtEpochMillis: Long) {
+    execute(
+        identifier = null,
+        sql = """
+            UPDATE immersion_event
+            SET lookup_delta = CASE
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM immersion_lookup
+                    WHERE
+                        immersion_lookup.event_id = immersion_event.id
+                        AND immersion_lookup.status = 'SUCCESS'
+                ) THEN 1
+                ELSE 0
+            END
+            WHERE type = 'LOOKUP'
+        """.trimIndent(),
+        parameters = 0,
+    ).value
+    execute(
+        identifier = null,
+        sql = """
+            UPDATE immersion_session
+            SET lookup_count = (
+                SELECT count(*)
+                FROM immersion_lookup
+                WHERE
+                    immersion_lookup.session_id = immersion_session.id
+                    AND immersion_lookup.status = 'SUCCESS'
+            )
+            WHERE legacy_import = 0
+        """.trimIndent(),
+        parameters = 0,
+    ).value
+    execute(
+        identifier = null,
+        sql = """
+            INSERT INTO immersion_rollup_dirty(local_date, title_id, reason, updated_at)
+            SELECT
+                immersion_event.local_date,
+                immersion_session.title_id,
+                'LOOKUP_SUCCESS_REPAIR',
+                ?
+            FROM immersion_event
+            JOIN immersion_lookup ON immersion_lookup.event_id = immersion_event.id
+            JOIN immersion_session ON immersion_session.id = immersion_event.session_id
+            GROUP BY immersion_event.local_date, immersion_session.title_id
+            ON CONFLICT(local_date, title_id, reason) DO UPDATE SET
+                updated_at = max(updated_at, excluded.updated_at)
+        """.trimIndent(),
+        parameters = 1,
+    ) {
+        bindLong(0, updatedAtEpochMillis)
+    }.value
+}
+
+private fun SqlDriver.immersionSourceDateRange(): tachiyomi.domain.immersion.model.LocalDateRange? =
+    executeQuery(
+        identifier = null,
+        sql = """
+            SELECT min(local_date), max(local_date)
+            FROM (
+                SELECT local_date
+                FROM immersion_event
+                UNION ALL
+                SELECT legacy_local_date
+                FROM immersion_session
+                WHERE legacy_import = 1 AND legacy_local_date IS NOT NULL
+            )
+        """.trimIndent(),
+        mapper = { cursor ->
+            check(cursor.next().value)
+            val first = cursor.getLong(0)
+            val last = cursor.getLong(1)
+            QueryResult.Value(
+                if (first == null || last == null) {
+                    null
+                } else {
+                    tachiyomi.domain.immersion.model.LocalDateRange(
+                        ImmersionLocalDate(first),
+                        ImmersionLocalDate(last),
+                    )
+                },
+            )
+        },
+        parameters = 0,
+    ).value
 
 private fun SqlDriver.selectPortableRowByPrimaryKey(
     table: ImmersionPortableTable,
@@ -3824,6 +4164,14 @@ private fun Boolean.toLong(): Long = if (this) 1 else 0
 private fun identityConflict(message: String) =
     ImmersionDataException(PersistenceErrorCode.IDENTITY_CONFLICT, message)
 
+private fun repairedAnkiEventId(operation: PendingAnkiOperation): EventId =
+    EventId(
+        UUID.nameUUIDFromBytes(
+            "$ANKI_REPAIR_EVENT_NAMESPACE\u0000${operation.token.operationId.value}"
+                .toByteArray(StandardCharsets.UTF_8),
+        ).toString(),
+    )
+
 private const val MAX_PAGE_SIZE = 500
 private const val SOURCE_EXCERPT_LENGTH = 240
 private const val IMMERSION_PORTABLE_FORMAT_VERSION = 1
@@ -3834,6 +4182,9 @@ private const val MILLIS_PER_DAY = 86_400_000L
 private const val MAX_ZONE_OFFSET_MILLIS = 18L * 60L * 60L * 1_000L
 private const val MAX_ROLLUP_EVENT_DURATION_MILLIS = 7L * MILLIS_PER_DAY
 private const val UTF8 = "UTF-8"
+private const val MIN_TIMEZONE_OFFSET_SECONDS = -18 * 60 * 60
+private const val MAX_TIMEZONE_OFFSET_SECONDS = 18 * 60 * 60
+private const val ANKI_REPAIR_EVENT_NAMESPACE = "chimahon-immersion-anki-repair-event"
 
 private val IMMERSION_PORTABLE_TABLES = listOf(
     "immersion_title",

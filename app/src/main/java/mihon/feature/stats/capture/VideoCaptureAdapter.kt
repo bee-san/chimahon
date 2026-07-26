@@ -2,6 +2,8 @@
 
 package mihon.feature.stats.capture
 
+import kotlinx.collections.immutable.PersistentMap
+import kotlinx.collections.immutable.persistentMapOf
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,6 +26,7 @@ import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.NetCharacterProgress
 import tachiyomi.domain.immersion.model.NonNegativeCounter
 import tachiyomi.domain.immersion.model.RawTextRetention
+import tachiyomi.domain.immersion.model.SessionId
 import tachiyomi.domain.immersion.model.SourceUnitId
 import tachiyomi.domain.immersion.model.SubtitleSourceLocator
 import tachiyomi.domain.immersion.model.TitleId
@@ -32,6 +35,7 @@ import tachiyomi.domain.immersion.service.CaptureCommand
 import tachiyomi.domain.immersion.service.DefaultUnicodeCountPolicy
 import tachiyomi.domain.immersion.service.FinalizeReason
 import tachiyomi.domain.immersion.service.ImmersionRecorder
+import tachiyomi.domain.immersion.service.InteractionProvenance
 import tachiyomi.domain.immersion.service.PauseReason
 import tachiyomi.domain.immersion.service.RecordResult
 import tachiyomi.domain.immersion.service.ResumeReason
@@ -157,6 +161,49 @@ data class VideoMediaCaptureContext(
     val frameIdentity: String? = null,
 )
 
+data class VideoSubtitleCueLookupKey(
+    val trackId: String,
+    val role: VideoSubtitleRole,
+    val cueIndex: Int,
+    val startMillis: Long,
+    val endMillis: Long,
+    val normalizedTextHash: String,
+)
+
+data class VideoOcrRegionLookupKey(
+    val timestampMillis: Long,
+    val frameIdentity: String,
+    val regionId: String,
+    val engineId: String,
+    val engineVersion: Int,
+    val normalizedTextHash: String,
+)
+
+data class VideoInteractionCaptureContext(
+    val sessionId: SessionId? = null,
+    val subtitleSources: Map<VideoSubtitleCueLookupKey, SourceUnitId> = emptyMap(),
+    val ocrSources: Map<VideoOcrRegionLookupKey, SourceUnitId> = emptyMap(),
+) {
+    fun provenanceFor(cue: VideoSubtitleCueCapture): InteractionProvenance? {
+        val session = sessionId ?: return null
+        return InteractionProvenance(
+            sessionId = session,
+            sourceUnitId = subtitleSources[cue.lookupKey()],
+        )
+    }
+
+    fun provenanceFor(
+        frame: VideoOcrFrameCapture,
+        region: VideoOcrRegionCapture,
+    ): InteractionProvenance? {
+        val session = sessionId ?: return null
+        return InteractionProvenance(
+            sessionId = session,
+            sourceUnitId = ocrSources[frame.lookupKey(region)],
+        )
+    }
+}
+
 /**
  * Converts live player callbacks into event-backed immersion data.
  *
@@ -201,18 +248,26 @@ class VideoCaptureAdapter(
         ),
     )
     private val mutableMediaContext = MutableStateFlow<VideoMediaCaptureContext?>(null)
+    private val mutableInteractionContext = MutableStateFlow(VideoInteractionCaptureContext())
     private var bufferingJob: Job? = null
     private var bufferingGeneration = 0L
 
     val coverage: StateFlow<VideoCoverageSnapshot> = mutableCoverage.asStateFlow()
     val progress: StateFlow<VideoProgressSnapshot> = mutableProgress.asStateFlow()
     val mediaContext: StateFlow<VideoMediaCaptureContext?> = mutableMediaContext.asStateFlow()
+    val interactionContext: StateFlow<VideoInteractionCaptureContext> = mutableInteractionContext.asStateFlow()
 
     init {
         require(bufferingGraceMillis >= 0) { "Buffering grace cannot be negative" }
         workerScope.launch {
             val state = AdapterState()
             for (command in commands) {
+                if (state.finalized) {
+                    if (command is AdapterCommand.Finalize) {
+                        command.completion.complete(Unit)
+                    }
+                    continue
+                }
                 when (command) {
                     AdapterCommand.Playable -> ensureStarted(state)
                     is AdapterCommand.Playing -> handlePlaying(state, command.playing)
@@ -309,6 +364,17 @@ class VideoCaptureAdapter(
         commands.trySend(AdapterCommand.OcrHidden)
     }
 
+    fun snapshotSubtitleLookupProvenance(cue: VideoSubtitleCueCapture): InteractionProvenance? {
+        return interactionContext.value.provenanceFor(cue)
+    }
+
+    fun snapshotOcrLookupProvenance(
+        frame: VideoOcrFrameCapture,
+        region: VideoOcrRegionCapture,
+    ): InteractionProvenance? {
+        return interactionContext.value.provenanceFor(frame, region)
+    }
+
     fun onEpisodeCompleted() {
         commands.trySend(AdapterCommand.EpisodeCompleted)
     }
@@ -331,10 +397,12 @@ class VideoCaptureAdapter(
     }
 
     private suspend fun ensureStarted(state: AdapterState): SessionHandle? {
+        if (state.finalized) return null
         state.handle?.let { return it }
         return when (val result = recorder.startSession(SessionContext(title = title, incognito = incognito))) {
             is SessionStartResult.Started -> result.handle.also { handle ->
                 state.handle = handle
+                publishInteractionContext(state)
                 if (state.blockers.isNotEmpty()) {
                     recorder.pause(handle, pauseReason(state.blockers))
                 }
@@ -488,6 +556,7 @@ class VideoCaptureAdapter(
             if (contributes) state.learningSubtitleSources += source.id
             state.replayOrdinals[source.id] = replayOrdinal + 1
             state.subtitleExposureState[source.id] = CueExposureState(position, state.seekGeneration)
+            state.subtitleLookupSources = state.subtitleLookupSources.put(cue.lookupKey(), source.id)
             mutableMediaContext.value = VideoMediaCaptureContext(
                 animeId = animeId,
                 episodeId = episode.episodeId,
@@ -497,6 +566,7 @@ class VideoCaptureAdapter(
                 sourceStartMillis = cue.startMillis,
                 sourceEndMillis = cue.endMillis,
             )
+            publishInteractionContext(state)
             publishCoverage(state)
         }
     }
@@ -515,11 +585,19 @@ class VideoCaptureAdapter(
         val handle = ensureStarted(state) ?: return
         if (CaptureBlocker.Background in state.blockers || state.externalPlayback) return
         val visibleSources = linkedSetOf<SourceUnitId>()
+        var lookupSourcesChanged = false
         frame.regions.forEachIndexed { index, region ->
             val anchor = stableOcrAnchor(state, frame, region, index)
             val source = ocrSource(frame, region, anchor)
             visibleSources += source.id
-            if (source.id in state.activeOcrSources) return@forEachIndexed
+            if (source.id in state.activeOcrSources) {
+                val lookupKey = frame.lookupKey(region)
+                if (state.ocrLookupSources[lookupKey] != source.id) {
+                    state.ocrLookupSources = state.ocrLookupSources.put(lookupKey, source.id)
+                    lookupSourcesChanged = true
+                }
+                return@forEachIndexed
+            }
             val contributes = region.languageTag.matchesLearningLanguage(learningLanguage)
             val count = source.characterCounts.gross
             val globallySeen = source.id in state.seenSources || recorder.hasSeenSource(source.id)
@@ -539,6 +617,11 @@ class VideoCaptureAdapter(
                 state.seenSources += source.id
                 state.ocrSources += source.id
                 state.replayOrdinals[source.id] = replayOrdinal + 1
+                val lookupKey = frame.lookupKey(region)
+                if (state.ocrLookupSources[lookupKey] != source.id) {
+                    state.ocrLookupSources = state.ocrLookupSources.put(lookupKey, source.id)
+                    lookupSourcesChanged = true
+                }
                 mutableMediaContext.value = VideoMediaCaptureContext(
                     animeId = animeId,
                     episodeId = episode.episodeId,
@@ -552,6 +635,7 @@ class VideoCaptureAdapter(
                 visibleSources -= source.id
             }
         }
+        if (lookupSourcesChanged) publishInteractionContext(state)
         state.activeOcrSources.clear()
         state.activeOcrSources += visibleSources
         state.ocrFrames += frame.timestampMillis
@@ -630,7 +714,12 @@ class VideoCaptureAdapter(
         state: AdapterState,
         reason: FinalizeReason,
     ) {
+        state.finalized = true
         state.handle?.let { recorder.finalize(it, reason) }
+        state.handle = null
+        state.subtitleLookupSources = persistentMapOf()
+        state.ocrLookupSources = persistentMapOf()
+        publishInteractionContext(state)
     }
 
     private fun subtitleSource(cue: VideoSubtitleCueCapture): ImmersionSourceUnit {
@@ -719,8 +808,17 @@ class VideoCaptureAdapter(
         )
     }
 
+    private fun publishInteractionContext(state: AdapterState) {
+        mutableInteractionContext.value = VideoInteractionCaptureContext(
+            sessionId = state.handle?.sessionId,
+            subtitleSources = state.subtitleLookupSources,
+            ocrSources = state.ocrLookupSources,
+        )
+    }
+
     private data class AdapterState(
         var handle: SessionHandle? = null,
+        var finalized: Boolean = false,
         val blockers: MutableSet<CaptureBlocker> = mutableSetOf(CaptureBlocker.NotPlaying),
         val activeSubtitleSources: MutableMap<VideoSubtitleRole, SourceUnitId> = mutableMapOf(),
         val activeOcrSources: MutableSet<SourceUnitId> = mutableSetOf(),
@@ -732,6 +830,8 @@ class VideoCaptureAdapter(
         val replayOrdinals: MutableMap<SourceUnitId, Int> = mutableMapOf(),
         val subtitleExposureState: MutableMap<SourceUnitId, CueExposureState> = mutableMapOf(),
         val ocrAnchors: MutableMap<String, OcrAnchor> = mutableMapOf(),
+        var subtitleLookupSources: PersistentMap<VideoSubtitleCueLookupKey, SourceUnitId> = persistentMapOf(),
+        var ocrLookupSources: PersistentMap<VideoOcrRegionLookupKey, SourceUnitId> = persistentMapOf(),
         var tracks: SubtitleTrackState = SubtitleTrackState(),
         var subtitleVisible: Boolean = true,
         var buffering: Boolean = false,
@@ -855,6 +955,26 @@ private fun normalize(value: String): String =
     Normalizer.normalize(value, Normalizer.Form.NFC)
         .trim()
         .replace(Regex("\\s+"), " ")
+
+private fun VideoSubtitleCueCapture.lookupKey(): VideoSubtitleCueLookupKey =
+    VideoSubtitleCueLookupKey(
+        trackId = trackId,
+        role = role,
+        cueIndex = cueIndex,
+        startMillis = startMillis,
+        endMillis = endMillis,
+        normalizedTextHash = sha256(normalize(text)),
+    )
+
+private fun VideoOcrFrameCapture.lookupKey(region: VideoOcrRegionCapture): VideoOcrRegionLookupKey =
+    VideoOcrRegionLookupKey(
+        timestampMillis = timestampMillis,
+        frameIdentity = frameIdentity,
+        regionId = region.regionId,
+        engineId = region.engineId,
+        engineVersion = region.engineVersion,
+        normalizedTextHash = sha256(normalize(region.text)),
+    )
 
 private fun stableUuid(namespace: String, value: String): String =
     UUID.nameUUIDFromBytes(

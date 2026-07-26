@@ -58,6 +58,8 @@ abstract class PagerViewer(
             isVertical: Boolean,
             mediaInfo: chimahon.MediaInfo?,
             sourcePage: ReaderPage?,
+            sourceBlock: OcrTextBlock?,
+            sourceBlockIndex: Int,
         ) -> Unit
     )? = null
 
