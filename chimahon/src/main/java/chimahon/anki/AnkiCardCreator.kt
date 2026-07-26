@@ -483,7 +483,7 @@ object AnkiCardCreator {
             }
 
             val fieldMap = parseFieldMap(effectiveFieldMapJson)
-            xLogD("addToAnki: parsed fieldMap=$fieldMap")
+            xLogD("addToAnki: parsed ${fieldMap.size} field mappings")
             val cloze = if (sentence.isNotEmpty() && offset >= 0) {
                 // Use result.matched (the exact surface form the dictionary engine consumed)
                 // so the bold window is precisely the word that was looked up, not the base form.
@@ -784,7 +784,7 @@ object AnkiCardCreator {
                                         target.noteId
                                     }
                                 }
-                                xLogD("addToAnki: built fields=$fields")
+                                xLogD("addToAnki: built ${fields.size} fields")
                                 if (!preparedMedia.hasStorableMedia) {
                                     warnings += preparedMedia.screenshot.warningsWithoutStorage()
                                 }

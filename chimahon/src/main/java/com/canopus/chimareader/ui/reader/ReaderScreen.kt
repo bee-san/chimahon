@@ -31,6 +31,8 @@ import com.canopus.chimareader.data.Statistics
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import tachiyomi.core.common.i18n.stringResource
+import tachiyomi.i18n.kmk.KMR
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 
@@ -64,6 +66,7 @@ fun ReaderScreen(
     onSelectionRectsReceived: ((String) -> Unit)? = null,
     recognizeImage: suspend (Bitmap, OcrLanguage) -> List<OcrResult> = { _, _ -> emptyList() },
     onImageOcrLookupRequested: (String, String, Int, Float, Float, Float, Float, Boolean, Bitmap) -> Unit = { _, _, _, _, _, _, _, _, _ -> },
+    sourceTarget: NovelSourceNavigationTarget? = null,
 ) {
     val context = LocalContext.current
 
@@ -109,14 +112,28 @@ fun ReaderScreen(
     }
 
     var loadingMessage by remember { mutableStateOf("Opening...") }
+    val staleStatsSourceMessage = context.stringResource(KMR.strings.stats_source_navigation_stale)
 
-    val loadState by produceState<ReaderLoadState>(initialValue = ReaderLoadState.Loading, key1 = book.id) {
+    val loadState by produceState<ReaderLoadState>(
+        initialValue = ReaderLoadState.Loading,
+        key1 = book.id,
+        key2 = sourceTarget,
+    ) {
         value = try {
             val loader = withContext(Dispatchers.IO) {
                 ReaderLoaderViewModel(context, book)
             }
             val document = loader.document ?: error("Could not open book")
             val rootUrl = loader.rootUrl ?: error("Missing root URL")
+            if (sourceTarget != null) {
+                require(
+                    withContext(Dispatchers.IO) {
+                        sourceTarget.matches(document)
+                    },
+                ) {
+                    staleStatsSourceMessage
+                }
+            }
 
             val ttuSyncManager = try {
                 Injekt.get<com.canopus.chimareader.ttusync.TtuSyncManager>()
@@ -141,6 +158,7 @@ fun ReaderScreen(
                     settings = settings,
                     settingsNamespace = settingsNamespace,
                     scope = scope,
+                    sourceTarget = sourceTarget,
                 ),
             )
         } catch (error: CancellationException) {

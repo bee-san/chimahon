@@ -10,16 +10,32 @@ import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
+import tachiyomi.domain.immersion.model.AnalyticsActivityTotals
+import tachiyomi.domain.immersion.model.AnalyticsAnkiSummary
 import tachiyomi.domain.immersion.model.AnalyticsBucketInventory
 import tachiyomi.domain.immersion.model.AnalyticsBucketScale
+import tachiyomi.domain.immersion.model.AnalyticsCharacterRow
 import tachiyomi.domain.immersion.model.AnalyticsDataQuality
+import tachiyomi.domain.immersion.model.AnalyticsHourActivity
 import tachiyomi.domain.immersion.model.AnalyticsInventoryMetrics
+import tachiyomi.domain.immersion.model.AnalyticsPage
+import tachiyomi.domain.immersion.model.AnalyticsSort
+import tachiyomi.domain.immersion.model.AnalyticsTemporalActivity
+import tachiyomi.domain.immersion.model.AnalyticsTitleSeriesSelection
+import tachiyomi.domain.immersion.model.AnalyticsTitleTrendDailyPoint
+import tachiyomi.domain.immersion.model.AnalyticsVocabularyFirstSeenDay
+import tachiyomi.domain.immersion.model.AnalyticsWeekdayActivity
+import tachiyomi.domain.immersion.model.AnalyticsWordRow
+import tachiyomi.domain.immersion.model.AnkiSnapshotStatus
+import tachiyomi.domain.immersion.model.CapabilityState
 import tachiyomi.domain.immersion.model.CharacterVolume
+import tachiyomi.domain.immersion.model.ImmersionAnkiSnapshot
 import tachiyomi.domain.immersion.model.ImmersionDailyRollup
 import tachiyomi.domain.immersion.model.ImmersionGoal
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
 import tachiyomi.domain.immersion.model.LanguageTag
 import tachiyomi.domain.immersion.model.LocalDateRange
+import tachiyomi.domain.immersion.model.MaturityTier
 import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.MillisecondDuration
 import tachiyomi.domain.immersion.model.NetCharacterProgress
@@ -28,6 +44,7 @@ import tachiyomi.domain.immersion.model.ProvenanceState
 import tachiyomi.domain.immersion.model.ReadingMetrics
 import tachiyomi.domain.immersion.model.StatsFilter
 import tachiyomi.domain.immersion.model.TitleId
+import tachiyomi.domain.immersion.model.UnicodeCodePoint
 import tachiyomi.domain.immersion.repository.ImmersionAnalyticsRepository
 import tachiyomi.domain.immersion.repository.ImmersionGoalRepository
 import java.time.Instant
@@ -56,6 +73,98 @@ class ImmersionAnalyticsServiceTest {
         result.value.points.map { it.metrics.characters.gross.value } shouldBe listOf(100, 0, 300)
         result.value.points.map { it.cumulativeMetrics.characters.gross.value } shouldBe
             listOf(100, 100, 400)
+        result.diagnostics.rowCount shouldBe 2
+    }
+
+    @Test
+    fun `temporal activity zero-fills every local hour and ISO weekday`() = runTest {
+        val filter = StatsFilter(
+            dateRange = LocalDateRange(date("2026-07-20"), date("2026-07-21")),
+        )
+        stub(listOf(rollup("2026-07-20", 100), rollup("2026-07-21", 200)))
+        coEvery { repository.temporalActivity(filter) } returns AnalyticsTemporalActivity(
+            hours = listOf(
+                AnalyticsHourActivity(9, AnalyticsActivityTotals(3_600_000, 100, 90, 80)),
+            ),
+            weekdays = listOf(
+                AnalyticsWeekdayActivity(1, AnalyticsActivityTotals(3_600_000, 100, 90, 80)),
+            ),
+        )
+
+        val result = ImmersionAnalyticsService(repository, goalRepository).temporalActivity(filter)
+
+        result.value.hours shouldHaveSize 24
+        result.value.hours.map { it.hourOfDay } shouldBe (0..23).toList()
+        result.value.hours.single { it.hourOfDay == 9 }.totals
+            .readingSpeedPerHour(filter.characterMetric) shouldBe 100.0
+        result.value.hours.single { it.hourOfDay == 10 }.totals shouldBe AnalyticsActivityTotals()
+        result.value.weekdays shouldHaveSize 7
+        result.value.weekdays.map { it.isoDayOfWeek } shouldBe (1..7).toList()
+        result.diagnostics.rowCount shouldBe 2
+    }
+
+    @Test
+    fun `title trends retain repository ranking and zero-fill each bounded series`() = runTest {
+        val range = LocalDateRange(date("2026-07-20"), date("2026-07-22"))
+        val filter = StatsFilter(dateRange = range)
+        stub(listOf(rollup("2026-07-20", 100), rollup("2026-07-22", 300)))
+        coEvery {
+            repository.titleTrendDaily(
+                filter,
+                AnalyticsTitleSeriesSelection.TOP_CHARACTERS,
+                2,
+            )
+        } returns listOf(
+            AnalyticsTitleTrendDailyPoint(
+                titleId = TITLE_TWO,
+                displayTitle = "Second",
+                mediaKind = MediaKind.NOVEL,
+                languageTag = LanguageTag("ja"),
+                date = date("2026-07-22"),
+                metrics = metrics(300),
+            ),
+            AnalyticsTitleTrendDailyPoint(
+                titleId = TITLE,
+                displayTitle = "First",
+                mediaKind = MediaKind.NOVEL,
+                languageTag = LanguageTag("ja"),
+                date = date("2026-07-20"),
+                metrics = metrics(100),
+            ),
+        )
+
+        val result = ImmersionAnalyticsService(repository, goalRepository).titleTrends(
+            filter,
+            AnalyticsBucketScale.DAY,
+            maxTitles = 2,
+        )
+
+        result.value.series.map { it.titleId } shouldBe listOf(TITLE_TWO, TITLE)
+        result.value.series.first().points.map { it.metrics.characters.gross.value } shouldBe
+            listOf(0, 0, 300)
+        result.value.series.last().points.map { it.metrics.characters.gross.value } shouldBe
+            listOf(100, 0, 0)
+        result.value.series.last().points.map { it.cumulativeMetrics.characters.gross.value } shouldBe
+            listOf(100, 100, 100)
+    }
+
+    @Test
+    fun `vocabulary first seen zero-fills buckets and accumulates only true global novelty`() = runTest {
+        val range = LocalDateRange(date("2026-07-20"), date("2026-07-22"))
+        val filter = StatsFilter(dateRange = range, titleIds = setOf(TITLE))
+        stub(listOf(rollup("2026-07-20", 100), rollup("2026-07-22", 300)))
+        coEvery { repository.vocabularyFirstSeenByDate(filter) } returns listOf(
+            AnalyticsVocabularyFirstSeenDay(date("2026-07-20"), 2),
+            AnalyticsVocabularyFirstSeenDay(date("2026-07-22"), 3),
+        )
+
+        val result = ImmersionAnalyticsService(repository, goalRepository).vocabularyFirstSeen(
+            filter,
+            AnalyticsBucketScale.DAY,
+        )
+
+        result.value.points.map { it.newWords } shouldBe listOf(2, 0, 3)
+        result.value.points.map { it.cumulativeNewWords } shouldBe listOf(2, 2, 5)
         result.diagnostics.rowCount shouldBe 2
     }
 
@@ -185,6 +294,37 @@ class ImmersionAnalyticsServiceTest {
     }
 
     @Test
+    fun `finish-title goals count captured source units within the title scope`() = runTest {
+        val range = LocalDateRange(date("2026-07-24"), date("2026-07-25"))
+        stub(
+            listOf(
+                rollup("2026-07-24", 100, sourceUnits = 3),
+                rollup("2026-07-25", 100, sourceUnits = 2),
+            ),
+        )
+        stubGoals(
+            goal(
+                id = "finish-title",
+                metric = "source_units",
+                target = 10.0,
+                period = "TOTAL",
+                type = "FINISH_TITLE_BY_DATE",
+                startDate = range.start,
+                endDate = range.endInclusive,
+                titleId = TITLE,
+            ),
+        )
+
+        val progress = serviceAt("2026-07-25T12:00:00Z")
+            .goals(StatsFilter(titleIds = setOf(TITLE)))
+            .value
+            .single()
+
+        progress.achieved shouldBe 5.0
+        progress.targetToDate shouldBe 10.0
+    }
+
+    @Test
     fun `goals evaluate stored history instead of the dashboard date range`() = runTest {
         val range = LocalDateRange(date("2026-07-01"), date("2026-07-03"))
         stub(
@@ -211,6 +351,29 @@ class ImmersionAnalyticsServiceTest {
         progress.rollingSevenDayPace shouldBe 100.0
         progress.currentStreakDays shouldBe 3
         progress.longestStreakDays shouldBe 3
+    }
+
+    @Test
+    fun `filtered dashboard only returns goals bound to that exact scope`() = runTest {
+        val first = date("2026-07-01")
+        stub(
+            listOf(
+                rollup("2026-07-01", 100, titleId = TITLE),
+                rollup("2026-07-01", 200, titleId = TITLE_TWO),
+            ),
+        )
+        stubGoals(
+            goal(id = "matching", startDate = first, titleId = TITLE),
+            goal(id = "other-title", startDate = first, titleId = TITLE_TWO),
+            goal(id = "global", startDate = first, titleId = null),
+        )
+
+        val progress = serviceAt("2026-07-01T12:00:00Z")
+            .goals(StatsFilter(titleIds = setOf(TITLE)))
+            .value
+
+        progress.map { it.goal.id } shouldBe listOf("matching")
+        progress.single().achieved shouldBe 100.0
     }
 
     @Test
@@ -369,6 +532,128 @@ class ImmersionAnalyticsServiceTest {
         }
     }
 
+    @Test
+    fun `Anki missing lists stay unavailable without a usable current inventory`() = runTest {
+        val range = LocalDateRange(date("2026-07-01"), date("2026-07-01"))
+        val filter = StatsFilter(
+            dateRange = range,
+            profileIds = setOf("profile"),
+            languageTags = setOf(LanguageTag("ja")),
+        )
+        stub(listOf(rollup("2026-07-01", 100)))
+        coEvery { repository.ankiSummary(filter) } returnsMany listOf(
+            ankiSummary(snapshot = null),
+            ankiSummary(snapshot = ankiSnapshot(CapabilityState.UNAVAILABLE)),
+        )
+        val service = serviceAt("2026-07-01T12:00:00Z")
+
+        val missingSnapshot = service.anki(filter).value
+        val unavailableCapability = service.anki(filter).value
+
+        missingSnapshot.missingHighFrequencyWords shouldBe emptyList()
+        missingSnapshot.missingHighFrequencyCharacters shouldBe emptyList()
+        unavailableCapability.missingHighFrequencyWords shouldBe emptyList()
+        unavailableCapability.missingHighFrequencyCharacters shouldBe emptyList()
+        coVerify(exactly = 0) {
+            repository.vocabularyPage(any(), any(), any(), any(), any())
+        }
+        coVerify(exactly = 0) {
+            repository.characterPage(any(), any(), any(), any(), any())
+        }
+    }
+
+    @Test
+    fun `Anki missing lists use the full filter with stale last known good inventory`() = runTest {
+        val range = LocalDateRange(date("2026-07-01"), date("2026-07-02"))
+        val filter = StatsFilter(
+            dateRange = range,
+            mediaKinds = setOf(MediaKind.NOVEL),
+            profileIds = setOf("profile"),
+            languageTags = setOf(LanguageTag("ja")),
+            titleIds = setOf(TITLE),
+            includeLegacyAggregates = false,
+            includeRereadsAndReplays = false,
+            provenanceStates = setOf(ProvenanceState.AVAILABLE),
+        )
+        val missingFilter = filter.copy(maturityTiers = setOf(MaturityTier.UNKNOWN))
+        val word = AnalyticsWordRow(
+            id = "word-cat",
+            languageTag = LanguageTag("ja"),
+            headword = "猫",
+            reading = "ねこ",
+            partOfSpeech = "noun",
+            occurrenceCount = 4,
+            titleCount = 1,
+            firstSeenAtEpochMillis = 1,
+            lastSeenAtEpochMillis = 2,
+            frequencyRank = 10,
+            maturity = MaturityTier.UNKNOWN,
+            matchConfidence = null,
+        )
+        val character = AnalyticsCharacterRow(
+            codePoint = UnicodeCodePoint('猫'.code),
+            rendered = "猫",
+            unicodeName = "CJK UNIFIED IDEOGRAPH-732B",
+            unicodeScript = "HAN",
+            occurrenceCount = 4,
+            wordCount = 1,
+            titleCount = 1,
+            firstSeenAtEpochMillis = 1,
+            lastSeenAtEpochMillis = 2,
+            frequencyRank = 10,
+            maturity = MaturityTier.UNKNOWN,
+        )
+        stub(
+            listOf(
+                rollup("2026-07-01", 100),
+                rollup("2026-07-02", 100),
+            ),
+        )
+        coEvery { repository.ankiSummary(filter) } returns
+            ankiSummary(snapshot = ankiSnapshot(CapabilityState.AVAILABLE, isStale = true))
+        coEvery {
+            repository.vocabularyPage(
+                missingFilter,
+                AnalyticsSort.FREQUENCY_RANK,
+                0,
+                20,
+                null,
+            )
+        } returns AnalyticsPage(listOf(word), null)
+        coEvery {
+            repository.characterPage(
+                missingFilter,
+                AnalyticsSort.FREQUENCY_RANK,
+                0,
+                20,
+                null,
+            )
+        } returns AnalyticsPage(listOf(character), null)
+
+        val result = serviceAt("2026-07-02T12:00:00Z").anki(filter).value
+
+        result.missingHighFrequencyWords shouldBe listOf(word)
+        result.missingHighFrequencyCharacters shouldBe listOf(character)
+        coVerify(exactly = 1) {
+            repository.vocabularyPage(
+                missingFilter,
+                AnalyticsSort.FREQUENCY_RANK,
+                0,
+                20,
+                null,
+            )
+        }
+        coVerify(exactly = 1) {
+            repository.characterPage(
+                missingFilter,
+                AnalyticsSort.FREQUENCY_RANK,
+                0,
+                20,
+                null,
+            )
+        }
+    }
+
     private fun stub(rows: List<ImmersionDailyRollup>) {
         coEvery { repository.dataQuality(any(), any()) } returns AnalyticsDataQuality()
         coEvery { repository.inventoryMetrics(any()) } returns AnalyticsInventoryMetrics()
@@ -434,12 +719,60 @@ class ImmersionAnalyticsServiceTest {
             currentOffsetSeconds = { 0 },
         )
 
+    private fun ankiSummary(snapshot: ImmersionAnkiSnapshot?) =
+        AnalyticsAnkiSummary(
+            snapshot = snapshot,
+            wordCoverageEncountered = 0,
+            wordCoverageKnown = 0,
+            characterCoverageEncountered = 0,
+            characterCoverageKnown = 0,
+            reviewHistoryAvailable = false,
+        )
+
+    private fun ankiSnapshot(
+        capabilityState: CapabilityState,
+        isStale: Boolean = false,
+    ) = ImmersionAnkiSnapshot(
+        id = "snapshot",
+        profileId = "profile",
+        deckScope = "Mining",
+        requestedAtEpochMillis = 1,
+        completedAtEpochMillis = 2,
+        capabilityVersion = 1,
+        capabilityState = capabilityState,
+        providerVersion = "test",
+        supportsNoteModificationTime = true,
+        supportsCardModificationTime = true,
+        supportsReviewHistory = false,
+        status = AnkiSnapshotStatus.COMPLETE,
+        errorCode = null,
+        itemCount = 1,
+        noteCount = 1,
+        matureIntervalDays = 21,
+        mappingHash = "mapping",
+        queryDurationMillis = 1,
+        isComplete = true,
+        isPartial = false,
+        isCurrent = true,
+        isStale = isStale,
+    )
+
+    private fun metrics(characters: Long) = ReadingMetrics(
+        activeTime = MillisecondDuration(characters * 10),
+        characters = CharacterVolume(
+            gross = NonNegativeCounter(characters),
+            uniqueSource = NonNegativeCounter(characters),
+            netProgress = NetCharacterProgress(characters),
+        ),
+    )
+
     private fun rollup(
         date: String,
         characters: Long,
         replay: Boolean = false,
         titleId: TitleId = TITLE,
         poisonedInventory: Long = 0,
+        sourceUnits: Long = 0,
     ) = ImmersionDailyRollup(
         date = date(date),
         profileId = "default",
@@ -457,6 +790,7 @@ class ImmersionAnalyticsServiceTest {
             newCharacters = NonNegativeCounter(poisonedInventory),
             uniqueWords = NonNegativeCounter(poisonedInventory),
             newWords = NonNegativeCounter(poisonedInventory),
+            sourceUnits = NonNegativeCounter(sourceUnits),
             sessions = NonNegativeCounter(1),
         ),
         provenanceState = ProvenanceState.AVAILABLE,

@@ -27,6 +27,13 @@ open class NovelReaderActivity : ComponentActivity() {
 
     companion object {
         internal const val EXTRA_BOOK_DIR = "extra_book_dir"
+        private const val EXTRA_SOURCE_DOCUMENT_ID = "extra_source_document_id"
+        private const val EXTRA_SOURCE_CHAPTER_INDEX = "extra_source_chapter_index"
+        private const val EXTRA_SOURCE_SECTION_ID = "extra_source_section_id"
+        private const val EXTRA_SOURCE_RANGE_START = "extra_source_range_start"
+        private const val EXTRA_SOURCE_RANGE_END_EXCLUSIVE = "extra_source_range_end_exclusive"
+        private const val EXTRA_SOURCE_TEXT_HASH = "extra_source_text_hash"
+        private const val EXTRA_SOURCE_PARSER_REVISION = "extra_source_parser_revision"
 
         /**
          * Set to [ChimaReaderActivity] from AppModule so that BookshelfScreen's
@@ -35,9 +42,22 @@ open class NovelReaderActivity : ComponentActivity() {
          */
         var activityClass: Class<out ComponentActivity> = NovelReaderActivity::class.java
 
-        fun launch(context: Context, bookDir: File) {
+        fun launch(
+            context: Context,
+            bookDir: File,
+            sourceTarget: NovelSourceNavigationTarget? = null,
+        ) {
             val intent = Intent(context, activityClass).apply {
                 putExtra(EXTRA_BOOK_DIR, bookDir.absolutePath)
+                sourceTarget?.let { target ->
+                    putExtra(EXTRA_SOURCE_DOCUMENT_ID, target.documentId)
+                    putExtra(EXTRA_SOURCE_CHAPTER_INDEX, target.chapterIndex)
+                    putExtra(EXTRA_SOURCE_SECTION_ID, target.sectionId)
+                    putExtra(EXTRA_SOURCE_RANGE_START, target.rangeStart)
+                    putExtra(EXTRA_SOURCE_RANGE_END_EXCLUSIVE, target.rangeEndExclusive)
+                    putExtra(EXTRA_SOURCE_TEXT_HASH, target.normalizedTextHash)
+                    putExtra(EXTRA_SOURCE_PARSER_REVISION, target.parserRevision)
+                }
                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
             }
             context.startActivity(intent)
@@ -188,6 +208,40 @@ open class NovelReaderActivity : ComponentActivity() {
 
         val metadata = BookStorage.loadMetadata(root) ?: BookMetadata(folder = root.name)
         bookMetadata = metadata
+        val sourceTargetRequested = listOf(
+            EXTRA_SOURCE_DOCUMENT_ID,
+            EXTRA_SOURCE_CHAPTER_INDEX,
+            EXTRA_SOURCE_SECTION_ID,
+            EXTRA_SOURCE_RANGE_START,
+            EXTRA_SOURCE_RANGE_END_EXCLUSIVE,
+            EXTRA_SOURCE_TEXT_HASH,
+            EXTRA_SOURCE_PARSER_REVISION,
+        ).any { extra -> intent.hasExtra(extra) }
+        val sourceTarget = if (sourceTargetRequested) {
+            runCatching {
+                NovelSourceNavigationTarget(
+                    documentId = requireNotNull(intent.getStringExtra(EXTRA_SOURCE_DOCUMENT_ID)),
+                    chapterIndex = intent.getIntExtra(EXTRA_SOURCE_CHAPTER_INDEX, -1),
+                    sectionId = requireNotNull(intent.getStringExtra(EXTRA_SOURCE_SECTION_ID)),
+                    rangeStart = intent.getIntExtra(EXTRA_SOURCE_RANGE_START, -1),
+                    rangeEndExclusive = intent.getIntExtra(EXTRA_SOURCE_RANGE_END_EXCLUSIVE, -1),
+                    normalizedTextHash = requireNotNull(intent.getStringExtra(EXTRA_SOURCE_TEXT_HASH)),
+                    parserRevision = intent.getIntExtra(EXTRA_SOURCE_PARSER_REVISION, -1),
+                )
+            }.getOrNull()
+        } else {
+            null
+        }
+        if (
+            sourceTargetRequested &&
+            (
+                sourceTarget == null ||
+                    BookStorage.bookIdentityKey(metadata) != sourceTarget.documentId
+                )
+        ) {
+            finish()
+            return
+        }
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
@@ -214,6 +268,7 @@ open class NovelReaderActivity : ComponentActivity() {
                     onImageOcrLookupRequested = { word, sentence, sentenceOffset, x, y, w, h, vertical, bitmap ->
                         onImageOcrLookupRequested(word, sentence, sentenceOffset, x, y, w, h, vertical, bitmap)
                     },
+                    sourceTarget = sourceTarget,
                 )
                 PopupOverlay()
             }

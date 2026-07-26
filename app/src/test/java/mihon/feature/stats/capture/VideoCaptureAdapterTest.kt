@@ -379,6 +379,73 @@ class VideoCaptureAdapterTest {
     }
 
     @Test
+    fun `position bursts coalesce without reordering completion boundaries`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = playingAdapter(recorder)
+
+        adapter.onPlaybackPosition(0, 100_000)
+        adapter.onSubtitleTrackChanged("ja", null, "ja", null)
+        repeat(2_000) { index ->
+            adapter.onPlaybackPosition((index + 1).toLong(), 100_000)
+        }
+        adapter.onEpisodeCompleted()
+        adapter.onTitleCompleted()
+        adapter.finalize().await()
+
+        adapter.progress.value.positionMillis shouldBe 2_000
+        recorder.activities().count { it.eventType == EventType.PROGRESS } shouldBe 1
+        recorder.activities().count { it.eventType == EventType.SEEK } shouldBe 0
+        recorder.activities().filter {
+            it.eventType == EventType.UNIT_COMPLETED || it.eventType == EventType.TITLE_COMPLETED
+        }.map(CaptureCommand.Activity::eventType) shouldBe
+            listOf(EventType.UNIT_COMPLETED, EventType.TITLE_COMPLETED)
+        adapter.queueDiagnostics.value.let {
+            it.depth shouldBe 0
+            it.coalescedCommands shouldBe 1_999
+            it.droppedSnapshots shouldBe 0
+            it.semanticOverflowCommands shouldBe 0
+            it.droppedSemanticCommands shouldBe 0
+        }
+    }
+
+    @Test
+    fun `bounded queue saturation is diagnosed without escaping into playback`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = playingAdapter(recorder)
+
+        val failure = runCatching {
+            repeat(127) { index ->
+                adapter.setSubtitleModeVisible(index % 2 != 0)
+            }
+        }.exceptionOrNull()
+
+        failure shouldBe null
+        adapter.queueDiagnostics.value.let {
+            it.depth shouldBe 128
+            it.overflowDepth shouldBe 64
+            it.highWatermark shouldBe 128
+            it.semanticOverflowCommands shouldBe 64
+            it.droppedSemanticCommands shouldBe 1
+        }
+        adapter.finalize().await()
+        recorder.activities().count { it.eventType == EventType.SUBTITLE_MODE_CHANGED } shouldBe 126
+    }
+
+    @Test
+    fun `recorder exception is diagnosed and later playback commands still drain`() = runTest {
+        val recorder = FakeRecorder(recordFailuresRemaining = 1)
+        val adapter = playingAdapter(recorder)
+
+        adapter.setSubtitleModeVisible(false)
+        adapter.setSubtitleModeVisible(true)
+        adapter.finalize().await()
+
+        adapter.queueDiagnostics.value.workerFailures shouldBe 1
+        recorder.activities().map(CaptureCommand.Activity::eventType) shouldBe
+            listOf(EventType.SUBTITLE_MODE_CHANGED)
+    }
+
+    @Test
     fun `track and subtitle mode changes are explicit events`() = runTest {
         val recorder = FakeRecorder()
         val adapter = playingAdapter(recorder)
@@ -497,6 +564,7 @@ class VideoCaptureAdapterTest {
 
     private class FakeRecorder(
         private val suppressStart: Boolean = false,
+        private var recordFailuresRemaining: Int = 0,
     ) : ImmersionRecorder {
         private val mutableState = MutableStateFlow(ImmersionRecorderSnapshot())
         override val state: StateFlow<ImmersionRecorderSnapshot> = mutableState
@@ -535,6 +603,10 @@ class VideoCaptureAdapterTest {
             handle: SessionHandle,
             command: CaptureCommand,
         ): RecordResult {
+            if (recordFailuresRemaining > 0) {
+                recordFailuresRemaining -= 1
+                error("test recorder failure")
+            }
             commands += command
             return RecordResult.Enqueued(commands.size)
         }

@@ -12,6 +12,12 @@ enum class AnalyticsBucketScale {
 }
 
 @Serializable
+enum class AnalyticsTitleSeriesSelection {
+    TOP_CHARACTERS,
+    MOST_RECENT,
+}
+
+@Serializable
 enum class AnalyticsSort {
     MOST_RECENT,
     MOST_TIME,
@@ -162,6 +168,119 @@ data class AnalyticsTrendPoint(
 data class AnalyticsTrends(
     val scale: AnalyticsBucketScale,
     val points: List<AnalyticsTrendPoint>,
+)
+
+@Serializable
+data class AnalyticsActivityTotals(
+    val activeDurationMillis: Long = 0,
+    val grossCharacters: Long = 0,
+    val uniqueSourceCharacters: Long = 0,
+    val netCharacters: Long = 0,
+) {
+    init {
+        require(activeDurationMillis >= 0)
+        require(grossCharacters >= 0)
+        require(uniqueSourceCharacters >= 0)
+    }
+
+    fun readingSpeedPerHour(metric: CharacterMetric): Double? {
+        if (activeDurationMillis == 0L) return null
+        val characters = when (metric) {
+            CharacterMetric.GROSS -> grossCharacters
+            CharacterMetric.UNIQUE_SOURCE -> uniqueSourceCharacters
+            CharacterMetric.NET_PROGRESS -> netCharacters
+        }
+        if (characters < 0) return null
+        return characters.toDouble() * 3_600_000.0 / activeDurationMillis.toDouble()
+    }
+}
+
+@Serializable
+data class AnalyticsHourActivity(
+    val hourOfDay: Int,
+    val totals: AnalyticsActivityTotals,
+) {
+    init {
+        require(hourOfDay in 0..23)
+    }
+}
+
+@Serializable
+data class AnalyticsWeekdayActivity(
+    val isoDayOfWeek: Int,
+    val totals: AnalyticsActivityTotals,
+) {
+    init {
+        require(isoDayOfWeek in 1..7)
+    }
+}
+
+@Serializable
+data class AnalyticsTemporalActivity(
+    val hours: List<AnalyticsHourActivity>,
+    val weekdays: List<AnalyticsWeekdayActivity>,
+)
+
+@Serializable
+data class AnalyticsTitleTrendDailyPoint(
+    val titleId: TitleId,
+    val displayTitle: String,
+    val mediaKind: MediaKind,
+    val languageTag: LanguageTag?,
+    val date: ImmersionLocalDate,
+    val metrics: ReadingMetrics,
+) {
+    init {
+        require(displayTitle.isNotBlank())
+    }
+}
+
+@Serializable
+data class AnalyticsTitleTrendSeries(
+    val titleId: TitleId,
+    val displayTitle: String,
+    val mediaKind: MediaKind,
+    val languageTag: LanguageTag?,
+    val points: List<AnalyticsTrendPoint>,
+) {
+    init {
+        require(displayTitle.isNotBlank())
+    }
+}
+
+@Serializable
+data class AnalyticsTitleTrends(
+    val scale: AnalyticsBucketScale,
+    val selection: AnalyticsTitleSeriesSelection,
+    val series: List<AnalyticsTitleTrendSeries>,
+)
+
+@Serializable
+data class AnalyticsVocabularyFirstSeenDay(
+    val date: ImmersionLocalDate,
+    val newWords: Long,
+) {
+    init {
+        require(newWords >= 0)
+    }
+}
+
+@Serializable
+data class AnalyticsVocabularyFirstSeenPoint(
+    val range: LocalDateRange,
+    val newWords: Long,
+    val cumulativeNewWords: Long,
+) {
+    init {
+        require(newWords >= 0)
+        require(cumulativeNewWords >= newWords)
+    }
+}
+
+@Serializable
+data class AnalyticsVocabularyFirstSeen(
+    val scale: AnalyticsBucketScale,
+    val points: List<AnalyticsVocabularyFirstSeenPoint>,
 )
 
 @Serializable

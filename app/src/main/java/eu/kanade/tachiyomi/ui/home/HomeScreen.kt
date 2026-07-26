@@ -231,7 +231,15 @@ object HomeScreen : Screen() {
                             if (it.toDownloads) {
                                 navigator.push(DownloadQueueScreen)
                             } else if (it.toStats) {
-                                navigator.push(eu.kanade.tachiyomi.ui.stats.StatsScreen())
+                                // KMK -->
+                                if (
+                                    Injekt.get<tachiyomi.domain.immersion.service.ImmersionStatsPreferences>()
+                                        .uiEnabled()
+                                        .get()
+                                ) {
+                                    navigator.push(eu.kanade.tachiyomi.ui.stats.StatsScreen())
+                                }
+                                // KMK <--
                             } else if (it.toLibraryUpdateErrors) {
                                 navigator.push(LibraryUpdateErrorScreen())
                             }

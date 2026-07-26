@@ -2,11 +2,13 @@
 
 package tachiyomi.domain.immersion.service
 
+import tachiyomi.domain.immersion.model.AnalyticsActivityTotals
 import tachiyomi.domain.immersion.model.AnalyticsAnkiSummary
 import tachiyomi.domain.immersion.model.AnalyticsBucketScale
 import tachiyomi.domain.immersion.model.AnalyticsCharacterRow
 import tachiyomi.domain.immersion.model.AnalyticsComparison
 import tachiyomi.domain.immersion.model.AnalyticsGoalProgress
+import tachiyomi.domain.immersion.model.AnalyticsHourActivity
 import tachiyomi.domain.immersion.model.AnalyticsInventoryMetrics
 import tachiyomi.domain.immersion.model.AnalyticsOverview
 import tachiyomi.domain.immersion.model.AnalyticsPage
@@ -18,9 +20,16 @@ import tachiyomi.domain.immersion.model.AnalyticsSessionDetail
 import tachiyomi.domain.immersion.model.AnalyticsSort
 import tachiyomi.domain.immersion.model.AnalyticsSourceOccurrence
 import tachiyomi.domain.immersion.model.AnalyticsStreak
+import tachiyomi.domain.immersion.model.AnalyticsTemporalActivity
 import tachiyomi.domain.immersion.model.AnalyticsTitleRow
+import tachiyomi.domain.immersion.model.AnalyticsTitleSeriesSelection
+import tachiyomi.domain.immersion.model.AnalyticsTitleTrendSeries
+import tachiyomi.domain.immersion.model.AnalyticsTitleTrends
 import tachiyomi.domain.immersion.model.AnalyticsTrendPoint
 import tachiyomi.domain.immersion.model.AnalyticsTrends
+import tachiyomi.domain.immersion.model.AnalyticsVocabularyFirstSeen
+import tachiyomi.domain.immersion.model.AnalyticsVocabularyFirstSeenPoint
+import tachiyomi.domain.immersion.model.AnalyticsWeekdayActivity
 import tachiyomi.domain.immersion.model.AnalyticsWordRow
 import tachiyomi.domain.immersion.model.CapabilityState
 import tachiyomi.domain.immersion.model.CharacterCoverage
@@ -131,6 +140,92 @@ class ImmersionAnalyticsService(
                 )
             }
             AnalyticsTrends(scale, points) to rows.size
+        }
+
+    suspend fun temporalActivity(
+        filter: StatsFilter,
+    ): AnalyticsResult<AnalyticsTemporalActivity> =
+        measured(AnalyticsQueryFamily.TRENDS, filter) {
+            val sparse = analyticsRepository.temporalActivity(filter)
+            val hours = sparse.hours.associateBy { it.hourOfDay }
+            val weekdays = sparse.weekdays.associateBy { it.isoDayOfWeek }
+            AnalyticsTemporalActivity(
+                hours = (0..23).map { hour ->
+                    hours[hour] ?: AnalyticsHourActivity(
+                        hourOfDay = hour,
+                        totals = AnalyticsActivityTotals(),
+                    )
+                },
+                weekdays = (1..7).map { day ->
+                    weekdays[day] ?: AnalyticsWeekdayActivity(
+                        isoDayOfWeek = day,
+                        totals = AnalyticsActivityTotals(),
+                    )
+                },
+            ) to (sparse.hours.size + sparse.weekdays.size)
+        }
+
+    suspend fun titleTrends(
+        filter: StatsFilter,
+        scale: AnalyticsBucketScale,
+        selection: AnalyticsTitleSeriesSelection = AnalyticsTitleSeriesSelection.TOP_CHARACTERS,
+        maxTitles: Int = DEFAULT_TITLE_TREND_LIMIT,
+    ): AnalyticsResult<AnalyticsTitleTrends> {
+        require(maxTitles in 1..MAX_TITLE_TREND_LIMIT) {
+            "Title trend limit must be between 1 and $MAX_TITLE_TREND_LIMIT"
+        }
+        return measured(AnalyticsQueryFamily.TRENDS, filter) {
+            val range = effectiveRange(filter)
+            val buckets = calendar.buckets(range, scale)
+            val rows = analyticsRepository.titleTrendDaily(
+                filter.copy(dateRange = range, comparisonRange = null),
+                selection,
+                maxTitles,
+            )
+            val series = rows.groupByTo(linkedMapOf()) { it.titleId }
+                .values
+                .take(maxTitles)
+                .map { titleRows ->
+                    var cumulative = ReadingMetrics()
+                    val points = buckets.map { bucket ->
+                        val metrics = titleRows
+                            .filter { it.date in bucket.start..bucket.endInclusive }
+                            .map { it.metrics }
+                            .sumReadingMetrics()
+                        cumulative += metrics
+                        AnalyticsTrendPoint(bucket, metrics, cumulative)
+                    }
+                    val title = titleRows.first()
+                    AnalyticsTitleTrendSeries(
+                        titleId = title.titleId,
+                        displayTitle = title.displayTitle,
+                        mediaKind = title.mediaKind,
+                        languageTag = title.languageTag,
+                        points = points,
+                    )
+                }
+            AnalyticsTitleTrends(scale, selection, series) to rows.size
+        }
+    }
+
+    suspend fun vocabularyFirstSeen(
+        filter: StatsFilter,
+        scale: AnalyticsBucketScale,
+    ): AnalyticsResult<AnalyticsVocabularyFirstSeen> =
+        measured(AnalyticsQueryFamily.VOCABULARY, filter) {
+            val range = effectiveRange(filter)
+            val rows = analyticsRepository.vocabularyFirstSeenByDate(
+                filter.copy(dateRange = range, comparisonRange = null),
+            )
+            var cumulative = 0L
+            val points = calendar.buckets(range, scale).map { bucket ->
+                val newWords = rows
+                    .filter { it.date in bucket.start..bucket.endInclusive }
+                    .sumOf { it.newWords }
+                cumulative = Math.addExact(cumulative, newWords)
+                AnalyticsVocabularyFirstSeenPoint(bucket, newWords, cumulative)
+            }
+            AnalyticsVocabularyFirstSeen(scale, points) to rows.size
         }
 
     suspend fun titles(
@@ -250,10 +345,29 @@ class ImmersionAnalyticsService(
             }
         }
 
+    suspend fun characterContainingWords(
+        filter: StatsFilter,
+        codePoint: UnicodeCodePoint,
+        sort: AnalyticsSort,
+        offset: Long,
+        limit: Int,
+    ): AnalyticsResult<AnalyticsPage<AnalyticsWordRow>> =
+        measured(AnalyticsQueryFamily.CHARACTERS, filter) {
+            analyticsRepository.characterContainingWords(
+                filter,
+                codePoint,
+                sort,
+                offset,
+                limit,
+            ).let { it to it.items.size }
+        }
+
     suspend fun goals(filter: StatsFilter): AnalyticsResult<List<AnalyticsGoalProgress>> =
         measured(AnalyticsQueryFamily.GOALS, filter) {
             val today = calendar.localDate(clock(), currentOffsetSeconds())
-            val goals = goalRepository.getGoals().filter { it.state != "ARCHIVED" }
+            val goals = goalRepository.getGoals().filter {
+                it.state != "ARCHIVED" && it.matchesDashboardScope(filter)
+            }
             val ranges = goals.associateWith { goal ->
                 val start = goal.startDate ?: calendar.localDate(
                     goal.createdAtEpochMillis,
@@ -282,17 +396,9 @@ class ImmersionAnalyticsService(
             val progress = goals.map { goal ->
                 val range = ranges.getValue(goal)
                 val goalFilter = goal.statsFilter(filter, range)
-                val scopeMatchesDashboard = goal.matchesDashboardScope(filter)
-                val scopedRows = if (scopeMatchesDashboard) {
-                    rows.filter(goalFilter::matches)
-                } else {
-                    emptyList()
-                }
+                val scopedRows = rows.filter(goalFilter::matches)
                 val checkIns = goalRepository.getCheckIns(goal.id)
-                val inventoryByDate = if (
-                    scopeMatchesDashboard &&
-                    goal.metric in INVENTORY_GOAL_METRICS
-                ) {
+                val inventoryByDate = if (goal.metric in INVENTORY_GOAL_METRICS) {
                     inventoryCache.getOrPut(goalFilter) {
                         val buckets = range.dailyBuckets()
                         val inventories =
@@ -326,20 +432,29 @@ class ImmersionAnalyticsService(
             val range = effectiveRange(filter)
             val effectiveFilter = filter.copy(dateRange = range)
             val rollups = analyticsRepository.dailyRollups(range).filter(effectiveFilter::matches)
+            val summary = analyticsRepository.ankiSummary(effectiveFilter)
             val missingFilter = effectiveFilter.copy(maturityTiers = setOf(MaturityTier.UNKNOWN))
-            val missingWords = analyticsRepository.vocabularyPage(
-                missingFilter,
-                AnalyticsSort.FREQUENCY_RANK,
-                0,
-                20,
-            ).items
-            val missingCharacters = analyticsRepository.characterPage(
-                missingFilter,
-                AnalyticsSort.FREQUENCY_RANK,
-                0,
-                20,
-            ).items
-            analyticsRepository.ankiSummary(effectiveFilter).copy(
+            val missingWords = if (summary.snapshot?.hasUsableInventory == true) {
+                analyticsRepository.vocabularyPage(
+                    missingFilter,
+                    AnalyticsSort.FREQUENCY_RANK,
+                    0,
+                    20,
+                ).items
+            } else {
+                emptyList()
+            }
+            val missingCharacters = if (summary.snapshot?.hasUsableInventory == true) {
+                analyticsRepository.characterPage(
+                    missingFilter,
+                    AnalyticsSort.FREQUENCY_RANK,
+                    0,
+                    20,
+                ).items
+            } else {
+                emptyList()
+            }
+            summary.copy(
                 cardsCreated = rollups.sumOf { it.metrics.cardsCreated.value },
                 cardsUpdated = rollups.sumOf { it.metrics.cardsUpdated.value },
                 missingHighFrequencyWords = missingWords,
@@ -460,6 +575,9 @@ class ImmersionAnalyticsService(
     }
 }
 
+private const val DEFAULT_TITLE_TREND_LIMIT = 8
+private const val MAX_TITLE_TREND_LIMIT = 20
+
 private fun StatsFilter.matches(row: ImmersionDailyRollup): Boolean =
     (mediaKinds.isEmpty() || row.mediaKind in mediaKinds) &&
         (profileIds.isEmpty() || row.profileId in profileIds) &&
@@ -475,6 +593,9 @@ private fun StatsFilter.matches(row: ImmersionDailyRollup): Boolean =
 private fun List<ImmersionDailyRollup>.sumMetrics(): ReadingMetrics =
     fold(ReadingMetrics()) { total, row -> total + row.metrics }
         .withInventory(AnalyticsInventoryMetrics())
+
+private fun List<ReadingMetrics>.sumReadingMetrics(): ReadingMetrics =
+    fold(ReadingMetrics(), ReadingMetrics::plus)
 
 private fun ReadingMetrics.withInventory(inventory: AnalyticsInventoryMetrics): ReadingMetrics =
     copy(
@@ -673,6 +794,7 @@ private fun ReadingMetrics.valueForGoal(metric: String): Double = when (metric) 
     "gross_characters", "characters" -> characters.gross.value.toDouble()
     "unique_source_characters" -> characters.uniqueSource.value.toDouble()
     "net_characters" -> characters.netProgress.value.toDouble()
+    "source_units" -> sourceUnits.value.toDouble()
     "words" -> wordsEncountered.value.toDouble()
     "new_words" -> newWords.value.toDouble()
     "new_characters" -> newCharacters.value.toDouble()
@@ -780,14 +902,18 @@ private fun ImmersionGoal.statsFilter(
         characterMetric = base.characterMetric,
         includeRereadsAndReplays = base.includeRereadsAndReplays,
         maturityTiers = base.maturityTiers,
+        ankiMaturityAggregation = base.ankiMaturityAggregation,
         provenanceStates = base.provenanceStates,
     )
 
 private fun ImmersionGoal.matchesDashboardScope(base: StatsFilter): Boolean =
-    (mediaKind == null || base.mediaKinds.isEmpty() || mediaKind in base.mediaKinds) &&
-        (profileId == null || base.profileIds.isEmpty() || profileId in base.profileIds) &&
-        (languageTag == null || base.languageTags.isEmpty() || languageTag in base.languageTags) &&
-        (titleId == null || base.titleIds.isEmpty() || titleId in base.titleIds)
+    mediaKind.matchesDashboardSelection(base.mediaKinds) &&
+        profileId.matchesDashboardSelection(base.profileIds) &&
+        languageTag.matchesDashboardSelection(base.languageTags) &&
+        titleId.matchesDashboardSelection(base.titleIds)
+
+private fun <T> T?.matchesDashboardSelection(selection: Set<T>): Boolean =
+    selection.isEmpty() || (this != null && this in selection)
 
 private fun LocalDateRange.dailyBuckets(): List<LocalDateRange> =
     (start.epochDay..endInclusive.epochDay).map { epochDay ->
@@ -809,6 +935,7 @@ private fun StatsFilter.stableHash(): String {
         characterMetric,
         includeRereadsAndReplays,
         maturityTiers.sortedBy { it.name },
+        ankiMaturityAggregation,
         provenanceStates.sortedBy { it.name },
     ).joinToString("\u0000")
     return MessageDigest.getInstance("SHA-256")

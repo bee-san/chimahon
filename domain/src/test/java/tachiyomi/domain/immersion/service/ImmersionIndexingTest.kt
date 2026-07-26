@@ -125,6 +125,7 @@ class ImmersionIndexingTest {
         engine(repository, tokenizer, clock = { 10_000 }).processBatch().failed shouldBe 1
 
         repository.failures.single().let { failure ->
+            failure.claimGeneration shouldBe 3
             failure.errorCode shouldBe ImmersionIndexingEngine.TOKENIZER_FAILURE
             failure.nextAttemptAt shouldBe 30_000
         }
@@ -227,6 +228,7 @@ class ImmersionIndexingTest {
 
     private data class StoredResult(
         val sourceUnitId: SourceUnitId,
+        val claimGeneration: Int,
         val tokenizerId: String,
         val terminalReason: IndexTerminalReason?,
         val words: List<IndexedWord>,
@@ -235,6 +237,7 @@ class ImmersionIndexingTest {
 
     private data class Failure(
         val sourceUnitId: SourceUnitId,
+        val claimGeneration: Int,
         val errorCode: String,
         val nextAttemptAt: Long,
     )
@@ -256,6 +259,7 @@ class ImmersionIndexingTest {
 
         override suspend fun storeIndexResult(
             sourceUnitId: SourceUnitId,
+            claimGeneration: Int,
             tokenizerId: String,
             tokenizerVersion: Int,
             normalizationVersion: Int,
@@ -266,15 +270,23 @@ class ImmersionIndexingTest {
             words: List<IndexedWord>,
             characters: List<IndexedCharacter>,
         ) {
-            stored += StoredResult(sourceUnitId, tokenizerId, terminalReason, words, characters)
+            stored += StoredResult(
+                sourceUnitId,
+                claimGeneration,
+                tokenizerId,
+                terminalReason,
+                words,
+                characters,
+            )
         }
 
         override suspend fun markFailure(
             sourceUnitId: SourceUnitId,
+            claimGeneration: Int,
             errorCode: String,
             nextAttemptAtEpochMillis: Long,
         ) {
-            failures += Failure(sourceUnitId, errorCode, nextAttemptAtEpochMillis)
+            failures += Failure(sourceUnitId, claimGeneration, errorCode, nextAttemptAtEpochMillis)
         }
 
         override suspend fun requeue(
@@ -304,6 +316,7 @@ class ImmersionIndexingTest {
             tokenizerVersion = 0,
             indexedVersion = 0,
             attemptCount = attemptCount,
+            claimGeneration = attemptCount + 1,
         )
     }
 }

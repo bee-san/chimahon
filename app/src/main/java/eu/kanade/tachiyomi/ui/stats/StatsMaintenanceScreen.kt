@@ -6,14 +6,19 @@ import android.text.format.Formatter
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -24,6 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -31,19 +37,27 @@ import cafe.adriel.voyager.core.model.rememberScreenModel
 import cafe.adriel.voyager.navigator.LocalNavigator
 import cafe.adriel.voyager.navigator.currentOrThrow
 import eu.kanade.presentation.components.AppBar
+import eu.kanade.presentation.more.settings.widget.SwitchPreferenceWidget
 import eu.kanade.presentation.util.Screen
 import eu.kanade.tachiyomi.util.storage.getUriCompat
 import eu.kanade.tachiyomi.util.system.toShareIntent
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import mihon.feature.stats.anki.AnkiInventorySyncJob
+import mihon.feature.stats.indexing.ImmersionIndexJob
+import tachiyomi.domain.immersion.model.ImmersionStatsDeletionScope
+import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.RawTextRetention
 import tachiyomi.i18n.kmk.KMR
 import tachiyomi.presentation.core.components.material.Scaffold
+import tachiyomi.presentation.core.i18n.pluralStringResource
 import tachiyomi.presentation.core.i18n.stringResource
 import java.io.File
 import java.text.NumberFormat
 
-class StatsMaintenanceScreen : Screen() {
+class StatsMaintenanceScreen(
+    private val initialTitleId: String? = null,
+) : Screen() {
 
     @Composable
     override fun Content() {
@@ -56,6 +70,8 @@ class StatsMaintenanceScreen : Screen() {
         var showRawTextDeleteConfirmation by remember { mutableStateOf(false) }
         var showFullResetConfirmation by remember { mutableStateOf(false) }
         var showRetentionDialog by remember { mutableStateOf(false) }
+        var showScopedDeletionDialog by remember { mutableStateOf(false) }
+        var showAnkiCacheDeletionDialog by remember { mutableStateOf(false) }
 
         LaunchedEffect(screenModel) {
             screenModel.exportDocuments.collect { document ->
@@ -84,6 +100,19 @@ class StatsMaintenanceScreen : Screen() {
                 onExport = { showExportDialog = true },
                 onRetention = { showRetentionDialog = true },
                 onDeleteRawText = { showRawTextDeleteConfirmation = true },
+                onDeleteScopedStats = { showScopedDeletionDialog = true },
+                onDeleteAnkiCache = { showAnkiCacheDeletionDialog = true },
+                onCaptureEnabledChange = screenModel::setCaptureEnabled,
+                onIndexingEnabledChange = {
+                    screenModel.setIndexingEnabled(it)
+                    ImmersionIndexJob.setEnabled(context, it)
+                },
+                onUiEnabledChange = screenModel::setUiEnabled,
+                onAnkiSyncEnabledChange = {
+                    screenModel.setAnkiSyncEnabled(it)
+                    AnkiInventorySyncJob.setEnabled(context, it)
+                },
+                onGoalsEnabledChange = screenModel::setGoalsEnabled,
                 onRebuildRollups = screenModel::rebuildRollups,
                 onRebuildIndex = screenModel::rebuildIndex,
                 onResolveConflicts = screenModel::resolveMergeConflicts,
@@ -156,6 +185,31 @@ class StatsMaintenanceScreen : Screen() {
                 },
             )
         }
+        if (showScopedDeletionDialog) {
+            ScopedDeletionDialog(
+                initialTitleId = initialTitleId.orEmpty(),
+                preview = state.scopedDeletionPreview,
+                busy = state.busy,
+                onDismiss = {
+                    showScopedDeletionDialog = false
+                    screenModel.clearScopedStatsDeletionPreview()
+                },
+                onPreview = screenModel::previewScopedStatsDeletion,
+                onDelete = {
+                    showScopedDeletionDialog = false
+                    screenModel.deletePreviewedScopedStats()
+                },
+            )
+        }
+        if (showAnkiCacheDeletionDialog) {
+            AnkiCacheDeletionDialog(
+                onDismiss = { showAnkiCacheDeletionDialog = false },
+                onDelete = {
+                    showAnkiCacheDeletionDialog = false
+                    screenModel.clearAnkiCache(it)
+                },
+            )
+        }
     }
 }
 
@@ -167,6 +221,13 @@ private fun StatsMaintenanceContent(
     onExport: () -> Unit,
     onRetention: () -> Unit,
     onDeleteRawText: () -> Unit,
+    onDeleteScopedStats: () -> Unit,
+    onDeleteAnkiCache: () -> Unit,
+    onCaptureEnabledChange: (Boolean) -> Unit,
+    onIndexingEnabledChange: (Boolean) -> Unit,
+    onUiEnabledChange: (Boolean) -> Unit,
+    onAnkiSyncEnabledChange: (Boolean) -> Unit,
+    onGoalsEnabledChange: (Boolean) -> Unit,
     onRebuildRollups: () -> Unit,
     onRebuildIndex: () -> Unit,
     onResolveConflicts: () -> Unit,
@@ -238,6 +299,63 @@ private fun StatsMaintenanceContent(
                 },
             )
         }
+        item { HorizontalDivider() }
+        item {
+            ListItem(
+                headlineContent = { Text(stringResource(KMR.strings.stats_rollout_controls)) },
+                supportingContent = {
+                    Text(
+                        stringResource(
+                            if (state.legacyWritesEnabled) {
+                                KMR.strings.stats_rollout_legacy_writes_active
+                            } else {
+                                KMR.strings.stats_rollout_legacy_writes_inactive
+                            },
+                        ),
+                    )
+                },
+            )
+        }
+        item {
+            SwitchPreferenceWidget(
+                title = stringResource(KMR.strings.stats_capture_enabled),
+                subtitle = stringResource(KMR.strings.stats_capture_enabled_summary),
+                checked = state.captureEnabled,
+                onCheckedChanged = onCaptureEnabledChange,
+            )
+        }
+        item {
+            SwitchPreferenceWidget(
+                title = stringResource(KMR.strings.stats_indexing_enabled),
+                subtitle = stringResource(KMR.strings.stats_indexing_enabled_summary),
+                checked = state.indexingEnabled,
+                onCheckedChanged = onIndexingEnabledChange,
+            )
+        }
+        item {
+            SwitchPreferenceWidget(
+                title = stringResource(KMR.strings.stats_preview_toggle),
+                subtitle = stringResource(KMR.strings.stats_preview_toggle_summary),
+                checked = state.uiEnabled,
+                onCheckedChanged = onUiEnabledChange,
+            )
+        }
+        item {
+            SwitchPreferenceWidget(
+                title = stringResource(KMR.strings.stats_anki_sync_enabled),
+                subtitle = stringResource(KMR.strings.stats_anki_sync_enabled_summary),
+                checked = state.ankiSyncEnabled,
+                onCheckedChanged = onAnkiSyncEnabledChange,
+            )
+        }
+        item {
+            SwitchPreferenceWidget(
+                title = stringResource(KMR.strings.stats_goals_enabled),
+                subtitle = stringResource(KMR.strings.stats_goals_enabled_summary),
+                checked = state.goalsEnabled,
+                onCheckedChanged = onGoalsEnabledChange,
+            )
+        }
         state.summary?.quarantinedConflicts?.takeIf { it > 0 }?.let { conflicts ->
             item {
                 MaintenanceAction(
@@ -275,6 +393,22 @@ private fun StatsMaintenanceContent(
         }
         item {
             MaintenanceAction(
+                title = stringResource(KMR.strings.stats_delete_scoped),
+                description = stringResource(KMR.strings.stats_delete_scoped_summary),
+                enabled = !state.busy,
+                onClick = onDeleteScopedStats,
+            )
+        }
+        item {
+            MaintenanceAction(
+                title = stringResource(KMR.strings.stats_delete_anki_cache),
+                description = stringResource(KMR.strings.stats_delete_anki_cache_summary),
+                enabled = !state.busy,
+                onClick = onDeleteAnkiCache,
+            )
+        }
+        item {
+            MaintenanceAction(
                 title = stringResource(KMR.strings.stats_rebuild_rollups),
                 description = stringResource(KMR.strings.stats_rebuild_rollups_summary),
                 enabled = !state.busy,
@@ -305,11 +439,13 @@ private fun StatsMaintenanceContent(
                 }
             }
         }
-        state.error?.let { error ->
+        state.error?.let {
             item {
                 ListItem(
                     headlineContent = { Text(stringResource(KMR.strings.stats_maintenance_error)) },
-                    supportingContent = { Text(error) },
+                    supportingContent = {
+                        Text(stringResource(KMR.strings.stats_maintenance_error_summary))
+                    },
                 )
             }
         }
@@ -396,6 +532,167 @@ private fun ConfirmationDialog(
 }
 
 @Composable
+private fun ScopedDeletionDialog(
+    initialTitleId: String,
+    preview: tachiyomi.domain.immersion.model.ImmersionDeletionPreview?,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onPreview: (ImmersionStatsDeletionScope) -> Unit,
+    onDelete: () -> Unit,
+) {
+    var input by remember(initialTitleId) {
+        mutableStateOf(StatsDeletionScopeInput(titleId = initialTitleId))
+    }
+    val parsedScope = remember(input) { input.parseDeletionScope() }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(KMR.strings.stats_delete_scoped)) },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(stringResource(KMR.strings.stats_delete_scoped_warning))
+                OutlinedTextField(
+                    value = input.startDate,
+                    onValueChange = { input = input.copy(startDate = it) },
+                    label = { Text(stringResource(KMR.strings.stats_delete_start_date)) },
+                    supportingText = { Text(stringResource(KMR.strings.stats_date_format_hint)) },
+                    singleLine = true,
+                    enabled = preview == null && !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = input.endDate,
+                    onValueChange = { input = input.copy(endDate = it) },
+                    label = { Text(stringResource(KMR.strings.stats_delete_end_date)) },
+                    supportingText = { Text(stringResource(KMR.strings.stats_date_format_hint)) },
+                    singleLine = true,
+                    enabled = preview == null && !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = input.titleId,
+                    onValueChange = { input = input.copy(titleId = it) },
+                    label = { Text(stringResource(KMR.strings.stats_delete_title_id)) },
+                    singleLine = true,
+                    enabled = preview == null && !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(stringResource(KMR.strings.stats_delete_media_kind))
+                Column {
+                    (listOf<MediaKind?>(null) + MediaKind.entries).forEach { mediaKind ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(
+                                selected = input.mediaKind == mediaKind,
+                                enabled = preview == null && !busy,
+                                onClick = { input = input.copy(mediaKind = mediaKind) },
+                            )
+                            Text(
+                                mediaKind?.let { mediaKindLabel(it) }
+                                    ?: stringResource(KMR.strings.stats_media_all),
+                            )
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = input.profileId,
+                    onValueChange = { input = input.copy(profileId = it) },
+                    label = { Text(stringResource(KMR.strings.stats_delete_profile_id)) },
+                    singleLine = true,
+                    enabled = preview == null && !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = input.languageTag,
+                    onValueChange = { input = input.copy(languageTag = it) },
+                    label = { Text(stringResource(KMR.strings.stats_delete_language_tag)) },
+                    supportingText = { Text(stringResource(KMR.strings.stats_language_tag_hint)) },
+                    singleLine = true,
+                    enabled = preview == null && !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                preview?.let {
+                    Text(
+                        stringResource(
+                            KMR.strings.stats_delete_scoped_preview,
+                            NumberFormat.getIntegerInstance().format(it.sessions),
+                            formatMaintenanceDuration(it.activeDurationMillis),
+                            NumberFormat.getIntegerInstance().format(it.grossCharacters),
+                            NumberFormat.getIntegerInstance().format(it.sourceUnits),
+                            NumberFormat.getIntegerInstance().format(it.words),
+                            NumberFormat.getIntegerInstance().format(it.characters),
+                        ),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            if (preview == null) {
+                TextButton(
+                    enabled = parsedScope != null && !busy,
+                    onClick = { parsedScope?.let(onPreview) },
+                ) {
+                    Text(stringResource(KMR.strings.stats_delete_preview))
+                }
+            } else {
+                TextButton(
+                    enabled = !busy,
+                    onClick = onDelete,
+                ) {
+                    Text(stringResource(KMR.strings.stats_delete_matching))
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(KMR.strings.stats_close))
+            }
+        },
+    )
+}
+
+@Composable
+private fun AnkiCacheDeletionDialog(
+    onDismiss: () -> Unit,
+    onDelete: (String) -> Unit,
+) {
+    var profileId by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(KMR.strings.stats_delete_anki_cache)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(stringResource(KMR.strings.stats_delete_anki_cache_warning))
+                OutlinedTextField(
+                    value = profileId,
+                    onValueChange = { profileId = it },
+                    label = { Text(stringResource(KMR.strings.stats_delete_profile_id)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = profileId.isNotBlank(),
+                onClick = { onDelete(profileId.trim()) },
+            ) {
+                Text(stringResource(KMR.strings.stats_confirm))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(KMR.strings.stats_close))
+            }
+        },
+    )
+}
+
+@Composable
 private fun RetentionDialog(
     selected: RawTextRetention,
     onDismiss: () -> Unit,
@@ -447,5 +744,41 @@ private fun exportLabel(kind: StatsExportKind): String =
             StatsExportKind.EVENT_JSON_WITH_RAW_TEXT -> KMR.strings.stats_export_raw_text
             StatsExportKind.VOCABULARY_CSV -> KMR.strings.stats_export_vocabulary_csv
             StatsExportKind.CHARACTERS_CSV -> KMR.strings.stats_export_characters_csv
+        },
+    )
+
+@Composable
+private fun formatMaintenanceDuration(millis: Long): String {
+    val parts = statsDurationParts(millis)
+    if (parts.lessThanSecond) {
+        return stringResource(KMR.strings.stats_duration_less_than_second)
+    }
+    if (parts.hours == 0L && parts.minutes == 0L && parts.seconds > 0L) {
+        return pluralStringResource(
+            KMR.plurals.stats_duration_seconds,
+            parts.seconds.toInt(),
+            parts.seconds,
+        )
+    }
+    val minuteText = pluralStringResource(
+        KMR.plurals.stats_duration_minutes,
+        parts.minutes.toInt(),
+        parts.minutes,
+    )
+    if (parts.hours == 0L) return minuteText
+    return stringResource(
+        KMR.strings.stats_duration_hours_minutes,
+        pluralStringResource(KMR.plurals.stats_duration_hours, parts.hours.toInt(), parts.hours),
+        minuteText,
+    )
+}
+
+@Composable
+private fun mediaKindLabel(mediaKind: MediaKind): String =
+    stringResource(
+        when (mediaKind) {
+            MediaKind.NOVEL -> KMR.strings.stats_media_novel
+            MediaKind.MANGA -> KMR.strings.stats_media_manga
+            MediaKind.VIDEO -> KMR.strings.stats_media_video
         },
     )

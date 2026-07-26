@@ -12,7 +12,11 @@ import tachiyomi.domain.immersion.model.AnalyticsPage
 import tachiyomi.domain.immersion.model.AnalyticsSessionDetail
 import tachiyomi.domain.immersion.model.AnalyticsSort
 import tachiyomi.domain.immersion.model.AnalyticsSourceOccurrence
+import tachiyomi.domain.immersion.model.AnalyticsTemporalActivity
 import tachiyomi.domain.immersion.model.AnalyticsTitleMetadata
+import tachiyomi.domain.immersion.model.AnalyticsTitleSeriesSelection
+import tachiyomi.domain.immersion.model.AnalyticsTitleTrendDailyPoint
+import tachiyomi.domain.immersion.model.AnalyticsVocabularyFirstSeenDay
 import tachiyomi.domain.immersion.model.AnalyticsWordRow
 import tachiyomi.domain.immersion.model.ExposureEvent
 import tachiyomi.domain.immersion.model.ImmersionAnkiItem
@@ -33,6 +37,7 @@ import tachiyomi.domain.immersion.model.ImmersionRollupRebuildResult
 import tachiyomi.domain.immersion.model.ImmersionSession
 import tachiyomi.domain.immersion.model.ImmersionSessionStart
 import tachiyomi.domain.immersion.model.ImmersionSourceUnit
+import tachiyomi.domain.immersion.model.ImmersionStatsDeletionScope
 import tachiyomi.domain.immersion.model.ImmersionTitle
 import tachiyomi.domain.immersion.model.IndexTerminalReason
 import tachiyomi.domain.immersion.model.IndexWorkItem
@@ -91,6 +96,7 @@ interface ImmersionIndexRepository {
 
     suspend fun storeIndexResult(
         sourceUnitId: SourceUnitId,
+        claimGeneration: Int,
         tokenizerId: String,
         tokenizerVersion: Int,
         normalizationVersion: Int,
@@ -104,6 +110,7 @@ interface ImmersionIndexRepository {
 
     suspend fun markFailure(
         sourceUnitId: SourceUnitId,
+        claimGeneration: Int,
         errorCode: String,
         nextAttemptAtEpochMillis: Long,
     )
@@ -149,6 +156,18 @@ interface ImmersionAnalyticsRepository {
     suspend fun titleInventoryMetrics(filter: StatsFilter): Map<TitleId, AnalyticsInventoryMetrics>
 
     suspend fun titleMetadata(titleIds: Set<TitleId>): List<AnalyticsTitleMetadata>
+
+    suspend fun temporalActivity(filter: StatsFilter): AnalyticsTemporalActivity
+
+    suspend fun titleTrendDaily(
+        filter: StatsFilter,
+        selection: AnalyticsTitleSeriesSelection,
+        limit: Int,
+    ): List<AnalyticsTitleTrendDailyPoint>
+
+    suspend fun vocabularyFirstSeenByDate(
+        filter: StatsFilter,
+    ): List<AnalyticsVocabularyFirstSeenDay>
 
     suspend fun dataQuality(
         filter: StatsFilter,
@@ -203,6 +222,14 @@ interface ImmersionAnalyticsRepository {
         limit: Int,
     ): AnalyticsPage<AnalyticsSourceOccurrence>
 
+    suspend fun characterContainingWords(
+        filter: StatsFilter,
+        codePoint: UnicodeCodePoint,
+        sort: AnalyticsSort,
+        offset: Long,
+        limit: Int,
+    ): AnalyticsPage<AnalyticsWordRow>
+
     suspend fun ankiSummary(filter: StatsFilter): AnalyticsAnkiSummary
 
     suspend fun dirtyRollupRanges(limit: Int): List<ImmersionRollupDirtyRange>
@@ -215,6 +242,8 @@ interface ImmersionAnalyticsRepository {
 }
 
 interface ImmersionMaintenanceRepository {
+    suspend fun isTitleCaptureExcluded(titleId: TitleId): Boolean
+
     suspend fun validateInvariants(expectedRollupVersion: Int): ImmersionIntegrityReport
 
     suspend fun maintenanceSummary(): ImmersionMaintenanceSummary
@@ -224,6 +253,13 @@ interface ImmersionMaintenanceRepository {
     suspend fun resetAllStats(
         deviceId: String,
         deletedAtEpochMillis: Long,
+    ): ImmersionDeletionPreview
+
+    suspend fun previewScopedStatsDeletion(scope: ImmersionStatsDeletionScope): ImmersionDeletionPreview
+
+    suspend fun deleteScopedStats(
+        scope: ImmersionStatsDeletionScope,
+        expectedPreview: ImmersionDeletionPreview,
     ): ImmersionDeletionPreview
 
     suspend fun deleteSession(sessionId: SessionId): Boolean
@@ -322,5 +358,5 @@ interface ImmersionAnkiRepository {
         recomputedAtEpochMillis: Long,
     )
 
-    suspend fun clearSnapshots(profileId: String)
+    suspend fun clearSnapshots(profileId: String): Long
 }

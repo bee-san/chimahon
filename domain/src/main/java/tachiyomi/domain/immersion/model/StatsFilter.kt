@@ -16,6 +16,8 @@ data class StatsFilter(
     val characterMetric: CharacterMetric = CharacterMetric.GROSS,
     val includeRereadsAndReplays: Boolean = true,
     val maturityTiers: Set<MaturityTier> = emptySet(),
+    val ankiMaturityAggregation: AnkiMaturityAggregation =
+        AnkiMaturityAggregation.MAX_INTERVAL,
     val provenanceStates: Set<ProvenanceState> = emptySet(),
 ) {
     init {

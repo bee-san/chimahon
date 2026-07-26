@@ -17,8 +17,10 @@ import tachiyomi.domain.immersion.model.ImmersionDeletionPreview
 import tachiyomi.domain.immersion.model.ImmersionIntegrityReport
 import tachiyomi.domain.immersion.model.ImmersionMaintenanceSummary
 import tachiyomi.domain.immersion.model.ImmersionReindexRequest
+import tachiyomi.domain.immersion.model.ImmersionStatsDeletionScope
 import tachiyomi.domain.immersion.model.RawTextRetention
 import tachiyomi.domain.immersion.model.StatsFilter
+import tachiyomi.domain.immersion.repository.ImmersionAnkiRepository
 import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
 import tachiyomi.domain.immersion.service.ImmersionAnalyticsService
 import tachiyomi.domain.immersion.service.ImmersionExportDocument
@@ -34,12 +36,19 @@ class StatsMaintenanceScreenModel(
     private val analytics: ImmersionAnalyticsService = Injekt.get(),
     private val exports: ImmersionExportService = Injekt.get(),
     private val reindexController: ImmersionReindexController = Injekt.get(),
+    private val ankiRepository: ImmersionAnkiRepository = Injekt.get(),
     private val preferences: ImmersionStatsPreferences = Injekt.get(),
     private val syncPreferences: SyncPreferences = Injekt.get(),
 ) : ScreenModel {
     private val mutableState = MutableStateFlow(
         StatsMaintenanceState(
             retention = preferences.rawTextRetention().get(),
+            captureEnabled = preferences.captureEnabled().get(),
+            indexingEnabled = preferences.indexingEnabled().get(),
+            uiEnabled = preferences.uiEnabled().get(),
+            ankiSyncEnabled = preferences.ankiSyncEnabled().get(),
+            goalsEnabled = preferences.goalsEnabled().get(),
+            legacyWritesEnabled = preferences.legacyWritesEnabled().get(),
         ),
     )
     val state: StateFlow<StatsMaintenanceState> = mutableState.asStateFlow()
@@ -77,6 +86,31 @@ class StatsMaintenanceScreenModel(
         mutableState.update { it.copy(retention = retention) }
     }
 
+    fun setCaptureEnabled(enabled: Boolean) {
+        preferences.captureEnabled().set(enabled)
+        mutableState.update { it.copy(captureEnabled = enabled) }
+    }
+
+    fun setIndexingEnabled(enabled: Boolean) {
+        preferences.indexingEnabled().set(enabled)
+        mutableState.update { it.copy(indexingEnabled = enabled) }
+    }
+
+    fun setUiEnabled(enabled: Boolean) {
+        preferences.uiEnabled().set(enabled)
+        mutableState.update { it.copy(uiEnabled = enabled) }
+    }
+
+    fun setAnkiSyncEnabled(enabled: Boolean) {
+        preferences.ankiSyncEnabled().set(enabled)
+        mutableState.update { it.copy(ankiSyncEnabled = enabled) }
+    }
+
+    fun setGoalsEnabled(enabled: Boolean) {
+        preferences.goalsEnabled().set(enabled)
+        mutableState.update { it.copy(goalsEnabled = enabled) }
+    }
+
     fun deleteRawText() {
         launchTask {
             val deleted = maintenance.deleteRawText(updatedAtEpochMillis = System.currentTimeMillis())
@@ -98,7 +132,7 @@ class StatsMaintenanceScreenModel(
                 repairCursor = "manual-maintenance",
                 updatedAtEpochMillis = System.currentTimeMillis(),
             )
-            val rows = analytics.repairDirtyRollups(366).sumOf { it.rowCount }
+            val rows = repairAllDirtyRollups()
             mutableState.update {
                 it.copy(
                     lastAffectedRows = rows,
@@ -140,6 +174,69 @@ class StatsMaintenanceScreenModel(
         }
     }
 
+    fun previewScopedStatsDeletion(scope: ImmersionStatsDeletionScope) {
+        launchTask {
+            val preview = maintenance.previewScopedStatsDeletion(scope)
+            mutableState.update {
+                it.copy(
+                    scopedDeletionScope = scope,
+                    scopedDeletionPreview = preview,
+                )
+            }
+        }
+    }
+
+    fun clearScopedStatsDeletionPreview() {
+        mutableState.update {
+            it.copy(
+                scopedDeletionScope = null,
+                scopedDeletionPreview = null,
+            )
+        }
+    }
+
+    fun deletePreviewedScopedStats() {
+        val snapshot = mutableState.value
+        val scope = snapshot.scopedDeletionScope ?: return
+        val expectedPreview = snapshot.scopedDeletionPreview ?: return
+        launchTask {
+            val deleted = maintenance.deleteScopedStats(scope, expectedPreview)
+            repairAllDirtyRollups()
+            mutableState.update {
+                it.copy(
+                    scopedDeletionScope = null,
+                    scopedDeletionPreview = null,
+                    lastAffectedRows = deleted.sessions,
+                    lastOperation = StatsMaintenanceOperation.SCOPED_STATS_DELETED,
+                )
+            }
+            refreshSnapshot()
+        }
+    }
+
+    private suspend fun repairAllDirtyRollups(): Long {
+        var rebuiltRows = 0L
+        while (true) {
+            val batch = analytics.repairDirtyRollups(ROLLUP_REPAIR_BATCH_SIZE)
+            if (batch.isEmpty()) return rebuiltRows
+            rebuiltRows += batch.sumOf { it.rowCount }
+        }
+    }
+
+    fun clearAnkiCache(profileId: String) {
+        launchTask {
+            require(profileId.isNotBlank())
+            val deleted = ankiRepository.clearSnapshots(profileId)
+            mutableState.update {
+                it.copy(
+                    lastAffectedRows = deleted,
+                    lastOperation = StatsMaintenanceOperation.ANKI_CACHE_DELETED,
+                )
+            }
+            refreshSnapshot()
+        }
+    }
+
     fun resolveMergeConflicts() {
         launchTask {
             val resolved = maintenance.resolveMergeConflictsKeepingLocal()
@@ -164,6 +261,12 @@ class StatsMaintenanceScreenModel(
                 integrity = integrity,
                 rawTextDeletionPreview = rawTextPreview,
                 deletionPreview = deletionPreview,
+                captureEnabled = preferences.captureEnabled().get(),
+                indexingEnabled = preferences.indexingEnabled().get(),
+                uiEnabled = preferences.uiEnabled().get(),
+                ankiSyncEnabled = preferences.ankiSyncEnabled().get(),
+                goalsEnabled = preferences.goalsEnabled().get(),
+                legacyWritesEnabled = preferences.legacyWritesEnabled().get(),
             )
         }
     }
@@ -172,9 +275,9 @@ class StatsMaintenanceScreenModel(
         screenModelScope.launch {
             mutableState.update { it.copy(busy = true, error = null) }
             runCatching { block() }
-                .onFailure { error ->
+                .onFailure {
                     mutableState.update {
-                        it.copy(error = error.message ?: error::class.java.simpleName)
+                        it.copy(error = StatsMaintenanceError.OPERATION_FAILED)
                     }
                 }
             mutableState.update { it.copy(busy = false) }
@@ -182,14 +285,24 @@ class StatsMaintenanceScreenModel(
     }
 }
 
+private const val ROLLUP_REPAIR_BATCH_SIZE = 366
+
 data class StatsMaintenanceState(
     val summary: ImmersionMaintenanceSummary? = null,
     val integrity: ImmersionIntegrityReport? = null,
     val rawTextDeletionPreview: Long = 0,
     val deletionPreview: ImmersionDeletionPreview? = null,
+    val scopedDeletionScope: ImmersionStatsDeletionScope? = null,
+    val scopedDeletionPreview: ImmersionDeletionPreview? = null,
     val retention: RawTextRetention,
+    val captureEnabled: Boolean,
+    val indexingEnabled: Boolean,
+    val uiEnabled: Boolean,
+    val ankiSyncEnabled: Boolean,
+    val goalsEnabled: Boolean,
+    val legacyWritesEnabled: Boolean,
     val busy: Boolean = false,
-    val error: String? = null,
+    val error: StatsMaintenanceError? = null,
     val lastAffectedRows: Long = 0,
     val lastOperation: StatsMaintenanceOperation? = null,
 )
@@ -210,4 +323,10 @@ enum class StatsMaintenanceOperation {
     INDEX_REBUILT,
     ALL_STATS_RESET,
     CONFLICTS_RESOLVED,
+    SCOPED_STATS_DELETED,
+    ANKI_CACHE_DELETED,
+}
+
+enum class StatsMaintenanceError {
+    OPERATION_FAILED,
 }

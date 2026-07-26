@@ -670,7 +670,15 @@ class MainActivity : BaseActivity() {
             }
             Constants.SHORTCUT_STATS -> {
                 navigator.popUntilRoot()
-                HomeScreen.Tab.More(toDownloads = false, toStats = true)
+                // KMK -->
+                HomeScreen.Tab.More(
+                    toDownloads = false,
+                    toStats = Injekt
+                        .get<tachiyomi.domain.immersion.service.ImmersionStatsPreferences>()
+                        .uiEnabled()
+                        .get(),
+                )
+                // KMK <--
             }
             Constants.SHORTCUT_ANIME -> {
                 navigator.popUntilRoot()

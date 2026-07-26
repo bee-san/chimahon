@@ -4,12 +4,12 @@ package mihon.feature.stats.capture
 
 import kotlinx.collections.immutable.PersistentMap
 import kotlinx.collections.immutable.persistentMapOf
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -238,7 +238,7 @@ class VideoCaptureAdapter(
     )
     private val animeId = captureTitle.animeId
     private val learningLanguage = captureTitle.languageTag
-    private val commands = Channel<AdapterCommand>(Channel.UNLIMITED)
+    private val commands = BoundedCaptureCommandQueue<AdapterCommand>()
     private val mutableCoverage = MutableStateFlow(VideoCoverageSnapshot())
     private val mutableProgress = MutableStateFlow(
         VideoProgressSnapshot(
@@ -256,76 +256,96 @@ class VideoCaptureAdapter(
     val progress: StateFlow<VideoProgressSnapshot> = mutableProgress.asStateFlow()
     val mediaContext: StateFlow<VideoMediaCaptureContext?> = mutableMediaContext.asStateFlow()
     val interactionContext: StateFlow<VideoInteractionCaptureContext> = mutableInteractionContext.asStateFlow()
+    internal val queueDiagnostics: StateFlow<CaptureCommandQueueDiagnostics> = commands.diagnostics
 
     init {
         require(bufferingGraceMillis >= 0) { "Buffering grace cannot be negative" }
         workerScope.launch {
             val state = AdapterState()
-            for (command in commands) {
-                if (state.finalized) {
+            while (true) {
+                val command = commands.receive() ?: break
+                try {
+                    if (state.finalized) {
+                        if (command is AdapterCommand.Finalize) {
+                            command.completion.complete(Unit)
+                        }
+                        continue
+                    }
+                    when (command) {
+                        AdapterCommand.Playable -> ensureStarted(state)
+                        is AdapterCommand.Playing -> handlePlaying(state, command.playing)
+                        is AdapterCommand.Buffering -> handleBuffering(state, command.buffering, workerScope)
+                        is AdapterCommand.BufferingGraceElapsed -> {
+                            if (command.generation == bufferingGeneration && state.buffering) {
+                                setBlocker(state, CaptureBlocker.Buffering, true)
+                            }
+                        }
+                        is AdapterCommand.Seeking -> handleSeeking(state, command.seeking)
+                        is AdapterCommand.Backgrounded -> {
+                            setBlocker(state, CaptureBlocker.Background, command.backgrounded)
+                        }
+                        is AdapterCommand.Position -> handlePosition(state, command)
+                        is AdapterCommand.SubtitleTrackChanged -> handleTrackChanged(state, command)
+                        is AdapterCommand.SubtitleModeChanged -> handleSubtitleMode(state, command.visible)
+                        is AdapterCommand.SubtitleCueActive -> handleSubtitleCue(state, command.cue)
+                        is AdapterCommand.SubtitleCueCleared -> clearActiveSubtitle(state, command.role)
+                        is AdapterCommand.OcrVisible -> handleOcrVisible(state, command.frame)
+                        AdapterCommand.OcrHidden -> state.activeOcrSources.clear()
+                        AdapterCommand.EpisodeCompleted -> recordCompletion(state, titleCompleted = false)
+                        AdapterCommand.TitleCompleted -> recordCompletion(state, titleCompleted = true)
+                        is AdapterCommand.ExternalPlayback -> handleExternalPlayback(state)
+                        is AdapterCommand.Finalize -> {
+                            finalize(state, command.reason)
+                            command.completion.complete(Unit)
+                            commands.close()
+                        }
+                    }
+                } catch (error: CancellationException) {
                     if (command is AdapterCommand.Finalize) {
                         command.completion.complete(Unit)
                     }
-                    continue
-                }
-                when (command) {
-                    AdapterCommand.Playable -> ensureStarted(state)
-                    is AdapterCommand.Playing -> handlePlaying(state, command.playing)
-                    is AdapterCommand.Buffering -> handleBuffering(state, command.buffering, workerScope)
-                    is AdapterCommand.BufferingGraceElapsed -> {
-                        if (command.generation == bufferingGeneration && state.buffering) {
-                            setBlocker(state, CaptureBlocker.Buffering, true)
-                        }
-                    }
-                    is AdapterCommand.Seeking -> handleSeeking(state, command.seeking)
-                    is AdapterCommand.Backgrounded -> {
-                        setBlocker(state, CaptureBlocker.Background, command.backgrounded)
-                    }
-                    is AdapterCommand.Position -> handlePosition(state, command)
-                    is AdapterCommand.SubtitleTrackChanged -> handleTrackChanged(state, command)
-                    is AdapterCommand.SubtitleModeChanged -> handleSubtitleMode(state, command.visible)
-                    is AdapterCommand.SubtitleCueActive -> handleSubtitleCue(state, command.cue)
-                    is AdapterCommand.SubtitleCueCleared -> clearActiveSubtitle(state, command.role)
-                    is AdapterCommand.OcrVisible -> handleOcrVisible(state, command.frame)
-                    AdapterCommand.OcrHidden -> state.activeOcrSources.clear()
-                    AdapterCommand.EpisodeCompleted -> recordCompletion(state, titleCompleted = false)
-                    AdapterCommand.TitleCompleted -> recordCompletion(state, titleCompleted = true)
-                    is AdapterCommand.ExternalPlayback -> handleExternalPlayback(state)
-                    is AdapterCommand.Finalize -> {
-                        finalize(state, command.reason)
+                    throw error
+                } catch (_: Exception) {
+                    commands.recordWorkerFailure()
+                    if (command is AdapterCommand.Finalize) {
                         command.completion.complete(Unit)
                         commands.close()
                     }
                 }
             }
+        }.invokeOnCompletion {
+            val terminal = commands.close()
+            if (terminal is AdapterCommand.Finalize) {
+                terminal.completion.complete(Unit)
+            }
         }
     }
 
     fun onPlayableMedia() {
-        commands.trySend(AdapterCommand.Playable)
+        enqueue(AdapterCommand.Playable)
     }
 
     fun setPlaying(playing: Boolean) {
-        commands.trySend(AdapterCommand.Playing(playing))
+        enqueue(AdapterCommand.Playing(playing))
     }
 
     fun setBuffering(buffering: Boolean) {
-        commands.trySend(AdapterCommand.Buffering(buffering))
+        enqueue(AdapterCommand.Buffering(buffering))
     }
 
     fun setSeeking(seeking: Boolean) {
-        commands.trySend(AdapterCommand.Seeking(seeking))
+        enqueue(AdapterCommand.Seeking(seeking))
     }
 
     fun setBackgrounded(backgrounded: Boolean) {
-        commands.trySend(AdapterCommand.Backgrounded(backgrounded))
+        enqueue(AdapterCommand.Backgrounded(backgrounded))
     }
 
     fun onPlaybackPosition(
         positionMillis: Long,
         durationMillis: Long?,
     ) {
-        commands.trySend(AdapterCommand.Position(positionMillis, durationMillis))
+        enqueue(AdapterCommand.Position(positionMillis, durationMillis))
     }
 
     fun onSubtitleTrackChanged(
@@ -334,7 +354,7 @@ class VideoCaptureAdapter(
         primaryLanguage: String?,
         secondaryLanguage: String?,
     ) {
-        commands.trySend(
+        enqueue(
             AdapterCommand.SubtitleTrackChanged(
                 primaryTrackId,
                 secondaryTrackId,
@@ -345,23 +365,23 @@ class VideoCaptureAdapter(
     }
 
     fun setSubtitleModeVisible(visible: Boolean) {
-        commands.trySend(AdapterCommand.SubtitleModeChanged(visible))
+        enqueue(AdapterCommand.SubtitleModeChanged(visible))
     }
 
     fun onSubtitleCueActive(cue: VideoSubtitleCueCapture) {
-        commands.trySend(AdapterCommand.SubtitleCueActive(cue))
+        enqueue(AdapterCommand.SubtitleCueActive(cue))
     }
 
     fun onSubtitleCueCleared(role: VideoSubtitleRole) {
-        commands.trySend(AdapterCommand.SubtitleCueCleared(role))
+        enqueue(AdapterCommand.SubtitleCueCleared(role))
     }
 
     fun onVideoOcrVisible(frame: VideoOcrFrameCapture) {
-        commands.trySend(AdapterCommand.OcrVisible(frame))
+        enqueue(AdapterCommand.OcrVisible(frame))
     }
 
     fun onVideoOcrHidden() {
-        commands.trySend(AdapterCommand.OcrHidden)
+        enqueue(AdapterCommand.OcrHidden)
     }
 
     fun snapshotSubtitleLookupProvenance(cue: VideoSubtitleCueCapture): InteractionProvenance? {
@@ -376,24 +396,38 @@ class VideoCaptureAdapter(
     }
 
     fun onEpisodeCompleted() {
-        commands.trySend(AdapterCommand.EpisodeCompleted)
+        enqueue(AdapterCommand.EpisodeCompleted)
     }
 
     fun onTitleCompleted() {
-        commands.trySend(AdapterCommand.TitleCompleted)
+        enqueue(AdapterCommand.TitleCompleted)
     }
 
     fun markExternalPlaybackUnsupported() {
-        commands.trySend(AdapterCommand.ExternalPlayback)
+        enqueue(AdapterCommand.ExternalPlayback)
     }
 
     fun finalize(reason: FinalizeReason = FinalizeReason.NORMAL): CompletableDeferred<Unit> {
         val completion = CompletableDeferred<Unit>()
         bufferingJob?.cancel()
-        if (commands.trySend(AdapterCommand.Finalize(reason, completion)).isFailure) {
+        if (!commands.finish(AdapterCommand.Finalize(reason, completion))) {
             completion.complete(Unit)
         }
         return completion
+    }
+
+    private fun enqueue(command: AdapterCommand) {
+        when (commands.offer(command, command.queuePolicy)) {
+            // Capture is best-effort at the player boundary. Saturation remains visible in
+            // diagnostics so rollout can be stopped, but it must never crash or freeze playback.
+            CaptureCommandOfferResult.SEMANTIC_OVERFLOW,
+            CaptureCommandOfferResult.SEMANTIC_DROPPED,
+            CaptureCommandOfferResult.ACCEPTED,
+            CaptureCommandOfferResult.COALESCED,
+            CaptureCommandOfferResult.SNAPSHOT_DROPPED,
+            CaptureCommandOfferResult.CLOSED,
+            -> Unit
+        }
     }
 
     private suspend fun ensureStarted(state: AdapterState): SessionHandle? {
@@ -431,7 +465,7 @@ class VideoCaptureAdapter(
             val generation = bufferingGeneration
             bufferingJob = workerScope.launch {
                 delay(bufferingGraceMillis)
-                commands.trySend(AdapterCommand.BufferingGraceElapsed(generation))
+                enqueue(AdapterCommand.BufferingGraceElapsed(generation))
             }
         } else {
             setBlocker(state, CaptureBlocker.Buffering, false)
@@ -868,6 +902,35 @@ class VideoCaptureAdapter(
         data object TitleCompleted : AdapterCommand
         data object ExternalPlayback : AdapterCommand
         data class Finalize(val reason: FinalizeReason, val completion: CompletableDeferred<Unit>) : AdapterCommand
+
+        val queuePolicy: CaptureCommandQueuePolicy
+            get() = when (this) {
+                is Position -> CaptureCommandQueuePolicy.LatestSnapshot(
+                    family = "video-position",
+                    key = Unit,
+                )
+                Playable -> adjacentPolicy("video-playable", Unit)
+                is Playing -> adjacentPolicy("video-playing", playing)
+                is Buffering -> adjacentPolicy("video-buffering", buffering)
+                is BufferingGraceElapsed -> adjacentPolicy("video-buffering-grace", generation)
+                is Seeking -> adjacentPolicy("video-seeking", seeking)
+                is Backgrounded -> adjacentPolicy("video-backgrounded", backgrounded)
+                is SubtitleTrackChanged -> adjacentPolicy("video-subtitle-track", this)
+                is SubtitleModeChanged -> adjacentPolicy("video-subtitle-mode", visible)
+                is SubtitleCueActive -> adjacentPolicy("video-subtitle-cue-active", cue)
+                is SubtitleCueCleared -> adjacentPolicy("video-subtitle-cue-cleared", role)
+                is OcrVisible -> adjacentPolicy("video-ocr-visible", frame)
+                OcrHidden -> adjacentPolicy("video-ocr-hidden", Unit)
+                EpisodeCompleted -> adjacentPolicy("video-episode-completed", Unit)
+                TitleCompleted -> adjacentPolicy("video-title-completed", Unit)
+                ExternalPlayback -> adjacentPolicy("video-external-playback", Unit)
+                is Finalize -> CaptureCommandQueuePolicy.NonCoalescible
+            }
+
+        private fun adjacentPolicy(
+            family: String,
+            key: Any,
+        ) = CaptureCommandQueuePolicy.AdjacentCoalescible(family, key)
     }
 
     private sealed interface CaptureBlocker {

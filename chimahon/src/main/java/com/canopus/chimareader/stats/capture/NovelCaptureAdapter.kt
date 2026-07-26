@@ -4,6 +4,7 @@ package com.canopus.chimareader.stats.capture
 
 import com.canopus.chimareader.data.BookMetadata
 import com.canopus.chimareader.data.BookStorage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -55,6 +56,8 @@ import java.time.Instant
 import java.time.ZoneId
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /**
  * A layout-independent range emitted by the reader JavaScript.
@@ -476,43 +479,63 @@ class NovelCaptureAdapter(
         createdAtEpochMillis = book.createdAtEpochMillis,
         updatedAtEpochMillis = maxOf(book.createdAtEpochMillis, clock()),
     )
-    private val commands = Channel<AdapterCommand>(Channel.UNLIMITED)
+    private val commands = BoundedNovelCommandQueue<AdapterCommand>()
     private val lookupSnapshotState = AtomicReference(LookupSnapshotState())
+    internal val queueDiagnostics: StateFlow<NovelCommandQueueDiagnostics> = commands.diagnostics
 
     init {
         workerScope.launch {
             var state = AdapterState()
-            for (command in commands) {
-                when (command) {
-                    is AdapterCommand.Start -> state = start(state, command)
-                    is AdapterCommand.VisibleRanges -> handleVisibleRanges(state, command)
-                    is AdapterCommand.Progress -> handleProgress(state, command)
-                    is AdapterCommand.ResetProgress -> {
-                        state.lastNetPosition = command.netPosition
-                        if (command.recordSeek) {
-                            state.visibleSourceIds.clear()
-                            recordActivity(state, EventType.SEEK)
+            while (true) {
+                val command = commands.receive() ?: break
+                try {
+                    when (command) {
+                        is AdapterCommand.Start -> state = start(state, command)
+                        is AdapterCommand.VisibleRanges -> handleVisibleRanges(state, command)
+                        is AdapterCommand.Progress -> handleProgress(state, command)
+                        is AdapterCommand.ResetProgress -> {
+                            state.lastNetPosition = command.netPosition
+                            if (command.recordSeek) {
+                                state.visibleSourceIds.clear()
+                                recordActivity(state, EventType.SEEK)
+                            }
+                        }
+                        is AdapterCommand.ChapterChanged -> handleChapterChanged(state, command)
+                        is AdapterCommand.ChapterCompleted -> {
+                            if (state.completedSections.add(state.sectionId)) {
+                                recordActivity(state, EventType.UNIT_COMPLETED)
+                            }
+                        }
+                        AdapterCommand.TitleCompleted -> {
+                            if (!state.titleCompleted) {
+                                state.titleCompleted = true
+                                recordActivity(state, EventType.TITLE_COMPLETED)
+                            }
+                        }
+                        is AdapterCommand.Blocked -> handleBlocked(state, command)
+                        is AdapterCommand.Finalize -> {
+                            finalize(state, command)
+                            command.completion.complete(Unit)
+                            commands.close()
                         }
                     }
-                    is AdapterCommand.ChapterChanged -> handleChapterChanged(state, command)
-                    is AdapterCommand.ChapterCompleted -> {
-                        if (state.completedSections.add(state.sectionId)) {
-                            recordActivity(state, EventType.UNIT_COMPLETED)
-                        }
+                } catch (error: CancellationException) {
+                    if (command is AdapterCommand.Finalize) {
+                        command.completion.complete(Unit)
                     }
-                    AdapterCommand.TitleCompleted -> {
-                        if (!state.titleCompleted) {
-                            state.titleCompleted = true
-                            recordActivity(state, EventType.TITLE_COMPLETED)
-                        }
-                    }
-                    is AdapterCommand.Blocked -> handleBlocked(state, command)
-                    is AdapterCommand.Finalize -> {
-                        finalize(state, command)
+                    throw error
+                } catch (_: Exception) {
+                    commands.recordWorkerFailure()
+                    if (command is AdapterCommand.Finalize) {
                         command.completion.complete(Unit)
                         commands.close()
                     }
                 }
+            }
+        }.invokeOnCompletion {
+            val terminal = commands.close()
+            if (terminal is AdapterCommand.Finalize) {
+                terminal.completion.complete(Unit)
             }
         }
     }
@@ -522,7 +545,7 @@ class NovelCaptureAdapter(
         netPosition: Long,
     ) {
         val snapshotEpoch = invalidateLookupSnapshot()
-        commands.trySend(AdapterCommand.Start(sectionId, netPosition, snapshotEpoch))
+        enqueue(AdapterCommand.Start(sectionId, netPosition, snapshotEpoch))
     }
 
     fun onVisibleRanges(
@@ -530,7 +553,7 @@ class NovelCaptureAdapter(
         rangesJson: String,
     ) {
         val snapshotEpoch = invalidateLookupSnapshot()
-        commands.trySend(
+        enqueue(
             AdapterCommand.VisibleRanges(
                 sectionId = sectionId,
                 rangesJson = rangesJson,
@@ -541,7 +564,7 @@ class NovelCaptureAdapter(
 
     fun onProgress(netPosition: Long) {
         invalidateLookupSnapshot()
-        commands.trySend(AdapterCommand.Progress(netPosition))
+        enqueue(AdapterCommand.Progress(netPosition))
     }
 
     fun resetProgressBaseline(
@@ -549,7 +572,7 @@ class NovelCaptureAdapter(
         recordSeek: Boolean,
     ) {
         invalidateLookupSnapshot()
-        commands.trySend(AdapterCommand.ResetProgress(netPosition, recordSeek))
+        enqueue(AdapterCommand.ResetProgress(netPosition, recordSeek))
     }
 
     fun onChapterChanged(
@@ -558,15 +581,15 @@ class NovelCaptureAdapter(
         cause: NovelNavigationCause,
     ) {
         invalidateLookupSnapshot()
-        commands.trySend(AdapterCommand.ChapterChanged(sectionId, netPosition, cause))
+        enqueue(AdapterCommand.ChapterChanged(sectionId, netPosition, cause))
     }
 
     fun onChapterCompleted() {
-        commands.trySend(AdapterCommand.ChapterCompleted)
+        enqueue(AdapterCommand.ChapterCompleted)
     }
 
     fun onTitleCompleted() {
-        commands.trySend(AdapterCommand.TitleCompleted)
+        enqueue(AdapterCommand.TitleCompleted)
     }
 
     fun setOverlayVisible(
@@ -574,12 +597,12 @@ class NovelCaptureAdapter(
         visible: Boolean,
     ) {
         if (visible) invalidateLookupSnapshot()
-        commands.trySend(AdapterCommand.Blocked(CaptureBlocker.Overlay(overlay), visible))
+        enqueue(AdapterCommand.Blocked(CaptureBlocker.Overlay(overlay), visible))
     }
 
     fun setBackgrounded(backgrounded: Boolean) {
         if (backgrounded) invalidateLookupSnapshot()
-        commands.trySend(AdapterCommand.Blocked(CaptureBlocker.Background, backgrounded))
+        enqueue(AdapterCommand.Blocked(CaptureBlocker.Background, backgrounded))
     }
 
     fun lookupProvenanceSnapshot(): NovelLookupProvenanceSnapshot? =
@@ -611,10 +634,24 @@ class NovelCaptureAdapter(
     ): CompletableDeferred<Unit> {
         clearLookupSnapshot()
         val completion = CompletableDeferred<Unit>()
-        if (commands.trySend(AdapterCommand.Finalize(reason, legacy, completion)).isFailure) {
+        if (!commands.finish(AdapterCommand.Finalize(reason, legacy, completion))) {
             completion.complete(Unit)
         }
         return completion
+    }
+
+    private fun enqueue(command: AdapterCommand) {
+        when (commands.offer(command, command.queuePolicy)) {
+            // Capture is best-effort at the reader boundary. Saturation remains visible in
+            // diagnostics so rollout can be stopped, but it must never crash or freeze reading.
+            NovelCommandOfferResult.SEMANTIC_OVERFLOW,
+            NovelCommandOfferResult.SEMANTIC_DROPPED,
+            NovelCommandOfferResult.ACCEPTED,
+            NovelCommandOfferResult.COALESCED,
+            NovelCommandOfferResult.SNAPSHOT_DROPPED,
+            NovelCommandOfferResult.CLOSED,
+            -> Unit
+        }
     }
 
     private suspend fun start(
@@ -930,6 +967,30 @@ class NovelCaptureAdapter(
             val legacy: LegacyNovelSessionSnapshot,
             val completion: CompletableDeferred<Unit>,
         ) : AdapterCommand
+
+        val queuePolicy: NovelCommandQueuePolicy
+            get() = when (this) {
+                is Progress -> NovelCommandQueuePolicy.LatestSnapshot(
+                    family = "novel-progress",
+                    key = Unit,
+                )
+                is Start -> adjacentPolicy("novel-start", Unit)
+                is VisibleRanges -> adjacentPolicy(
+                    family = "novel-visible-ranges",
+                    key = sectionId to rangesJson,
+                )
+                is ResetProgress -> adjacentPolicy("novel-reset-progress", recordSeek)
+                is ChapterChanged -> adjacentPolicy("novel-chapter-changed", this)
+                ChapterCompleted -> adjacentPolicy("novel-chapter-completed", Unit)
+                TitleCompleted -> adjacentPolicy("novel-title-completed", Unit)
+                is Blocked -> adjacentPolicy("novel-blocked", blocker to blocked)
+                is Finalize -> NovelCommandQueuePolicy.NonCoalescible
+            }
+
+        private fun adjacentPolicy(
+            family: String,
+            key: Any,
+        ) = NovelCommandQueuePolicy.AdjacentCoalescible(family, key)
     }
 
     private sealed interface CaptureBlocker {
@@ -946,6 +1007,264 @@ class NovelCaptureAdapter(
         const val SOURCE_NAMESPACE = "immersion-source-novel"
     }
 }
+
+/**
+ * Non-blocking capture ingress with bounded primary storage and a bounded FIFO overflow spool.
+ *
+ * Only latest-state progress snapshots may be evicted to make room. Once both command budgets are
+ * full, further commands are dropped with an explicit diagnostic. Finalization has a reserved
+ * terminal slot and runs after every accepted semantic command.
+ */
+private class BoundedNovelCommandQueue<T : Any>(
+    private val capacity: Int = NOVEL_CAPTURE_COMMAND_QUEUE_CAPACITY,
+    private val overflowCapacity: Int = NOVEL_CAPTURE_COMMAND_OVERFLOW_CAPACITY,
+) {
+    private val lock = ReentrantLock()
+    private val pending = ArrayDeque<QueueEntry<T>>(capacity)
+    private val overflow = ArrayDeque<QueueEntry<T>>(overflowCapacity)
+    private val wakeups = Channel<Unit>(Channel.CONFLATED)
+    private val mutableDiagnostics = MutableStateFlow(
+        NovelCommandQueueDiagnostics(
+            capacity = capacity,
+            overflowCapacity = overflowCapacity,
+        ),
+    )
+    private var terminal: T? = null
+    private var accepting = true
+    private var closed = false
+    private var semanticGeneration = 0L
+    private var highWatermark = 0
+    private var coalescedCommands = 0L
+    private var evictedSnapshots = 0L
+    private var droppedSnapshots = 0L
+    private var semanticOverflowCommands = 0L
+    private var droppedSemanticCommands = 0L
+    private var workerFailures = 0L
+
+    val diagnostics: StateFlow<NovelCommandQueueDiagnostics> = mutableDiagnostics.asStateFlow()
+
+    init {
+        require(capacity > 0) { "Novel capture command queue capacity must be positive" }
+        require(overflowCapacity > 0) { "Novel capture command overflow capacity must be positive" }
+    }
+
+    fun offer(
+        command: T,
+        policy: NovelCommandQueuePolicy,
+    ): NovelCommandOfferResult {
+        lock.withLock {
+            if (!accepting || closed) return NovelCommandOfferResult.CLOSED
+            if (coalesce(command, policy)) {
+                coalescedCommands += 1
+                publishDiagnostics()
+                signalWorker()
+                return NovelCommandOfferResult.COALESCED
+            }
+
+            if (pending.size >= capacity && policy is NovelCommandQueuePolicy.LatestSnapshot) {
+                if (!evictOldestSnapshot()) {
+                    droppedSnapshots += 1
+                    publishDiagnostics()
+                    return NovelCommandOfferResult.SNAPSHOT_DROPPED
+                }
+            }
+
+            if (
+                pending.size >= capacity &&
+                overflow.isEmpty() &&
+                policy !is NovelCommandQueuePolicy.LatestSnapshot
+            ) {
+                evictOldestSnapshot()
+            }
+
+            if (pending.size >= capacity || overflow.isNotEmpty()) {
+                if (policy is NovelCommandQueuePolicy.LatestSnapshot) {
+                    droppedSnapshots += 1
+                    publishDiagnostics()
+                    return NovelCommandOfferResult.SNAPSHOT_DROPPED
+                }
+                if (overflow.size >= overflowCapacity) {
+                    droppedSemanticCommands += 1
+                    publishDiagnostics()
+                    return NovelCommandOfferResult.SEMANTIC_DROPPED
+                }
+                val generation = ++semanticGeneration
+                overflow.addLast(QueueEntry(command, policy, generation))
+                semanticOverflowCommands += 1
+                highWatermark = maxOf(highWatermark, pending.size + overflow.size)
+                publishDiagnostics()
+                signalWorker()
+                return NovelCommandOfferResult.SEMANTIC_OVERFLOW
+            }
+
+            val generation = if (policy is NovelCommandQueuePolicy.LatestSnapshot) {
+                semanticGeneration
+            } else {
+                ++semanticGeneration
+            }
+            pending.addLast(QueueEntry(command, policy, generation))
+            highWatermark = maxOf(highWatermark, pending.size + overflow.size)
+            publishDiagnostics()
+            signalWorker()
+            return NovelCommandOfferResult.ACCEPTED
+        }
+    }
+
+    fun finish(command: T): Boolean = lock.withLock {
+        if (!accepting || closed) return false
+        accepting = false
+        terminal = command
+        signalWorker()
+        true
+    }
+
+    suspend fun receive(): T? {
+        while (true) {
+            lock.withLock {
+                if (pending.isNotEmpty()) {
+                    val entry = pending.removeFirst()
+                    if (overflow.isNotEmpty()) {
+                        pending.addLast(overflow.removeFirst())
+                    }
+                    publishDiagnostics()
+                    return entry.command
+                }
+                if (overflow.isNotEmpty()) {
+                    return overflow.removeFirst().command.also {
+                        publishDiagnostics()
+                    }
+                }
+                terminal?.let {
+                    terminal = null
+                    return it
+                }
+                if (!accepting || closed) return null
+            }
+            if (wakeups.receiveCatching().isClosed) return null
+        }
+    }
+
+    fun close(): T? {
+        val terminalCommand = lock.withLock {
+            closed = true
+            accepting = false
+            terminal.also { terminal = null }
+        }
+        wakeups.close()
+        return terminalCommand
+    }
+
+    fun recordWorkerFailure() {
+        lock.withLock {
+            workerFailures += 1
+            publishDiagnostics()
+        }
+    }
+
+    private fun coalesce(
+        command: T,
+        policy: NovelCommandQueuePolicy,
+    ): Boolean {
+        val queue = if (overflow.isNotEmpty()) overflow else pending
+        val index = when (policy) {
+            is NovelCommandQueuePolicy.AdjacentCoalescible -> {
+                queue.lastIndex.takeIf { candidate ->
+                    candidate >= 0 &&
+                        queue[candidate].policy == policy
+                }
+            }
+            is NovelCommandQueuePolicy.LatestSnapshot -> {
+                queue.indexOfLast { entry ->
+                    entry.semanticGeneration == semanticGeneration &&
+                        entry.policy == policy
+                }.takeIf { it >= 0 }
+            }
+            NovelCommandQueuePolicy.NonCoalescible -> null
+        } ?: return false
+
+        queue.removeAt(index)
+        queue.addLast(QueueEntry(command, policy, semanticGeneration))
+        return true
+    }
+
+    private fun evictOldestSnapshot(): Boolean {
+        val index = pending.indexOfFirst {
+            it.semanticGeneration == semanticGeneration &&
+                it.policy is NovelCommandQueuePolicy.LatestSnapshot
+        }
+        if (index < 0) return false
+        pending.removeAt(index)
+        evictedSnapshots += 1
+        publishDiagnostics()
+        return true
+    }
+
+    private fun publishDiagnostics() {
+        mutableDiagnostics.value = NovelCommandQueueDiagnostics(
+            capacity = capacity,
+            overflowCapacity = overflowCapacity,
+            depth = pending.size + overflow.size,
+            overflowDepth = overflow.size,
+            highWatermark = highWatermark,
+            coalescedCommands = coalescedCommands,
+            evictedSnapshots = evictedSnapshots,
+            droppedSnapshots = droppedSnapshots,
+            semanticOverflowCommands = semanticOverflowCommands,
+            droppedSemanticCommands = droppedSemanticCommands,
+            workerFailures = workerFailures,
+        )
+    }
+
+    private fun signalWorker() {
+        wakeups.trySend(Unit)
+    }
+
+    private data class QueueEntry<T>(
+        val command: T,
+        val policy: NovelCommandQueuePolicy,
+        val semanticGeneration: Long,
+    )
+}
+
+private sealed interface NovelCommandQueuePolicy {
+    data class LatestSnapshot(
+        val family: String,
+        val key: Any,
+    ) : NovelCommandQueuePolicy
+
+    data class AdjacentCoalescible(
+        val family: String,
+        val key: Any,
+    ) : NovelCommandQueuePolicy
+
+    data object NonCoalescible : NovelCommandQueuePolicy
+}
+
+private enum class NovelCommandOfferResult {
+    ACCEPTED,
+    COALESCED,
+    SNAPSHOT_DROPPED,
+    SEMANTIC_OVERFLOW,
+    SEMANTIC_DROPPED,
+    CLOSED,
+}
+
+internal data class NovelCommandQueueDiagnostics(
+    val capacity: Int,
+    val overflowCapacity: Int,
+    val depth: Int = 0,
+    val overflowDepth: Int = 0,
+    val highWatermark: Int = 0,
+    val coalescedCommands: Long = 0,
+    val evictedSnapshots: Long = 0,
+    val droppedSnapshots: Long = 0,
+    val semanticOverflowCommands: Long = 0,
+    val droppedSemanticCommands: Long = 0,
+    val workerFailures: Long = 0,
+)
+
+private const val NOVEL_CAPTURE_COMMAND_QUEUE_CAPACITY = 64
+private const val NOVEL_CAPTURE_COMMAND_OVERFLOW_CAPACITY = 64
 
 private val NovelNavigationCause.isSeek: Boolean
     get() = when (this) {

@@ -97,7 +97,10 @@ fun ReaderWebView(
         factory = { context ->
             ReaderAndroidWebView(
                 context = context,
-                readerJs = loadAssetText(context, "novel/reader.js"),
+                readerJs = listOf(
+                    loadAssetText(context, "novel/reader.js"),
+                    loadAssetText(context, "novel/stats-source-navigation.js"),
+                ).joinToString(separator = "\n"),
                 continuousMode = continuousMode,
                 isImageOnly = isImageOnly,
                 readerSettings = readerSettings,
@@ -283,9 +286,18 @@ fun ReaderWebView(
             deduped.forEach { command ->
                 when (command) {
                     is WebViewCommand.LoadChapter -> {
+                        if (v.currentUrl != command.url) {
+                            v.clearPendingSourceRange()
+                        }
                         v.pendingProgress = command.progress
                         v.currentUrl = command.url
                         v.loadChapter(command.url)
+                    }
+                    is WebViewCommand.RestoreSourceRange -> {
+                        v.restoreSourceRangeAfterLoad(
+                            startCodePoint = command.startCodePoint,
+                            endCodePointExclusive = command.endCodePointExclusive,
+                        )
                     }
                     is WebViewCommand.ChangeMode -> {
                         if (v.currentUrl != null) {
@@ -395,6 +407,7 @@ private class ReaderAndroidWebView(
     internal var lastLoadedVerticalWriting: Boolean? = null
 
     private var restoreEpoch: Int = 0
+    private var pendingSourceRange: PendingSourceRange? = null
 
     private var lastProgressReportTime = 0L
     private val reportProgressRunnable = Runnable {
@@ -469,11 +482,11 @@ private class ReaderAndroidWebView(
         onRestoreCompleted = { epoch ->
             post {
                 if (epoch == restoreEpoch || epoch == 0) {
-                    alpha = 0f
-                    visibility = View.VISIBLE
-                    animate().cancel()
-                    animate().alpha(1f).setDuration(160).start()
-                    reportVisibleRanges()
+                    if (pendingSourceRange == null) {
+                        revealRestoredContent()
+                    } else {
+                        restorePendingSourceRange()
+                    }
                 }
             }
         },
@@ -582,6 +595,55 @@ private class ReaderAndroidWebView(
         }
     }
 
+    fun clearPendingSourceRange() {
+        pendingSourceRange = null
+    }
+
+    fun restoreSourceRangeAfterLoad(
+        startCodePoint: Int,
+        endCodePointExclusive: Int,
+    ) {
+        require(startCodePoint >= 0 && endCodePointExclusive > startCodePoint)
+        pendingSourceRange = PendingSourceRange(startCodePoint, endCodePointExclusive)
+    }
+
+    private fun restorePendingSourceRange() {
+        val target = pendingSourceRange ?: return
+        val script = """
+            (function() {
+                if (!window.hoshiReader ||
+                    typeof window.hoshiReader.restoreCodePointRange !== 'function') {
+                    return false;
+                }
+                return window.hoshiReader.restoreCodePointRange(
+                    ${target.startCodePoint},
+                    ${target.endCodePointExclusive}
+                );
+            })()
+        """.trimIndent()
+        evaluateJavascript(script) { result ->
+            if (pendingSourceRange == target) {
+                pendingSourceRange = null
+            }
+            revealRestoredContent()
+            if (result?.trim()?.trim('"') == "true") {
+                reportRestoredPosition(recordSeek = false)
+            } else {
+                reportVisibleRanges()
+            }
+        }
+    }
+
+    private fun revealRestoredContent() {
+        alpha = 0f
+        visibility = View.VISIBLE
+        animate().cancel()
+        animate().alpha(1f).setDuration(160).start()
+        if (pendingSourceRange == null) {
+            reportVisibleRanges()
+        }
+    }
+
     fun reportRestoredPosition(recordSeek: Boolean) {
         val chapterUrl = currentUrl ?: return
         evaluateJavascript(
@@ -622,6 +684,7 @@ private class ReaderAndroidWebView(
         appendLine("html, body { margin: 0 !important; padding: 0 !important; }")
         appendLine("html { -webkit-line-box-contain: block glyphs replaced; }")
         appendLine("::highlight(hoshi-selection) { background-color: rgba(130, 150, 200, 0.4); color: inherit; }")
+        appendLine("::highlight(hoshi-source-anchor) { background-color: rgba(255, 193, 7, 0.42); color: inherit; }")
         appendLine("p { margin-block-start: 0 !important; margin-block-end: ${readerSettings.paragraphSpacing}em !important; }")
         appendLine("body * { font-family: inherit !important; }")
         appendLine("img.block-img, svg.block-img { position: static !important; }")
@@ -1420,6 +1483,11 @@ private class ReaderAndroidWebView(
         const val VISIBILITY_SETTLE_MILLIS = 100L
     }
 }
+
+private data class PendingSourceRange(
+    val startCodePoint: Int,
+    val endCodePointExclusive: Int,
+)
 
 private class ReaderJavascriptBridge(
     private val onRestoreCompleted: (Int) -> Unit,

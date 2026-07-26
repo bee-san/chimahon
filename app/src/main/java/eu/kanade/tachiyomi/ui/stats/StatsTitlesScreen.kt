@@ -40,6 +40,7 @@ import tachiyomi.domain.manga.interactor.GetReadMangaNotInLibraryView
 import tachiyomi.domain.manga.model.Manga
 import tachiyomi.domain.source.service.SourceManager
 import tachiyomi.i18n.MR
+import tachiyomi.i18n.kmk.KMR
 import tachiyomi.presentation.core.components.material.Scaffold
 import tachiyomi.presentation.core.i18n.stringResource
 import tachiyomi.presentation.core.screens.LoadingScreen
@@ -261,7 +262,14 @@ class StatsTitlesScreen(
 
         Scaffold(
             topBar = { scrollBehavior ->
-                val titleText = stringResource(MR.strings.label_stats) + " - " + if (allRead) "All read" else "In library"
+                val titleText = stringResource(
+                    KMR.strings.stats_titles_legacy_title,
+                    if (allRead) {
+                        stringResource(KMR.strings.stats_titles_all_read)
+                    } else {
+                        stringResource(KMR.strings.stats_titles_in_library)
+                    },
+                )
                 SearchToolbar(
                     titleContent = { AppBarTitle(titleText) },
                     searchQuery = successState?.searchQuery,
@@ -328,11 +336,12 @@ class StatsTitlesScreen(
                         state = actualState,
                         paddingValues = paddingValues,
                         onTitleClick = { item ->
+                            val canonicalTitleId = canonicalStatsTitleId(item.id)
                             navigator.push(
                                 StatsScreen(
-                                    titleId = item.id,
+                                    titleId = canonicalTitleId?.value,
                                     isNovel = item.isNovel,
-                                    titleName = item.title,
+                                    titleName = item.title.takeIf { canonicalTitleId != null },
                                 ),
                             )
                         },

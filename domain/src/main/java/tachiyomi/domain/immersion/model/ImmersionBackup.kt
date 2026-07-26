@@ -112,6 +112,8 @@ data class ImmersionDeletionPreview(
     val sourceUnits: Long,
     val words: Long,
     val characters: Long,
+    val selectionDigest: String? = null,
+    val databaseRevision: Long? = null,
 ) {
     init {
         require(sessions >= 0)
@@ -120,6 +122,15 @@ data class ImmersionDeletionPreview(
         require(sourceUnits >= 0)
         require(words >= 0)
         require(characters >= 0)
+        require((selectionDigest == null) == (databaseRevision == null)) {
+            "Scoped deletion identity and revision must be supplied together"
+        }
+        require(selectionDigest == null || selectionDigest.isNotBlank()) {
+            "Scoped deletion identity cannot be blank"
+        }
+        require(databaseRevision == null || databaseRevision >= 0) {
+            "Database revision cannot be negative"
+        }
     }
 }
 

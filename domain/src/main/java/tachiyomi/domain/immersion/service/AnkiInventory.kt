@@ -426,7 +426,24 @@ class AnkiKnownnessResolver(
             ?: return AnkiKnownness(MaturityTier.UNKNOWN, null, 0, null)
         val normalizedWord = ImmersionLexemeNormalizer.normalizeHeadword(headword, languageTag)
         val normalizedReading = reading?.let(ImmersionLexemeNormalizer::normalizeReading).orEmpty()
-        val items = repository.findWordItems(profileId, languageTag, normalizedWord, normalizedReading)
+        val candidates = repository.findWordItems(
+            profileId,
+            languageTag,
+            normalizedWord,
+            normalizedReading,
+        ).filter {
+            it.languageTag == languageTag && it.normalizedWord == normalizedWord
+        }
+        val readingAware = candidates.filter {
+            it.matchConfidence == AnkiMatchConfidence.READING_AWARE &&
+                it.normalizedReading == normalizedReading
+        }
+        val items = readingAware.ifEmpty {
+            candidates.filter {
+                it.matchConfidence == AnkiMatchConfidence.HEADWORD_ONLY &&
+                    it.normalizedReading.isBlank()
+            }
+        }
         if (items.isEmpty()) {
             return AnkiKnownness(
                 tier = if (snapshot.isStale) MaturityTier.STALE else MaturityTier.UNKNOWN,
@@ -440,8 +457,8 @@ class AnkiKnownnessResolver(
             aggregateMaturity(cards.map(ImmersionAnkiItem::maturityTier), aggregation)
         }
         return AnkiKnownness(
-            tier = aggregateMaturity(noteTiers, AnkiMaturityAggregation.MAX_INTERVAL),
-            matchConfidence = items.minBy(ImmersionAnkiItem::matchConfidence).matchConfidence,
+            tier = aggregateMaturity(noteTiers, aggregation),
+            matchConfidence = items.first().matchConfidence,
             ambiguityCount = items.maxOf(ImmersionAnkiItem::ambiguityCount),
             snapshotCompletedAtEpochMillis = snapshot.completedAtEpochMillis,
         )

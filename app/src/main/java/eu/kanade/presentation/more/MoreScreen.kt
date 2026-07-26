@@ -71,6 +71,10 @@ fun MoreScreen(
     onIncognitoModeChange: (Boolean) -> Unit,
     screenLookupActive: Boolean,
     onScreenLookupChange: (Boolean) -> Unit,
+    // KMK -->
+    statsUiEnabled: Boolean,
+    onStatsUiEnabledChange: (Boolean) -> Unit,
+    // KMK <--
     // SY -->
     moreTabKeys: List<String>,
     // SY <--
@@ -135,6 +139,17 @@ fun MoreScreen(
                     onCheckedChanged = onScreenLookupChange,
                 )
             }
+            // KMK -->
+            item {
+                SwitchPreferenceWidget(
+                    title = stringResource(KMR.strings.stats_preview_toggle),
+                    subtitle = stringResource(KMR.strings.stats_preview_toggle_summary),
+                    icon = Icons.Outlined.QueryStats,
+                    checked = statsUiEnabled,
+                    onCheckedChanged = onStatsUiEnabledChange,
+                )
+            }
+            // KMK <--
 
             item { HorizontalDivider() }
 
@@ -174,13 +189,17 @@ fun MoreScreen(
                     onPreferenceClick = onClickCategories,
                 )
             }
-            item {
-                TextPreferenceWidget(
-                    title = stringResource(MR.strings.label_stats),
-                    icon = Icons.Outlined.QueryStats,
-                    onPreferenceClick = onClickStats,
-                )
+            // KMK -->
+            if (statsUiEnabled) {
+                item {
+                    TextPreferenceWidget(
+                        title = stringResource(MR.strings.label_stats),
+                        icon = Icons.Outlined.QueryStats,
+                        onPreferenceClick = onClickStats,
+                    )
+                }
             }
+            // KMK <--
             item {
                 TextPreferenceWidget(
                     title = stringResource(MR.strings.label_anime_updates),

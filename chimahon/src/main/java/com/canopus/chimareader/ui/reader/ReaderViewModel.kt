@@ -48,6 +48,10 @@ import kotlin.math.abs
 
 sealed interface WebViewCommand {
     data class LoadChapter(val url: String, val progress: Double) : WebViewCommand
+    data class RestoreSourceRange(
+        val startCodePoint: Int,
+        val endCodePointExclusive: Int,
+    ) : WebViewCommand
     data class JumpToFragment(val fragment: String) : WebViewCommand
     data class ApplySasayakiCues(val cuesJson: String) : WebViewCommand
     data class HighlightSasayakiCue(
@@ -166,6 +170,7 @@ class ReaderViewModel(
     val settings: NovelReaderSettings,
     private val settingsNamespace: String?,
     private val scope: CoroutineScope,
+    private val sourceTarget: NovelSourceNavigationTarget? = null,
 ) {
     var index by mutableIntStateOf(0)
     var currentProgress by mutableDoubleStateOf(0.0)
@@ -279,8 +284,8 @@ class ReaderViewModel(
         }
 
         val bookmark = BookStorage.loadBookmark(rootUrl)
-        index = bookmark?.chapterIndex ?: 0
-        currentProgress = bookmark?.progress ?: 0.0
+        index = sourceTarget?.chapterIndex ?: bookmark?.chapterIndex ?: 0
+        currentProgress = if (sourceTarget == null) bookmark?.progress ?: 0.0 else 0.0
         totalExploredCharCount = calculateExploredCharCount(currentProgress)
         lastSavedChapterIndex = index
         lastSavedProgress = currentProgress
@@ -391,6 +396,14 @@ class ReaderViewModel(
             val chapterTitle = getCurrentChapterTitle()
             bridge.updateState(fileUrl, currentProgress, chapterTitle)
             bridge.send(WebViewCommand.LoadChapter(fileUrl, currentProgress))
+            sourceTarget?.let { target ->
+                bridge.send(
+                    WebViewCommand.RestoreSourceRange(
+                        startCodePoint = target.rangeStart,
+                        endCodePointExclusive = target.rangeEndExclusive,
+                    ),
+                )
+            }
         }
 
         // Start collecting updates from settings flow in the background
