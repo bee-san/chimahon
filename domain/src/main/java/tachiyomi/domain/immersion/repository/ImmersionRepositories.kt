@@ -5,7 +5,9 @@ package tachiyomi.domain.immersion.repository
 import kotlinx.coroutines.flow.Flow
 import tachiyomi.domain.immersion.model.AnalyticsAnkiSummary
 import tachiyomi.domain.immersion.model.AnalyticsBucketInventory
+import tachiyomi.domain.immersion.model.AnalyticsCharacterFilter
 import tachiyomi.domain.immersion.model.AnalyticsCharacterRow
+import tachiyomi.domain.immersion.model.AnalyticsCharacterSummary
 import tachiyomi.domain.immersion.model.AnalyticsDataQuality
 import tachiyomi.domain.immersion.model.AnalyticsInventoryMetrics
 import tachiyomi.domain.immersion.model.AnalyticsPage
@@ -13,9 +15,14 @@ import tachiyomi.domain.immersion.model.AnalyticsSessionDetail
 import tachiyomi.domain.immersion.model.AnalyticsSort
 import tachiyomi.domain.immersion.model.AnalyticsSourceOccurrence
 import tachiyomi.domain.immersion.model.AnalyticsTemporalActivity
+import tachiyomi.domain.immersion.model.AnalyticsTitleAcquisitionBucketSize
+import tachiyomi.domain.immersion.model.AnalyticsTitleCompletedUnit
+import tachiyomi.domain.immersion.model.AnalyticsTitleCoverage
 import tachiyomi.domain.immersion.model.AnalyticsTitleMetadata
 import tachiyomi.domain.immersion.model.AnalyticsTitleSeriesSelection
 import tachiyomi.domain.immersion.model.AnalyticsTitleTrendDailyPoint
+import tachiyomi.domain.immersion.model.AnalyticsTitleUnitProgress
+import tachiyomi.domain.immersion.model.AnalyticsTitleWordAcquisition
 import tachiyomi.domain.immersion.model.AnalyticsVocabularyFirstSeenDay
 import tachiyomi.domain.immersion.model.AnalyticsWordRow
 import tachiyomi.domain.immersion.model.ExposureEvent
@@ -39,6 +46,9 @@ import tachiyomi.domain.immersion.model.ImmersionSessionStart
 import tachiyomi.domain.immersion.model.ImmersionSourceUnit
 import tachiyomi.domain.immersion.model.ImmersionStatsDeletionScope
 import tachiyomi.domain.immersion.model.ImmersionTitle
+import tachiyomi.domain.immersion.model.ImmersionTitleMutation
+import tachiyomi.domain.immersion.model.ImmersionTitleMutationPreview
+import tachiyomi.domain.immersion.model.ImmersionTitleMutationRequest
 import tachiyomi.domain.immersion.model.IndexTerminalReason
 import tachiyomi.domain.immersion.model.IndexWorkItem
 import tachiyomi.domain.immersion.model.IndexedCharacter
@@ -46,9 +56,11 @@ import tachiyomi.domain.immersion.model.IndexedWord
 import tachiyomi.domain.immersion.model.LanguageTag
 import tachiyomi.domain.immersion.model.LocalDateRange
 import tachiyomi.domain.immersion.model.MillisecondDuration
+import tachiyomi.domain.immersion.model.NetCharacterProgress
 import tachiyomi.domain.immersion.model.PersistenceResult
 import tachiyomi.domain.immersion.model.RecordedImmersionEvent
 import tachiyomi.domain.immersion.model.SessionCursor
+import tachiyomi.domain.immersion.model.SessionEvent
 import tachiyomi.domain.immersion.model.SessionId
 import tachiyomi.domain.immersion.model.SessionPage
 import tachiyomi.domain.immersion.model.SessionStatus
@@ -56,10 +68,17 @@ import tachiyomi.domain.immersion.model.SourceUnitId
 import tachiyomi.domain.immersion.model.StatsFilter
 import tachiyomi.domain.immersion.model.TitleId
 import tachiyomi.domain.immersion.model.UnicodeCodePoint
+import tachiyomi.domain.immersion.model.VocabularyFilter
 import tachiyomi.domain.immersion.service.AnkiCoverage
 
 interface ImmersionRecorderRepository {
     suspend fun isTitleCaptureExcluded(titleId: TitleId): Boolean = false
+
+    suspend fun startSession(
+        title: ImmersionTitle,
+        session: ImmersionSessionStart,
+        event: SessionEvent,
+    ): PersistenceResult
 
     suspend fun upsertTitle(title: ImmersionTitle): PersistenceResult
 
@@ -163,6 +182,29 @@ interface ImmersionAnalyticsRepository {
 
     suspend fun titleMetadata(titleIds: Set<TitleId>): List<AnalyticsTitleMetadata>
 
+    suspend fun titleNetProgress(filter: StatsFilter): Map<TitleId, NetCharacterProgress>
+
+    suspend fun titleUnitProgress(filter: StatsFilter): Map<TitleId, AnalyticsTitleUnitProgress>
+
+    suspend fun titleWordAcquisition(
+        filter: StatsFilter,
+        bucketSize: AnalyticsTitleAcquisitionBucketSize,
+    ): Map<TitleId, AnalyticsTitleWordAcquisition>
+
+    suspend fun titleCompletedUnits(
+        filter: StatsFilter,
+        offset: Long,
+        limit: Int,
+    ): AnalyticsPage<AnalyticsTitleCompletedUnit>
+
+    suspend fun sourceOccurrences(
+        filter: StatsFilter,
+        offset: Long,
+        limit: Int,
+    ): AnalyticsPage<AnalyticsSourceOccurrence>
+
+    suspend fun titleCoverage(filter: StatsFilter): Map<TitleId, AnalyticsTitleCoverage>
+
     suspend fun temporalActivity(filter: StatsFilter): AnalyticsTemporalActivity
 
     suspend fun titleTrendDaily(
@@ -182,10 +224,10 @@ interface ImmersionAnalyticsRepository {
 
     suspend fun vocabularyPage(
         filter: StatsFilter,
+        vocabularyFilter: VocabularyFilter,
         sort: AnalyticsSort,
         offset: Long,
         limit: Int,
-        searchQuery: String? = null,
     ): AnalyticsPage<AnalyticsWordRow>
 
     suspend fun characterPage(
@@ -194,7 +236,13 @@ interface ImmersionAnalyticsRepository {
         offset: Long,
         limit: Int,
         searchQuery: String? = null,
+        characterFilter: AnalyticsCharacterFilter = AnalyticsCharacterFilter(),
     ): AnalyticsPage<AnalyticsCharacterRow>
+
+    suspend fun characterSummary(
+        filter: StatsFilter,
+        characterFilter: AnalyticsCharacterFilter = AnalyticsCharacterFilter(),
+    ): AnalyticsCharacterSummary
 
     suspend fun filteredSessionsPage(
         filter: StatsFilter,
@@ -259,6 +307,11 @@ interface ImmersionMaintenanceRepository {
 
     suspend fun maintenanceSummary(): ImmersionMaintenanceSummary
 
+    suspend fun compactFinalizedHeartbeats(
+        limit: Int,
+        compactedAtEpochMillis: Long,
+    ): Long
+
     suspend fun rollupBacklogCount(): Long
 
     suspend fun rollupBacklogEventCount(expectedRollupVersion: Int): Long
@@ -276,6 +329,13 @@ interface ImmersionMaintenanceRepository {
         scope: ImmersionStatsDeletionScope,
         expectedPreview: ImmersionDeletionPreview,
     ): ImmersionDeletionPreview
+
+    suspend fun previewSessionDeletion(sessionId: SessionId): ImmersionDeletionPreview?
+
+    suspend fun deleteSession(
+        sessionId: SessionId,
+        expectedPreview: ImmersionDeletionPreview,
+    ): ImmersionDeletionPreview?
 
     suspend fun deleteSession(sessionId: SessionId): Boolean
 
@@ -312,11 +372,44 @@ interface ImmersionMaintenanceRepository {
         updatedAtEpochMillis: Long,
     )
 
+    suspend fun unlinkTitle(
+        titleId: TitleId,
+        updatedAtEpochMillis: Long,
+    ): Boolean
+
+    suspend fun previewTitleMutation(
+        request: ImmersionTitleMutationRequest,
+    ): ImmersionTitleMutationPreview
+
+    suspend fun applyTitleMutation(
+        expectedPreview: ImmersionTitleMutationPreview,
+        appliedAtEpochMillis: Long,
+    ): ImmersionTitleMutation
+
+    suspend fun rollbackTitleMutation(
+        operationId: String,
+        rolledBackAtEpochMillis: Long,
+    ): ImmersionTitleMutation
+
+    suspend fun titleMutations(titleId: TitleId): List<ImmersionTitleMutation>
+
+    suspend fun setWordExclusions(
+        wordIds: Set<String>,
+        excluded: Boolean,
+        updatedAtEpochMillis: Long,
+    ): Long = error("Word exclusions are unavailable")
+
     suspend fun resolveMergeConflictsKeepingLocal(): Long
 }
 
 interface ImmersionGoalRepository {
     suspend fun upsertGoal(goal: ImmersionGoal)
+
+    suspend fun restartGoal(
+        expectedGoal: ImmersionGoal,
+        replacementGoal: ImmersionGoal,
+        restartedAtEpochMillis: Long,
+    ): Boolean
 
     suspend fun getGoals(): List<ImmersionGoal>
 
@@ -356,6 +449,14 @@ interface ImmersionAnkiRepository {
         profileId: String,
         codePoint: UnicodeCodePoint,
     ): List<ImmersionAnkiItem>
+
+    suspend fun findCharacterItems(
+        profileIds: Collection<String>,
+        codePoint: UnicodeCodePoint,
+    ): List<ImmersionAnkiItem> = profileIds
+        .filter(String::isNotBlank)
+        .distinct()
+        .flatMap { profileId -> findCharacterItems(profileId, codePoint) }
 
     suspend fun getWordCoverage(
         profileId: String,

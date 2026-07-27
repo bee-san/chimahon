@@ -77,6 +77,50 @@ class DefaultImmersionRecorderTest {
     }
 
     @Test
+    fun `session start uses one atomic repository operation`() = runTest {
+        val fixture = recorderFixture()
+
+        fixture.recorder.startSession(fixture.context).shouldBeInstanceOf<SessionStartResult.Started>()
+
+        fixture.repository.atomicStartAttempts shouldBe 1
+        fixture.repository.starts.size shouldBe 1
+        fixture.repository.events.map { it.type } shouldContainExactly listOf(EventType.SESSION_STARTED)
+    }
+
+    @Test
+    fun `unit completion retains its stable identity through the recorder queue`() = runTest {
+        val fixture = recorderFixture()
+        fixture.recorder.startSession(fixture.context)
+
+        fixture.recorder.record(
+            CaptureCommand.Activity(
+                eventType = EventType.UNIT_COMPLETED,
+                completionUnitId = "chapter-1",
+            ),
+        ) shouldBe RecordResult.Enqueued(1)
+        fixture.recorder.finalize(FinalizeReason.NORMAL)
+
+        fixture.repository.events
+            .filterIsInstance<SessionEvent>()
+            .single { it.type == EventType.UNIT_COMPLETED }
+            .completionUnitId shouldBe "chapter-1"
+    }
+
+    @Test
+    fun `busy atomic session start retries one stable identity without partial rows`() = runTest {
+        val fixture = recorderFixture()
+        fixture.repository.startBusyFailuresRemaining = 2
+
+        fixture.recorder.startSession(fixture.context).shouldBeInstanceOf<SessionStartResult.Started>()
+
+        fixture.repository.attemptedStarts.size shouldBe 3
+        fixture.repository.attemptedStarts.map { it.second.id }.distinct().size shouldBe 1
+        fixture.repository.attemptedStarts.map { it.third.id }.distinct().size shouldBe 1
+        fixture.repository.starts.size shouldBe 1
+        fixture.repository.events.size shouldBe 1
+    }
+
+    @Test
     fun `pause background and resume exclude inactive time`() = runTest {
         val fixture = recorderFixture()
         fixture.recorder.startSession(fixture.context)
@@ -534,15 +578,39 @@ class DefaultImmersionRecorderTest {
         val events = mutableListOf<RecordedImmersionEvent>()
         val sourceUnits = mutableListOf<ImmersionSourceUnit>()
         val sessions = linkedMapOf<SessionId, ImmersionSession>()
+        val attemptedStarts =
+            mutableListOf<Triple<ImmersionTitle, ImmersionSessionStart, SessionEvent>>()
         val attemptedBatches = mutableListOf<List<RecordedImmersionEvent>>()
+        var startBusyFailuresRemaining = 0
         var busyFailuresRemaining = 0
         var databaseUnavailable = false
         var skewCountersOnRead = false
         var recoveredSessions = 0L
         var writeGate: CompletableDeferred<Unit>? = null
         var titleCaptureExcluded = false
+        var atomicStartAttempts = 0
 
         override suspend fun isTitleCaptureExcluded(titleId: TitleId) = titleCaptureExcluded
+
+        override suspend fun startSession(
+            title: ImmersionTitle,
+            session: ImmersionSessionStart,
+            event: SessionEvent,
+        ): PersistenceResult {
+            atomicStartAttempts++
+            attemptedStarts += Triple(title, session, event)
+            if (startBusyFailuresRemaining-- > 0) {
+                return PersistenceResult.Failed(PersistenceErrorCode.DATABASE_BUSY)
+            }
+            if (starts.any { it.id == session.id }) {
+                return PersistenceResult.AlreadyApplied
+            }
+            starts += session
+            sessions[session.id] = session.toSession()
+            events += event
+            apply(event)
+            return PersistenceResult.Applied
+        }
 
         override suspend fun upsertTitle(title: ImmersionTitle) = PersistenceResult.Applied
 

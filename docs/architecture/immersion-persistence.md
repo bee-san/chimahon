@@ -52,6 +52,7 @@ disabled or a database was externally modified.
 | Source history | title plus latest exposure | `immersion_source_unit_title_time_index` |
 | Event replay | session then timestamp/sequence | `immersion_event_session_time_index` |
 | Daily trends | date descending and optional title | `immersion_daily_rollup_*_index` |
+| Hour-of-day activity | local hour and optional date | `immersion_hourly_rollup_*_index` |
 | Anki snapshot | profile then request time/id | `immersion_anki_snapshot_profile_time_index` |
 
 Cursor pagination uses `(started_at, id)` rather than offsets, so equal

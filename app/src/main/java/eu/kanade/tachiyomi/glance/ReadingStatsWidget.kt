@@ -23,15 +23,20 @@ import eu.kanade.tachiyomi.ui.stats.statsDurationParts
 import tachiyomi.core.common.Constants
 import tachiyomi.core.common.i18n.pluralStringResource
 import tachiyomi.core.common.i18n.stringResource
+import tachiyomi.domain.immersion.model.AnalyticsGoalProgress
+import tachiyomi.domain.immersion.model.CharacterMetric
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
 import tachiyomi.domain.immersion.model.LocalDateRange
+import tachiyomi.domain.immersion.model.ReadingMetrics
 import tachiyomi.domain.immersion.model.StatsFilter
 import tachiyomi.domain.immersion.service.ImmersionAnalyticsService
 import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
 import tachiyomi.i18n.kmk.KMR
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
+import java.text.NumberFormat
 import java.time.LocalDate
+import kotlin.math.roundToInt
 
 class ReadingStatsWidget : GlanceAppWidget() {
 
@@ -60,6 +65,7 @@ class ReadingStatsWidget : GlanceAppWidget() {
         val labelReadingTime = context.getString(R.string.widget_stat_reading_time)
         val labelSpeed = context.getString(R.string.widget_stat_speed)
         val labelMinedCards = context.getString(R.string.widget_stat_mined_cards)
+        val labelGoal = context.stringResource(KMR.strings.stats_widget_goal_today)
 
         provideContent {
             val intent = mainActivityIntent(context, Constants.SHORTCUT_STATS)
@@ -106,6 +112,17 @@ class ReadingStatsWidget : GlanceAppWidget() {
                         )
                     }
                 }
+                stats.goalProgressPercent?.let { progress ->
+                    if (size.height >= GOAL_THRESHOLD) {
+                        Spacer(modifier = GlanceModifier.height(6.dp))
+                        StatCard(
+                            iconRes = R.drawable.ic_done_24dp,
+                            value = NumberFormat.getPercentInstance().format(progress / 100.0),
+                            label = labelGoal,
+                            modifier = GlanceModifier.fillMaxWidth().defaultWeight(),
+                        )
+                    }
+                }
             }
         }
     }
@@ -135,26 +152,29 @@ class ReadingStatsWidget : GlanceAppWidget() {
         val today = ImmersionLocalDate.from(LocalDate.now())
         return readingStatsWidgetLoadState(
             runCatching {
-                val overview = Injekt.get<ImmersionAnalyticsService>().overview(
-                    StatsFilter(
-                        dateRange = LocalDateRange(today, today),
-                        includeLegacyAggregates = preferences.includeLegacyAggregates().get(),
-                        characterMetric = basis,
-                        includeRereadsAndReplays = preferences.dashboardIncludeRereads().get(),
-                    ),
-                ).value.comparison.current
-                ReadingStatsWidgetData(
-                    characters = overview.characters.valueFor(basis),
-                    activeTimeMillis = overview.activeTime.value,
-                    charactersPerHour = overview.readingSpeedPerHour(basis)?.toInt(),
-                    cardsCreated = overview.cardsCreated.value,
+                val service = Injekt.get<ImmersionAnalyticsService>()
+                val filter = readingStatsWidgetFilter(
+                    today = today,
+                    characterMetric = basis,
+                    includeLegacyAggregates = preferences.includeLegacyAggregates().get(),
+                    includeRereadsAndReplays = preferences.dashboardIncludeRereads().get(),
                 )
+                val overview = service.overview(filter).value.comparison.current
+                val goalProgress = if (preferences.goalsEnabled().get()) {
+                    runCatching {
+                        readingStatsWidgetGoalProgress(service.goals(filter).value, today)
+                    }.getOrNull()
+                } else {
+                    null
+                }
+                readingStatsWidgetData(overview, basis, goalProgress)
             },
         )
     }
 
     companion object {
         private val COMPACT_THRESHOLD = 180.dp
+        private val GOAL_THRESHOLD = 250.dp
     }
 }
 
@@ -163,6 +183,7 @@ internal data class ReadingStatsWidgetData(
     val activeTimeMillis: Long = 0,
     val charactersPerHour: Int? = null,
     val cardsCreated: Long = 0,
+    val goalProgressPercent: Int? = null,
 )
 
 internal data class ReadingStatsWidgetDurationParts(
@@ -182,6 +203,50 @@ internal fun readingStatsWidgetLoadState(
     onSuccess = ReadingStatsWidgetLoadState::Available,
     onFailure = { ReadingStatsWidgetLoadState.Unavailable },
 )
+
+internal fun readingStatsWidgetFilter(
+    today: ImmersionLocalDate,
+    characterMetric: CharacterMetric,
+    includeLegacyAggregates: Boolean,
+    includeRereadsAndReplays: Boolean,
+): StatsFilter = StatsFilter(
+    dateRange = LocalDateRange(today, today),
+    includeLegacyAggregates = includeLegacyAggregates,
+    characterMetric = characterMetric,
+    includeRereadsAndReplays = includeRereadsAndReplays,
+)
+
+internal fun readingStatsWidgetData(
+    metrics: ReadingMetrics,
+    characterMetric: CharacterMetric,
+    goalProgressPercent: Int? = null,
+): ReadingStatsWidgetData = ReadingStatsWidgetData(
+    characters = metrics.characters.valueFor(characterMetric),
+    activeTimeMillis = metrics.activeTime.value,
+    charactersPerHour = metrics.readingSpeedPerHour(characterMetric)?.toInt(),
+    cardsCreated = metrics.cardsCreated.value,
+    goalProgressPercent = goalProgressPercent,
+)
+
+internal fun readingStatsWidgetGoalProgress(
+    goals: List<AnalyticsGoalProgress>,
+    today: ImmersionLocalDate,
+): Int? {
+    val active = goals.filter { progress ->
+        val goal = progress.goal
+        val startDate = goal.startDate
+        val endDate = goal.endDate
+        progress.todayTarget > 0.0 &&
+            (startDate == null || startDate <= today) &&
+            (endDate == null || endDate >= today)
+    }
+    val selected = active.firstOrNull { it.todayAchieved < it.todayTarget }
+        ?: active.firstOrNull()
+        ?: return null
+    return ((selected.todayAchieved / selected.todayTarget) * 100.0)
+        .roundToInt()
+        .coerceIn(0, 100)
+}
 
 internal fun readingStatsWidgetDurationParts(totalTimeMs: Long): ReadingStatsWidgetDurationParts {
     val parts = statsDurationParts(totalTimeMs)

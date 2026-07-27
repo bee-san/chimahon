@@ -3,10 +3,18 @@
 package tachiyomi.domain.immersion.service
 
 import tachiyomi.domain.immersion.model.AnalyticsActivityTotals
+import tachiyomi.domain.immersion.model.AnalyticsAnkiCapabilityReason
+import tachiyomi.domain.immersion.model.AnalyticsAnkiReport
+import tachiyomi.domain.immersion.model.AnalyticsAnkiReportCapability
 import tachiyomi.domain.immersion.model.AnalyticsAnkiSummary
 import tachiyomi.domain.immersion.model.AnalyticsBucketScale
+import tachiyomi.domain.immersion.model.AnalyticsCharacterFilter
+import tachiyomi.domain.immersion.model.AnalyticsCharacterRange
 import tachiyomi.domain.immersion.model.AnalyticsCharacterRow
+import tachiyomi.domain.immersion.model.AnalyticsCharacterSummary
 import tachiyomi.domain.immersion.model.AnalyticsComparison
+import tachiyomi.domain.immersion.model.AnalyticsEstimateConfidence
+import tachiyomi.domain.immersion.model.AnalyticsEstimateUnit
 import tachiyomi.domain.immersion.model.AnalyticsGoalProgress
 import tachiyomi.domain.immersion.model.AnalyticsHourActivity
 import tachiyomi.domain.immersion.model.AnalyticsInventoryMetrics
@@ -21,10 +29,23 @@ import tachiyomi.domain.immersion.model.AnalyticsSort
 import tachiyomi.domain.immersion.model.AnalyticsSourceOccurrence
 import tachiyomi.domain.immersion.model.AnalyticsStreak
 import tachiyomi.domain.immersion.model.AnalyticsTemporalActivity
+import tachiyomi.domain.immersion.model.AnalyticsTitleAcquisitionBucketSize
+import tachiyomi.domain.immersion.model.AnalyticsTitleCompletedUnit
+import tachiyomi.domain.immersion.model.AnalyticsTitleCoverage
+import tachiyomi.domain.immersion.model.AnalyticsTitleCoverageFilter
+import tachiyomi.domain.immersion.model.AnalyticsTitleDayHighlight
+import tachiyomi.domain.immersion.model.AnalyticsTitleDayHighlights
+import tachiyomi.domain.immersion.model.AnalyticsTitleEstimate
+import tachiyomi.domain.immersion.model.AnalyticsTitleFilter
+import tachiyomi.domain.immersion.model.AnalyticsTitleMetadata
 import tachiyomi.domain.immersion.model.AnalyticsTitleRow
 import tachiyomi.domain.immersion.model.AnalyticsTitleSeriesSelection
+import tachiyomi.domain.immersion.model.AnalyticsTitleSort
+import tachiyomi.domain.immersion.model.AnalyticsTitleStateFilter
 import tachiyomi.domain.immersion.model.AnalyticsTitleTrendSeries
 import tachiyomi.domain.immersion.model.AnalyticsTitleTrends
+import tachiyomi.domain.immersion.model.AnalyticsTitleUnitProgress
+import tachiyomi.domain.immersion.model.AnalyticsTitleWordAcquisition
 import tachiyomi.domain.immersion.model.AnalyticsTrendPoint
 import tachiyomi.domain.immersion.model.AnalyticsTrends
 import tachiyomi.domain.immersion.model.AnalyticsVocabularyFirstSeen
@@ -33,6 +54,7 @@ import tachiyomi.domain.immersion.model.AnalyticsWeekdayActivity
 import tachiyomi.domain.immersion.model.AnalyticsWordRow
 import tachiyomi.domain.immersion.model.CapabilityState
 import tachiyomi.domain.immersion.model.CharacterCoverage
+import tachiyomi.domain.immersion.model.CharacterMetric
 import tachiyomi.domain.immersion.model.CharacterVolume
 import tachiyomi.domain.immersion.model.ImmersionDailyRollup
 import tachiyomi.domain.immersion.model.ImmersionGoal
@@ -42,13 +64,16 @@ import tachiyomi.domain.immersion.model.ImmersionLocalDate
 import tachiyomi.domain.immersion.model.ImmersionRollupRebuildResult
 import tachiyomi.domain.immersion.model.LocalDateRange
 import tachiyomi.domain.immersion.model.MaturityTier
+import tachiyomi.domain.immersion.model.NetCharacterProgress
 import tachiyomi.domain.immersion.model.NonNegativeCounter
 import tachiyomi.domain.immersion.model.ReadingMetrics
 import tachiyomi.domain.immersion.model.SessionCursor
 import tachiyomi.domain.immersion.model.SessionId
 import tachiyomi.domain.immersion.model.SessionPage
 import tachiyomi.domain.immersion.model.StatsFilter
+import tachiyomi.domain.immersion.model.TitleId
 import tachiyomi.domain.immersion.model.UnicodeCodePoint
+import tachiyomi.domain.immersion.model.VocabularyFilter
 import tachiyomi.domain.immersion.repository.ImmersionAnalyticsRepository
 import tachiyomi.domain.immersion.repository.ImmersionGoalRepository
 import java.nio.charset.StandardCharsets
@@ -56,6 +81,8 @@ import java.security.MessageDigest
 import java.time.DayOfWeek
 import java.util.UUID
 import kotlin.math.max
+import kotlin.math.roundToLong
+import kotlin.math.sqrt
 
 class ImmersionAnalyticsService(
     private val analyticsRepository: ImmersionAnalyticsRepository,
@@ -68,7 +95,7 @@ class ImmersionAnalyticsService(
         measured(AnalyticsQueryFamily.OVERVIEW, filter) {
             val range = effectiveRange(filter)
             val currentRows = analyticsRepository.dailyRollups(range).filter(filter::matches)
-            val currentFilter = filter.copy(dateRange = range)
+            val currentFilter = filter.copy(dateRange = range, comparisonRange = null)
             val current = currentRows.sumMetrics().withInventory(
                 analyticsRepository.inventoryMetrics(currentFilter),
             )
@@ -101,8 +128,8 @@ class ImmersionAnalyticsService(
                         previous.activeTime.value,
                     ),
                     characterChangeRatio = ratioChange(
-                        current.characters.gross.value,
-                        previous.characters.gross.value,
+                        current.characters.valueFor(filter.characterMetric),
+                        previous.characters.valueFor(filter.characterMetric),
                     ),
                 ),
                 streak = streak(
@@ -233,43 +260,175 @@ class ImmersionAnalyticsService(
         sort: AnalyticsSort,
     ): AnalyticsResult<List<AnalyticsTitleRow>> =
         measured(AnalyticsQueryFamily.TITLES, filter) {
-            val range = effectiveRange(filter)
-            val rows = analyticsRepository.dailyRollups(range).filter(filter::matches)
-            val metadata = analyticsRepository.titleMetadata(rows.mapTo(mutableSetOf()) { it.titleId })
-                .associateBy { it.titleId }
-            val inventory = analyticsRepository.titleInventoryMetrics(filter.copy(dateRange = range))
-            val result = rows.groupBy { it.titleId }.mapNotNull { (titleId, titleRows) ->
-                val title = metadata[titleId] ?: return@mapNotNull null
-                val metrics = titleRows.sumMetrics().withInventory(
-                    inventory[titleId] ?: AnalyticsInventoryMetrics(),
-                )
-                AnalyticsTitleRow(
-                    titleId = titleId,
-                    displayTitle = title.displayTitle,
-                    mediaKind = title.mediaKind,
-                    languageTag = title.languageTag,
-                    metrics = metrics,
-                    firstActiveDate = titleRows.minOf { it.date },
-                    lastActiveDate = titleRows.maxOf { it.date },
-                    progress = title.totalCharacterEstimate
-                        ?.takeIf { it > 0 }
-                        ?.let { metrics.characters.netProgress.value.toDouble() / it.toDouble() }
-                        ?.coerceIn(0.0, 1.0),
-                    completed = title.completed,
-                )
-            }.sortedWith(titleComparator(sort))
-            result to rows.size
+            val (rows, sourceRowCount) = titleRows(filter, AnalyticsTitleFilter())
+            rows.sortedWith(
+                titleComparator(sort.toTitleSort(), filter.characterMetric, AnalyticsTitleFilter()),
+            ) to sourceRowCount
         }
+
+    suspend fun titlePage(
+        filter: StatsFilter,
+        titleFilter: AnalyticsTitleFilter,
+        sort: AnalyticsTitleSort,
+        offset: Long,
+        limit: Int,
+    ): AnalyticsResult<AnalyticsPage<AnalyticsTitleRow>> {
+        require(offset >= 0)
+        require(limit in 1..MAX_TITLE_PAGE_SIZE)
+        return measured(AnalyticsQueryFamily.TITLES, filter) {
+            val (rows, sourceRowCount) = titleRows(filter, titleFilter)
+            val sorted = rows.sortedWith(titleComparator(sort, filter.characterMetric, titleFilter))
+            val start = offset.coerceAtMost(sorted.size.toLong()).toInt()
+            val end = (start + limit).coerceAtMost(sorted.size)
+            AnalyticsPage(
+                items = sorted.subList(start, end),
+                nextOffset = if (end < sorted.size) end.toLong() else null,
+            ) to sourceRowCount
+        }
+    }
+
+    suspend fun titleWordAcquisition(
+        filter: StatsFilter,
+        titleId: TitleId,
+        bucketSize: AnalyticsTitleAcquisitionBucketSize,
+    ): AnalyticsResult<AnalyticsTitleWordAcquisition> {
+        val scopedFilter = filter.copy(titleIds = setOf(titleId), comparisonRange = null)
+        return measured(AnalyticsQueryFamily.TITLES, scopedFilter) {
+            val acquisition = analyticsRepository.titleWordAcquisition(scopedFilter, bucketSize)[titleId]
+                ?: AnalyticsTitleWordAcquisition(
+                    titleId = titleId,
+                    bucketSize = bucketSize,
+                    totalGrossCharacters = 0,
+                    buckets = emptyList(),
+                )
+            acquisition to acquisition.buckets.size
+        }
+    }
+
+    suspend fun titleCompletedUnits(
+        filter: StatsFilter,
+        titleId: TitleId,
+        offset: Long,
+        limit: Int,
+    ): AnalyticsResult<AnalyticsPage<AnalyticsTitleCompletedUnit>> {
+        require(offset >= 0)
+        require(limit in 1..MAX_TITLE_PAGE_SIZE)
+        val scopedFilter = filter.copy(titleIds = setOf(titleId), comparisonRange = null)
+        return measured(AnalyticsQueryFamily.TITLES, scopedFilter) {
+            analyticsRepository.titleCompletedUnits(
+                filter = scopedFilter,
+                offset = offset,
+                limit = limit,
+            ).let { it to it.items.size }
+        }
+    }
+
+    suspend fun titleSourceOccurrences(
+        filter: StatsFilter,
+        titleId: TitleId,
+        offset: Long,
+        limit: Int,
+    ): AnalyticsResult<AnalyticsPage<AnalyticsSourceOccurrence>> {
+        require(offset >= 0)
+        require(limit in 1..MAX_TITLE_PAGE_SIZE)
+        val scopedFilter = filter.copy(titleIds = setOf(titleId), comparisonRange = null)
+        return measured(AnalyticsQueryFamily.TITLES, scopedFilter) {
+            analyticsRepository.sourceOccurrences(
+                filter = scopedFilter,
+                offset = offset,
+                limit = limit,
+            ).let { it to it.items.size }
+        }
+    }
+
+    private suspend fun titleRows(
+        filter: StatsFilter,
+        titleFilter: AnalyticsTitleFilter,
+    ): Pair<List<AnalyticsTitleRow>, Int> {
+        val range = effectiveRange(filter)
+        val scopedFilter = filter.copy(dateRange = range, comparisonRange = null)
+        val rows = analyticsRepository.dailyRollups(range).filter(scopedFilter::matches)
+        val titleIds = rows.mapTo(mutableSetOf()) { it.titleId }
+        val metadata = analyticsRepository.titleMetadata(titleIds).associateBy { it.titleId }
+        val inventory = analyticsRepository.titleInventoryMetrics(scopedFilter)
+        val coverage = analyticsRepository.titleCoverage(scopedFilter)
+        val netProgress = analyticsRepository.titleNetProgress(
+            scopedFilter.copy(dateRange = null),
+        )
+        val unitProgress = analyticsRepository.titleUnitProgress(
+            scopedFilter.copy(dateRange = null),
+        )
+        val result = rows.groupBy { it.titleId }.mapNotNull { (titleId, groupedRows) ->
+            val title = metadata[titleId] ?: return@mapNotNull null
+            val metrics = groupedRows.sumMetrics().withInventory(
+                inventory[titleId] ?: AnalyticsInventoryMetrics(),
+            )
+            val activeRows = groupedRows.filter { it.metrics.hasActivity() }
+            if (activeRows.isEmpty()) return@mapNotNull null
+            val firstActiveDate = activeRows.minOf { it.date }
+            val lastActiveDate = activeRows.maxOf { it.date }
+            val activeDays = activeRows.mapTo(mutableSetOf()) { it.date }.size
+            val calendarSpanDays = (
+                lastActiveDate.epochDay - firstActiveDate.epochDay + 1
+                ).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            val titleCoverage = coverage[titleId] ?: AnalyticsTitleCoverage()
+            val titleUnitProgress = unitProgress[titleId] ?: AnalyticsTitleUnitProgress()
+            val row = AnalyticsTitleRow(
+                titleId = titleId,
+                displayTitle = title.displayTitle,
+                mediaKind = title.mediaKind,
+                sourceKey = title.sourceKey,
+                profileId = title.profileId,
+                languageTag = title.languageTag,
+                libraryId = title.libraryId,
+                trackerId = title.trackerId,
+                mediaId = title.mediaId,
+                status = title.status,
+                totalUnits = title.totalUnits,
+                totalCharacterEstimate = title.totalCharacterEstimate,
+                deletedAtEpochMillis = title.deletedAtEpochMillis,
+                metrics = metrics,
+                coverage = titleCoverage,
+                firstActiveDate = firstActiveDate,
+                lastActiveDate = lastActiveDate,
+                activeDays = activeDays,
+                calendarSpanDays = calendarSpanDays,
+                averageCharactersPerActiveDay =
+                metrics.characters.gross.value.toDouble() / activeDays.toDouble(),
+                averageActiveTimePerActiveDayMillis =
+                metrics.activeTime.value.toDouble() / activeDays.toDouble(),
+                dayHighlights = groupedRows.dayHighlights(filter.characterMetric, titleFilter),
+                unitProgress = titleUnitProgress,
+                estimate = estimateRemaining(
+                    title = title,
+                    rows = groupedRows,
+                    currentNetProgress = netProgress[titleId],
+                    unitProgress = titleUnitProgress,
+                ),
+                speedRankingEligible = metrics.qualifiesForSpeed(filter.characterMetric, titleFilter),
+                progress = title.progress(netProgress[titleId], titleUnitProgress),
+                completed = title.completed,
+            )
+            row.takeIf { titleFilter.matches(it) }
+        }
+        return result to rows.size
+    }
 
     suspend fun vocabulary(
         filter: StatsFilter,
+        vocabularyFilter: VocabularyFilter,
         sort: AnalyticsSort,
         offset: Long,
         limit: Int,
-        searchQuery: String? = null,
     ): AnalyticsResult<AnalyticsPage<AnalyticsWordRow>> =
         measured(AnalyticsQueryFamily.VOCABULARY, filter) {
-            analyticsRepository.vocabularyPage(filter, sort, offset, limit, searchQuery).let {
+            analyticsRepository.vocabularyPage(
+                filter,
+                vocabularyFilter,
+                sort,
+                offset,
+                limit,
+            ).let {
                 it to it.items.size
             }
         }
@@ -280,11 +439,30 @@ class ImmersionAnalyticsService(
         offset: Long,
         limit: Int,
         searchQuery: String? = null,
+        characterFilter: AnalyticsCharacterFilter = AnalyticsCharacterFilter(),
     ): AnalyticsResult<AnalyticsPage<AnalyticsCharacterRow>> =
         measured(AnalyticsQueryFamily.CHARACTERS, filter) {
-            analyticsRepository.characterPage(filter, sort, offset, limit, searchQuery).let {
+            analyticsRepository.characterPage(
+                filter = filter.forCharacterRange(characterFilter.range),
+                sort = sort,
+                offset = offset,
+                limit = limit,
+                searchQuery = searchQuery,
+                characterFilter = characterFilter,
+            ).let {
                 it to it.items.size
             }
+        }
+
+    suspend fun characterSummary(
+        filter: StatsFilter,
+        characterFilter: AnalyticsCharacterFilter = AnalyticsCharacterFilter(),
+    ): AnalyticsResult<AnalyticsCharacterSummary> =
+        measured(AnalyticsQueryFamily.CHARACTERS, filter) {
+            analyticsRepository.characterSummary(
+                filter = filter.forCharacterRange(characterFilter.range),
+                characterFilter = characterFilter,
+            ).let { it to it.scripts.size }
         }
 
     suspend fun sessions(
@@ -437,6 +615,7 @@ class ImmersionAnalyticsService(
             val missingWords = if (summary.snapshot?.hasUsableInventory == true) {
                 analyticsRepository.vocabularyPage(
                     missingFilter,
+                    VocabularyFilter(),
                     AnalyticsSort.FREQUENCY_RANK,
                     0,
                     20,
@@ -454,11 +633,23 @@ class ImmersionAnalyticsService(
             } else {
                 emptyList()
             }
+            val today = calendar.localDate(clock(), currentOffsetSeconds())
+            val weeklyImpact = summary.weeklyImpact.map { week ->
+                week.copy(
+                    partial = week.weekStart.epochDay < range.start.epochDay ||
+                        week.weekEndInclusive.epochDay > range.endInclusive.epochDay ||
+                        week.weekEndInclusive.epochDay > today.epochDay,
+                )
+            }
             summary.copy(
                 cardsCreated = rollups.sumOf { it.metrics.cardsCreated.value },
                 cardsUpdated = rollups.sumOf { it.metrics.cardsUpdated.value },
                 missingHighFrequencyWords = missingWords,
                 missingHighFrequencyCharacters = missingCharacters,
+                capabilities = summary.ankiReportCapabilities(),
+                weeklyImpact = weeklyImpact,
+                generatedAtEpochMillis = clock(),
+                minimumComparisonSampleSize = MINIMUM_ANKI_COMPARISON_SAMPLE_SIZE,
             ) to rollups.size
         }
 
@@ -486,6 +677,16 @@ class ImmersionAnalyticsService(
     suspend fun saveGoal(goal: ImmersionGoal) {
         goalRepository.upsertGoal(goal)
     }
+
+    suspend fun restartGoal(
+        expectedGoal: ImmersionGoal,
+        replacementGoal: ImmersionGoal,
+        restartedAtEpochMillis: Long,
+    ): Boolean = goalRepository.restartGoal(
+        expectedGoal = expectedGoal,
+        replacementGoal = replacementGoal,
+        restartedAtEpochMillis = restartedAtEpochMillis,
+    )
 
     suspend fun checkIn(goalId: String, date: ImmersionLocalDate, completed: Boolean, note: String?) {
         goalRepository.upsertCheckIn(
@@ -647,26 +848,265 @@ private fun ReadingMetrics.hasActivity(): Boolean =
 private fun ratioChange(current: Long, previous: Long): Double? =
     if (previous == 0L) null else (current - previous).toDouble() / previous.toDouble()
 
-private fun titleComparator(sort: AnalyticsSort): Comparator<AnalyticsTitleRow> =
+private fun titleComparator(
+    sort: AnalyticsTitleSort,
+    characterMetric: CharacterMetric,
+    filter: AnalyticsTitleFilter,
+): Comparator<AnalyticsTitleRow> =
     when (sort) {
-        AnalyticsSort.MOST_RECENT -> compareByDescending<AnalyticsTitleRow> { it.lastActiveDate }
+        AnalyticsTitleSort.MOST_RECENT -> compareByDescending<AnalyticsTitleRow> { it.lastActiveDate }
             .thenBy { it.displayTitle }
             .thenBy { it.titleId.value }
-        AnalyticsSort.MOST_TIME -> compareByDescending<AnalyticsTitleRow> { it.metrics.activeTime.value }
-            .thenByDescending { it.lastActiveDate }
-            .thenBy { it.titleId.value }
-        AnalyticsSort.MOST_CHARACTERS, AnalyticsSort.MOST_OCCURRENCES ->
-            compareByDescending<AnalyticsTitleRow> { it.metrics.characters.gross.value }
+        AnalyticsTitleSort.MOST_TIME ->
+            compareByDescending<AnalyticsTitleRow> { it.metrics.activeTime.value }
                 .thenByDescending { it.lastActiveDate }
                 .thenBy { it.titleId.value }
-        AnalyticsSort.FIRST_SEEN -> compareBy<AnalyticsTitleRow> { it.firstActiveDate }
+        AnalyticsTitleSort.MOST_CHARACTERS ->
+            compareByDescending<AnalyticsTitleRow> {
+                it.metrics.characters.valueFor(characterMetric)
+            }
+                .thenByDescending { it.lastActiveDate }
+                .thenBy { it.titleId.value }
+        AnalyticsTitleSort.ALPHABETICAL -> compareBy<AnalyticsTitleRow> { it.displayTitle }
             .thenBy { it.titleId.value }
-        AnalyticsSort.ALPHABETICAL -> compareBy<AnalyticsTitleRow> { it.displayTitle }
-            .thenBy { it.titleId.value }
-        AnalyticsSort.FREQUENCY_RANK -> compareBy<AnalyticsTitleRow> {
-            it.metrics.characters.gross.value
-        }.thenBy { it.titleId.value }
+        AnalyticsTitleSort.READING_SPEED ->
+            compareByDescending<AnalyticsTitleRow> { it.speedRankingEligible }
+                .thenByDescending {
+                    if (it.speedRankingEligible) {
+                        it.metrics.readingSpeedPerHour(characterMetric)
+                    } else {
+                        null
+                    }
+                }
+                .thenByDescending { it.metrics.characters.valueFor(characterMetric) }
+                .thenBy { it.titleId.value }
+        AnalyticsTitleSort.NOVELTY ->
+            compareByDescending<AnalyticsTitleRow> { it.metrics.noveltyRate() != null }
+                .thenByDescending { it.metrics.noveltyRate() }
+                .thenByDescending { it.metrics.newWords.value }
+                .thenBy { it.titleId.value }
+        AnalyticsTitleSort.MINING_RATE ->
+            compareByDescending<AnalyticsTitleRow> {
+                it.metrics.characters.gross.value >= filter.minimumSpeedCharacters
+            }
+                .thenByDescending { it.metrics.miningRatePerTenThousandGrossCharacters() }
+                .thenByDescending { it.metrics.cardsCreated.value }
+                .thenBy { it.titleId.value }
+        AnalyticsTitleSort.PROGRESS ->
+            compareByDescending<AnalyticsTitleRow> { it.progress != null }
+                .thenByDescending { it.progress }
+                .thenByDescending { it.lastActiveDate }
+                .thenBy { it.titleId.value }
     }
+
+private fun AnalyticsSort.toTitleSort(): AnalyticsTitleSort = when (this) {
+    AnalyticsSort.MOST_RECENT -> AnalyticsTitleSort.MOST_RECENT
+    AnalyticsSort.MOST_TIME -> AnalyticsTitleSort.MOST_TIME
+    AnalyticsSort.MOST_CHARACTERS,
+    AnalyticsSort.MOST_OCCURRENCES,
+    AnalyticsSort.FREQUENCY_RANK,
+    AnalyticsSort.PRIORITY,
+    -> AnalyticsTitleSort.MOST_CHARACTERS
+    AnalyticsSort.FIRST_SEEN,
+    AnalyticsSort.ALPHABETICAL,
+    -> AnalyticsTitleSort.ALPHABETICAL
+}
+
+private fun AnalyticsTitleFilter.matches(row: AnalyticsTitleRow): Boolean {
+    val query = searchQuery?.trim()?.takeIf(String::isNotEmpty)
+    if (
+        query != null &&
+        !row.displayTitle.contains(query, ignoreCase = true) &&
+        !row.sourceKey.contains(query, ignoreCase = true)
+    ) {
+        return false
+    }
+    val matchesState = when (state) {
+        AnalyticsTitleStateFilter.ALL -> true
+        AnalyticsTitleStateFilter.COMPLETED -> row.completed == true
+        AnalyticsTitleStateFilter.IN_PROGRESS -> row.completed == false
+        AnalyticsTitleStateFilter.UNKNOWN -> row.completed == null
+    }
+    if (!matchesState) return false
+    return when (coverage) {
+        AnalyticsTitleCoverageFilter.ALL -> true
+        AnalyticsTitleCoverageFilter.COMPLETE ->
+            row.coverage.sourceUnitCount > 0 &&
+                row.coverage.indexedSourceUnitCount == row.coverage.sourceUnitCount
+        AnalyticsTitleCoverageFilter.PARTIAL ->
+            row.coverage.indexedSourceUnitCount > 0 &&
+                row.coverage.indexedSourceUnitCount < row.coverage.sourceUnitCount
+        AnalyticsTitleCoverageFilter.MISSING ->
+            row.coverage.sourceUnitCount == 0L || row.coverage.indexedSourceUnitCount == 0L
+    }
+}
+
+private fun ReadingMetrics.qualifiesForSpeed(
+    metric: CharacterMetric,
+    filter: AnalyticsTitleFilter,
+): Boolean =
+    activeTime.value >= filter.minimumSpeedActiveMillis &&
+        characters.valueFor(metric) >= filter.minimumSpeedCharacters &&
+        readingSpeedPerHour(metric) != null
+
+private fun List<ImmersionDailyRollup>.dayHighlights(
+    metric: CharacterMetric,
+    filter: AnalyticsTitleFilter,
+): AnalyticsTitleDayHighlights {
+    val days = groupBy(ImmersionDailyRollup::date).map { (date, rows) ->
+        date to rows.map(ImmersionDailyRollup::metrics).sumReadingMetrics()
+    }
+    val characters = days
+        .filter { (_, metrics) -> metrics.characters.valueFor(metric) > 0 }
+        .maxWithOrNull(
+            compareBy<Pair<ImmersionLocalDate, ReadingMetrics>> {
+                it.second.characters.valueFor(metric)
+            }.thenByDescending { it.first.epochDay },
+        )
+        ?.let { (date, metrics) ->
+            AnalyticsTitleDayHighlight(date, metrics.characters.valueFor(metric).toDouble())
+        }
+    val activeTime = days
+        .filter { (_, metrics) -> metrics.activeTime.value > 0 }
+        .maxWithOrNull(
+            compareBy<Pair<ImmersionLocalDate, ReadingMetrics>> { it.second.activeTime.value }
+                .thenByDescending { it.first.epochDay },
+        )
+        ?.let { (date, metrics) ->
+            AnalyticsTitleDayHighlight(date, metrics.activeTime.value.toDouble())
+        }
+    val speed = days
+        .filter { (_, metrics) -> metrics.qualifiesForSpeed(metric, filter) }
+        .mapNotNull { (date, metrics) ->
+            metrics.readingSpeedPerHour(metric)?.let { date to it }
+        }
+        .maxWithOrNull(
+            compareBy<Pair<ImmersionLocalDate, Double>> { it.second }
+                .thenByDescending { it.first.epochDay },
+        )
+        ?.let { (date, value) -> AnalyticsTitleDayHighlight(date, value) }
+    return AnalyticsTitleDayHighlights(characters, activeTime, speed)
+}
+
+private fun estimateRemaining(
+    title: AnalyticsTitleMetadata,
+    rows: List<ImmersionDailyRollup>,
+    currentNetProgress: NetCharacterProgress?,
+    unitProgress: AnalyticsTitleUnitProgress,
+): AnalyticsTitleEstimate? {
+    val daily = rows.groupBy(ImmersionDailyRollup::date).map { (date, values) ->
+        date to values.map(ImmersionDailyRollup::metrics).sumReadingMetrics()
+    }
+    val unitCompletionsByDay = unitProgress.firstCompletionsByDay.associate {
+        it.date to it.completedUnits
+    }
+    val descriptor = title.totalCharacterEstimate
+        ?.takeIf { it > 0 }
+        ?.let { total ->
+            currentNetProgress?.let { current ->
+                EstimateDescriptor(
+                    total = total,
+                    current = current.value.coerceAtLeast(0),
+                    unit = AnalyticsEstimateUnit.CHARACTERS,
+                    minimumDailyProgress = MIN_ESTIMATE_CHARACTERS,
+                    progress = { _, metrics -> metrics.characters.netProgress.value },
+                )
+            }
+        }
+        ?: title.totalUnits
+            ?.takeIf { it > 0 && unitProgress.hasTrustworthyIdentity }
+            ?.let { total ->
+                EstimateDescriptor(
+                    total = total,
+                    current = unitProgress.completedUnits,
+                    unit = AnalyticsEstimateUnit.MEDIA_UNITS,
+                    minimumDailyProgress = 1,
+                    progress = { date, _ -> unitCompletionsByDay[date] ?: 0 },
+                )
+            }
+        ?: return null
+    val qualifying = daily.mapNotNull { (date, metrics) ->
+        val progress = descriptor.progress(date, metrics)
+        if (
+            metrics.activeTime.value < MIN_ESTIMATE_ACTIVE_MILLIS ||
+            progress < descriptor.minimumDailyProgress
+        ) {
+            null
+        } else {
+            EstimateSample(progress, metrics.activeTime.value)
+        }
+    }
+    if (qualifying.size < MIN_ESTIMATE_DAYS) return null
+    val rates = qualifying.map { it.progress.toDouble() / it.activeMillis.toDouble() }
+    val mean = rates.average()
+    if (mean <= 0 || !mean.isFinite()) return null
+    val variance = rates.sumOf { rate -> (rate - mean) * (rate - mean) } / rates.size.toDouble()
+    val coefficientOfVariation = sqrt(variance) / mean
+    if (!coefficientOfVariation.isFinite() || coefficientOfVariation > MAX_ESTIMATE_VARIATION) {
+        return null
+    }
+    val totalProgress = qualifying.sumOf(EstimateSample::progress)
+    val totalActive = qualifying.sumOf(EstimateSample::activeMillis)
+    val weightedRate = totalProgress.toDouble() / totalActive.toDouble()
+    val current = descriptor.current.coerceAtMost(descriptor.total)
+    val remaining = if (title.completed == true) 0 else descriptor.total - current
+    val confidence = when {
+        qualifying.size >= HIGH_CONFIDENCE_DAYS &&
+            coefficientOfVariation <= HIGH_CONFIDENCE_VARIATION ->
+            AnalyticsEstimateConfidence.HIGH
+        qualifying.size >= MEDIUM_CONFIDENCE_DAYS &&
+            coefficientOfVariation <= MEDIUM_CONFIDENCE_VARIATION ->
+            AnalyticsEstimateConfidence.MEDIUM
+        else -> AnalyticsEstimateConfidence.LOW
+    }
+    return AnalyticsTitleEstimate(
+        remainingAmount = remaining,
+        unit = descriptor.unit,
+        estimatedActiveTimeMillis = (remaining.toDouble() / weightedRate).roundToLong(),
+        confidence = confidence,
+        qualifyingDayCount = qualifying.size,
+    )
+}
+
+private fun AnalyticsTitleMetadata.progress(
+    netProgress: NetCharacterProgress?,
+    unitProgress: AnalyticsTitleUnitProgress,
+): Double? {
+    val (current, total) = totalCharacterEstimate
+        ?.takeIf { it > 0 }
+        ?.let { total -> netProgress?.value?.coerceAtLeast(0)?.let { it to total } }
+        ?: totalUnits
+            ?.takeIf { it > 0 && unitProgress.hasTrustworthyIdentity }
+            ?.let { unitProgress.completedUnits to it }
+        ?: return null
+    return current
+        .toDouble()
+        .div(total.toDouble())
+        .coerceIn(0.0, 1.0)
+}
+
+private data class EstimateDescriptor(
+    val total: Long,
+    val current: Long,
+    val unit: AnalyticsEstimateUnit,
+    val minimumDailyProgress: Long,
+    val progress: (ImmersionLocalDate, ReadingMetrics) -> Long,
+)
+
+private data class EstimateSample(
+    val progress: Long,
+    val activeMillis: Long,
+)
+
+private const val MAX_TITLE_PAGE_SIZE = 500
+private const val MIN_ESTIMATE_DAYS = 3
+private const val MIN_ESTIMATE_ACTIVE_MILLIS = 10 * 60 * 1_000L
+private const val MIN_ESTIMATE_CHARACTERS = 1_000L
+private const val MAX_ESTIMATE_VARIATION = 0.9
+private const val MEDIUM_CONFIDENCE_DAYS = 5
+private const val MEDIUM_CONFIDENCE_VARIATION = 0.6
+private const val HIGH_CONFIDENCE_DAYS = 10
+private const val HIGH_CONFIDENCE_VARIATION = 0.35
 
 private fun ImmersionGoal.progress(
     rows: List<ImmersionDailyRollup>,
@@ -726,12 +1166,23 @@ private fun ImmersionGoal.progress(
     } else {
         null
     }
-    val activeDates = dates.filter { multipliers.multiplier(it) > 0.0 }
-    val pace = if (activeDates.isEmpty()) null else achieved / activeDates.size
-    val rollingSeven = achievedByDate.rollingPace(effectiveEnd, 7, multipliers)
-    val rollingThirty = achievedByDate.rollingPace(effectiveEnd, 30, multipliers)
+    val activeWeight = dates.sumOf { multipliers.multiplier(it) }
+    val pace = activeWeight.takeIf { it > 0.0 }?.let { achieved / it }
+    val rollingSeven = achievedByDate.robustRollingPace(
+        end = effectiveEnd,
+        days = GOAL_SHORT_PACE_WINDOW_DAYS,
+        multipliers = multipliers,
+    )
+    val rollingThirty = achievedByDate.robustRollingPace(
+        end = effectiveEnd,
+        days = GOAL_FORECAST_WINDOW_DAYS,
+        multipliers = multipliers,
+    )
+    val forecastWindowStart = effectiveEnd.epochDay - GOAL_FORECAST_WINDOW_DAYS + 1
     val sampleDays = achievedByDate.count { (date, value) ->
-        multipliers.multiplier(date) > 0.0 && value > 0.0
+        date.epochDay >= forecastWindowStart &&
+            multipliers.multiplier(date) > 0.0 &&
+            value > 0.0
     }
     val forecastConfidence = when {
         sampleDays >= 7 -> CapabilityState.AVAILABLE
@@ -745,18 +1196,19 @@ private fun ImmersionGoal.progress(
     } else {
         null
     }
-    val remainingActiveDays = endDate?.let { deadline ->
+    val remainingActiveDates = endDate?.let { deadline ->
         if (deadline <= effectiveEnd) {
-            0
+            emptyList()
         } else {
             (effectiveEnd.epochDay + 1..deadline.epochDay)
                 .map(::ImmersionLocalDate)
-                .count { multipliers.multiplier(it) > 0.0 }
+                .filter { multipliers.multiplier(it) > 0.0 }
         }
     }
-    val requiredPace = remainingActiveDays
-        ?.takeIf { it > 0 }
-        ?.let { remaining / it }
+    val remainingActiveWeight = remainingActiveDates
+        ?.sumOf { multipliers.multiplier(it) }
+        ?.takeIf { it > 0.0 }
+    val requiredPace = remainingActiveWeight?.let { remaining / it }
     val (currentStreak, longestStreak) = if (dailyGoal) {
         dailyGoalStreaks(
             achievedByDate = achievedByDate,
@@ -767,6 +1219,16 @@ private fun ImmersionGoal.progress(
         )
     } else {
         0 to 0
+    }
+    val todayAchieved = if (dailyGoal) {
+        achievedByDate[effectiveEnd] ?: 0.0
+    } else {
+        achieved
+    }.coerceAtLeast(0.0)
+    val todayTarget = if (dailyGoal) {
+        target * multipliers.multiplier(effectiveEnd)
+    } else {
+        targetToDate
     }
     return AnalyticsGoalProgress(
         goal = this,
@@ -786,6 +1248,11 @@ private fun ImmersionGoal.progress(
         longestStreakDays = longestStreak,
         isRestDay = multipliers.multiplier(effectiveEnd) == 0.0,
         forecastConfidence = forecastConfidence,
+        remainingActiveDays = remainingActiveDates?.size,
+        forecastSampleDays = sampleDays,
+        forecastWindowDays = GOAL_FORECAST_WINDOW_DAYS,
+        todayAchieved = todayAchieved,
+        todayTarget = todayTarget,
     )
 }
 
@@ -817,15 +1284,30 @@ private fun String?.parseWeekdayMultipliers(): Map<DayOfWeek, Double> {
 private fun Map<DayOfWeek, Double>.multiplier(date: ImmersionLocalDate): Double =
     getValue(date.toLocalDate().dayOfWeek)
 
-private fun Map<ImmersionLocalDate, Double>.rollingPace(
+private fun Map<ImmersionLocalDate, Double>.robustRollingPace(
     end: ImmersionLocalDate,
     days: Int,
     multipliers: Map<DayOfWeek, Double>,
 ): Double? {
     val start = end.epochDay - days + 1
-    val relevant = filterKeys { it.epochDay in start..end.epochDay }
-    val activeDayCount = relevant.keys.count { multipliers.multiplier(it) > 0.0 }
-    return if (activeDayCount == 0) null else relevant.values.sum() / activeDayCount
+    val normalizedActiveDays = entries
+        .asSequence()
+        .filter { (date) -> date.epochDay in start..end.epochDay }
+        .mapNotNull { (date, value) ->
+            multipliers.multiplier(date)
+                .takeIf { it > 0.0 }
+                ?.let { multiplier -> value / multiplier }
+        }
+        .toList()
+    if (normalizedActiveDays.isEmpty()) return null
+    val positiveDays = normalizedActiveDays.filter { it > 0.0 }
+    if (positiveDays.size < MIN_ROBUST_PACE_DAYS) {
+        return normalizedActiveDays.average()
+    }
+    val sorted = positiveDays.sorted()
+    val cappedDayCount = max(1, sorted.size / 10)
+    val upperBound = sorted[sorted.lastIndex - cappedDayCount]
+    return normalizedActiveDays.sumOf { it.coerceAtMost(upperBound) } / normalizedActiveDays.size
 }
 
 private fun projectCompletion(
@@ -921,7 +1403,134 @@ private fun LocalDateRange.dailyBuckets(): List<LocalDateRange> =
         LocalDateRange(date, date)
     }
 
+private const val GOAL_SHORT_PACE_WINDOW_DAYS = 7
+private const val GOAL_FORECAST_WINDOW_DAYS = 30
+private const val MIN_ROBUST_PACE_DAYS = 5
+
+private fun StatsFilter.forCharacterRange(range: AnalyticsCharacterRange): StatsFilter =
+    when (range) {
+        AnalyticsCharacterRange.ENCOUNTERED,
+        AnalyticsCharacterRange.FIRST_SEEN_IN_RANGE,
+        -> this
+        AnalyticsCharacterRange.UNKNOWN,
+        AnalyticsCharacterRange.MISSING_HIGH_FREQUENCY,
+        -> copy(maturityTiers = setOf(MaturityTier.UNKNOWN))
+        AnalyticsCharacterRange.NEW -> copy(maturityTiers = setOf(MaturityTier.NEW))
+        AnalyticsCharacterRange.LEARNING -> copy(maturityTiers = setOf(MaturityTier.LEARNING))
+        AnalyticsCharacterRange.YOUNG -> copy(maturityTiers = setOf(MaturityTier.YOUNG))
+        AnalyticsCharacterRange.MATURE -> copy(maturityTiers = setOf(MaturityTier.MATURE))
+    }
+
+private fun AnalyticsAnkiSummary.ankiReportCapabilities(): List<AnalyticsAnkiReportCapability> {
+    val inventory = when {
+        snapshot == null || !snapshot.hasUsableInventory ->
+            AnalyticsAnkiReportCapability(
+                AnalyticsAnkiReport.INVENTORY,
+                CapabilityState.UNAVAILABLE,
+                AnalyticsAnkiCapabilityReason.NO_CURRENT_INVENTORY,
+            )
+        snapshot.isStale ->
+            AnalyticsAnkiReportCapability(
+                AnalyticsAnkiReport.INVENTORY,
+                CapabilityState.STALE,
+                AnalyticsAnkiCapabilityReason.STALE_INVENTORY,
+            )
+        snapshot.isPartial ->
+            AnalyticsAnkiReportCapability(
+                AnalyticsAnkiReport.INVENTORY,
+                CapabilityState.PARTIAL,
+                AnalyticsAnkiCapabilityReason.PARTIAL_INVENTORY,
+            )
+        else ->
+            AnalyticsAnkiReportCapability(
+                AnalyticsAnkiReport.INVENTORY,
+                snapshot.capabilityState,
+                AnalyticsAnkiCapabilityReason.AVAILABLE,
+            )
+    }
+    val attribution = when {
+        linkedOperationCount == 0L && unattributedOperationCount > 0L ->
+            AnalyticsAnkiReportCapability(
+                AnalyticsAnkiReport.SOURCE_ATTRIBUTION,
+                CapabilityState.UNAVAILABLE,
+                AnalyticsAnkiCapabilityReason.NO_LINKED_SAMPLE,
+            )
+        unattributedOperationCount > 0L ->
+            AnalyticsAnkiReportCapability(
+                AnalyticsAnkiReport.SOURCE_ATTRIBUTION,
+                CapabilityState.PARTIAL,
+                AnalyticsAnkiCapabilityReason.NO_LINKED_SAMPLE,
+            )
+        else ->
+            AnalyticsAnkiReportCapability(
+                AnalyticsAnkiReport.SOURCE_ATTRIBUTION,
+                CapabilityState.AVAILABLE,
+                AnalyticsAnkiCapabilityReason.AVAILABLE,
+            )
+    }
+    val readingLag = AnalyticsAnkiReportCapability(
+        report = AnalyticsAnkiReport.READING_TO_CARD_LAG,
+        state = if (meanReadingToCardLagMillis == null) {
+            CapabilityState.UNAVAILABLE
+        } else {
+            CapabilityState.AVAILABLE
+        },
+        reason = if (meanReadingToCardLagMillis == null) {
+            AnalyticsAnkiCapabilityReason.NO_LINKED_SAMPLE
+        } else {
+            AnalyticsAnkiCapabilityReason.AVAILABLE
+        },
+    )
+    val maturityLagAvailable = weeklyImpact.any { it.meanCardToMaturityLagMillis != null }
+    val maturityLag = AnalyticsAnkiReportCapability(
+        report = AnalyticsAnkiReport.CARD_TO_MATURITY_LAG,
+        state = if (maturityLagAvailable) CapabilityState.AVAILABLE else CapabilityState.UNAVAILABLE,
+        reason = if (maturityLagAvailable) {
+            AnalyticsAnkiCapabilityReason.AVAILABLE
+        } else {
+            AnalyticsAnkiCapabilityReason.INSUFFICIENT_SAMPLE
+        },
+    )
+    val reviewReason = when {
+        snapshot == null -> AnalyticsAnkiCapabilityReason.NO_CURRENT_INVENTORY
+        snapshot.supportsReviewHistory -> AnalyticsAnkiCapabilityReason.DATA_NOT_COLLECTED
+        else -> AnalyticsAnkiCapabilityReason.PROVIDER_UNSUPPORTED
+    }
+    return listOf(
+        inventory,
+        AnalyticsAnkiReportCapability(
+            AnalyticsAnkiReport.CARD_ACTIVITY,
+            CapabilityState.AVAILABLE,
+            AnalyticsAnkiCapabilityReason.AVAILABLE,
+        ),
+        attribution,
+        readingLag,
+        maturityLag,
+        AnalyticsAnkiReportCapability(
+            AnalyticsAnkiReport.WEEKLY_FLOW,
+            CapabilityState.AVAILABLE,
+            AnalyticsAnkiCapabilityReason.AVAILABLE,
+        ),
+        AnalyticsAnkiReportCapability(
+            AnalyticsAnkiReport.REVIEW_HISTORY,
+            CapabilityState.UNAVAILABLE,
+            reviewReason,
+        ),
+        AnalyticsAnkiReportCapability(
+            AnalyticsAnkiReport.RETENTION,
+            CapabilityState.UNAVAILABLE,
+            reviewReason,
+        ),
+        AnalyticsAnkiReportCapability(
+            AnalyticsAnkiReport.REVIEW_TIME,
+            CapabilityState.UNAVAILABLE,
+            reviewReason,
+        ),
+    )
+}
+
 private val INVENTORY_GOAL_METRICS = setOf("new_words", "new_characters")
+private const val MINIMUM_ANKI_COMPARISON_SAMPLE_SIZE = 20
 
 private fun StatsFilter.stableHash(): String {
     val value = listOf(

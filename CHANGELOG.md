@@ -4,6 +4,33 @@ All notable changes to Chimahon are documented here.
 
 The format follows a Keep a Changelog style and uses Semantic Versioning.
 
+## [v2.5.0]
+
+### Added
+- Complete title, vocabulary, character, session, goal, and Anki analytics workbenches
+- Session knownness timeline with indexed-source and Anki maturity coverage
+- Auditable title maintenance and session relinking with exact previews and rollback
+- Opt-in goal reminders, private check-ins, Today cards, and home-widget goal progress
+- Maintenance health timestamps, independent section retry, and privacy-safe diagnostics
+
+### Changed
+- Session startup now persists the title, session, and start event atomically
+- Activity analytics use materialized hourly rollups and consistent Overview/widget filters
+- Metadata and Anki hydration use bounded batch queries instead of per-item lookups
+- Finalized heartbeat telemetry is compacted in bounded, retry-safe retention work
+- Statistics screens protect private content in Android recents
+
+### Fixed
+- Deletion previews include exact dependent goal, vocabulary, and character effects
+- Goal projections avoid false precision when history or title-length evidence is insufficient
+- Failed statistics sections retain successful stale data and retry independently
+- Portable maintenance and repair state remains visible without exposing source text
+
+### Rollout
+- Event capture and indexing remain enabled in shadow mode
+- Statistics UI, Anki inventory, and goals remain opt-in until device qualification passes
+- Legacy statistics writes and rollback import compatibility remain enabled
+
 ## [v2.4.0]
 
 ### Added

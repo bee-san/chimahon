@@ -26,6 +26,187 @@ enum class AnalyticsSort {
     FIRST_SEEN,
     ALPHABETICAL,
     FREQUENCY_RANK,
+    PRIORITY,
+}
+
+@Serializable
+enum class AnalyticsTitleSort {
+    MOST_RECENT,
+    ALPHABETICAL,
+    MOST_TIME,
+    MOST_CHARACTERS,
+    READING_SPEED,
+    NOVELTY,
+    MINING_RATE,
+    PROGRESS,
+}
+
+@Serializable
+enum class AnalyticsTitleStateFilter {
+    ALL,
+    COMPLETED,
+    IN_PROGRESS,
+    UNKNOWN,
+}
+
+@Serializable
+enum class AnalyticsTitleCoverageFilter {
+    ALL,
+    COMPLETE,
+    PARTIAL,
+    MISSING,
+}
+
+@Serializable
+data class AnalyticsTitleFilter(
+    val searchQuery: String? = null,
+    val state: AnalyticsTitleStateFilter = AnalyticsTitleStateFilter.ALL,
+    val coverage: AnalyticsTitleCoverageFilter = AnalyticsTitleCoverageFilter.ALL,
+    val minimumSpeedCharacters: Long = 1_000,
+    val minimumSpeedActiveMillis: Long = 10 * 60 * 1_000,
+) {
+    init {
+        require(minimumSpeedCharacters > 0)
+        require(minimumSpeedActiveMillis > 0)
+    }
+}
+
+@Serializable
+enum class VocabularyKnownness {
+    ALL,
+    UNKNOWN,
+    KNOWN,
+}
+
+@Serializable
+enum class VocabularyScript {
+    KANJI,
+    KANA,
+    LATIN,
+    OTHER,
+}
+
+@Serializable
+enum class VocabularyCategory {
+    NAME,
+    KANA_ONLY,
+    GRAMMAR,
+    OTHER,
+}
+
+@Serializable
+enum class VocabularyExclusion {
+    INCLUDED,
+    EXCLUDED,
+    ALL,
+}
+
+@Serializable
+data class VocabularyFilter(
+    val searchQuery: String? = null,
+    val knownness: VocabularyKnownness = VocabularyKnownness.ALL,
+    val scripts: Set<VocabularyScript> = emptySet(),
+    val categories: Set<VocabularyCategory> = emptySet(),
+    val partOfSpeechQuery: String? = null,
+    val minimumOccurrences: Long? = null,
+    val maximumOccurrences: Long? = null,
+    val maximumFrequencyRank: Long? = null,
+    val exclusion: VocabularyExclusion = VocabularyExclusion.INCLUDED,
+) {
+    init {
+        require(minimumOccurrences == null || minimumOccurrences > 0)
+        require(maximumOccurrences == null || maximumOccurrences > 0)
+        require(
+            minimumOccurrences == null ||
+                maximumOccurrences == null ||
+                minimumOccurrences <= maximumOccurrences,
+        )
+        require(maximumFrequencyRank == null || maximumFrequencyRank > 0)
+    }
+}
+
+@Serializable
+enum class AnalyticsCharacterScript {
+    HAN,
+    HIRAGANA,
+    KATAKANA,
+    HANGUL,
+    LATIN,
+    OTHER,
+}
+
+@Serializable
+enum class AnalyticsCharacterRange {
+    ENCOUNTERED,
+    FIRST_SEEN_IN_RANGE,
+    UNKNOWN,
+    NEW,
+    LEARNING,
+    YOUNG,
+    MATURE,
+    MISSING_HIGH_FREQUENCY,
+}
+
+@Serializable
+enum class AnalyticsCharacterPriorityMode {
+    FREQUENCY,
+    JLPT,
+    GRADE,
+    MIXED,
+}
+
+@Serializable
+data class AnalyticsCharacterFilter(
+    val searchQuery: String? = null,
+    val scripts: Set<AnalyticsCharacterScript> = emptySet(),
+    val range: AnalyticsCharacterRange = AnalyticsCharacterRange.ENCOUNTERED,
+    val priorityMode: AnalyticsCharacterPriorityMode = AnalyticsCharacterPriorityMode.MIXED,
+    val maximumMissingFrequencyRank: Long = 10_000,
+) {
+    init {
+        require(maximumMissingFrequencyRank > 0)
+    }
+}
+
+@Serializable
+data class AnalyticsCharacterScriptSummary(
+    val script: AnalyticsCharacterScript,
+    val distinctCharacters: Long,
+    val grossOccurrenceExposure: Long,
+    val representedInAnki: Long,
+    val matureInAnki: Long,
+) {
+    init {
+        require(distinctCharacters >= 0)
+        require(grossOccurrenceExposure >= 0)
+        require(representedInAnki in 0..distinctCharacters)
+        require(matureInAnki in 0..representedInAnki)
+    }
+}
+
+@Serializable
+data class AnalyticsCharacterSummary(
+    val scripts: List<AnalyticsCharacterScriptSummary>,
+    val firstSeenInRange: Long,
+    val maximumOccurrenceCount: Long,
+) {
+    init {
+        require(firstSeenInRange >= 0)
+        require(maximumOccurrenceCount >= 0)
+        require(scripts.distinctBy(AnalyticsCharacterScriptSummary::script).size == scripts.size)
+    }
+
+    val distinctCharacters: Long
+        get() = scripts.sumOf(AnalyticsCharacterScriptSummary::distinctCharacters)
+
+    val grossOccurrenceExposure: Long
+        get() = scripts.sumOf(AnalyticsCharacterScriptSummary::grossOccurrenceExposure)
+
+    val representedInAnki: Long
+        get() = scripts.sumOf(AnalyticsCharacterScriptSummary::representedInAnki)
+
+    val matureInAnki: Long
+        get() = scripts.sumOf(AnalyticsCharacterScriptSummary::matureInAnki)
 }
 
 @Serializable
@@ -284,32 +465,258 @@ data class AnalyticsVocabularyFirstSeen(
 )
 
 @Serializable
+data class AnalyticsTitleCoverage(
+    val legacySessionCount: Long = 0,
+    val eventBackedSessionCount: Long = 0,
+    val sourceUnitCount: Long = 0,
+    val indexedSourceUnitCount: Long = 0,
+    val textAvailableSourceUnitCount: Long = 0,
+    val ocrSourceUnitCount: Long = 0,
+    val ocrTextAvailableSourceUnitCount: Long = 0,
+) {
+    init {
+        require(legacySessionCount >= 0)
+        require(eventBackedSessionCount >= 0)
+        require(sourceUnitCount >= 0)
+        require(indexedSourceUnitCount in 0..sourceUnitCount)
+        require(textAvailableSourceUnitCount in 0..sourceUnitCount)
+        require(ocrSourceUnitCount in 0..sourceUnitCount)
+        require(ocrTextAvailableSourceUnitCount in 0..ocrSourceUnitCount)
+    }
+
+    val indexingCompletion: Double?
+        get() = ratio(indexedSourceUnitCount, sourceUnitCount)
+
+    val textCoverage: Double?
+        get() = ratio(textAvailableSourceUnitCount, sourceUnitCount)
+
+    val ocrTextCoverage: Double?
+        get() = ratio(ocrTextAvailableSourceUnitCount, ocrSourceUnitCount)
+
+    val provenanceState: ProvenanceState
+        get() = when {
+            legacySessionCount > 0 && eventBackedSessionCount > 0 -> ProvenanceState.PARTIAL
+            legacySessionCount > 0 -> ProvenanceState.LEGACY_AGGREGATE
+            sourceUnitCount == 0L -> ProvenanceState.UNAVAILABLE
+            textAvailableSourceUnitCount == 0L -> ProvenanceState.REMOVED
+            textAvailableSourceUnitCount < sourceUnitCount -> ProvenanceState.PARTIAL
+            else -> ProvenanceState.AVAILABLE
+        }
+
+    private fun ratio(numerator: Long, denominator: Long): Double? =
+        if (denominator == 0L) null else numerator.toDouble() / denominator.toDouble()
+}
+
+@Serializable
+enum class AnalyticsEstimateUnit {
+    CHARACTERS,
+    MEDIA_UNITS,
+}
+
+@Serializable
+enum class AnalyticsEstimateConfidence {
+    LOW,
+    MEDIUM,
+    HIGH,
+}
+
+@Serializable
+data class AnalyticsTitleEstimate(
+    val remainingAmount: Long,
+    val unit: AnalyticsEstimateUnit,
+    val estimatedActiveTimeMillis: Long,
+    val confidence: AnalyticsEstimateConfidence,
+    val qualifyingDayCount: Int,
+) {
+    init {
+        require(remainingAmount >= 0)
+        require(estimatedActiveTimeMillis >= 0)
+        require(qualifyingDayCount >= 3)
+    }
+}
+
+@Serializable
+data class AnalyticsTitleDayHighlight(
+    val date: ImmersionLocalDate,
+    val value: Double,
+) {
+    init {
+        require(value >= 0 && value.isFinite())
+    }
+}
+
+@Serializable
+data class AnalyticsTitleDayHighlights(
+    val characters: AnalyticsTitleDayHighlight?,
+    val activeTime: AnalyticsTitleDayHighlight?,
+    val speed: AnalyticsTitleDayHighlight?,
+)
+
+@Serializable
+data class AnalyticsTitleUnitCompletionDay(
+    val date: ImmersionLocalDate,
+    val completedUnits: Long,
+) {
+    init {
+        require(completedUnits > 0)
+    }
+}
+
+@Serializable
+data class AnalyticsTitleUnitProgress(
+    val identityAvailable: Boolean = false,
+    val completedUnits: Long = 0,
+    val identifiedCompletionEvents: Long = 0,
+    val unidentifiedCompletionEvents: Long = 0,
+    val firstCompletionsByDay: List<AnalyticsTitleUnitCompletionDay> = emptyList(),
+) {
+    init {
+        require(completedUnits >= 0)
+        require(identifiedCompletionEvents >= completedUnits)
+        require(unidentifiedCompletionEvents >= 0)
+        require(identityAvailable || completedUnits == 0L)
+        require(identityAvailable || identifiedCompletionEvents == 0L)
+        require(identityAvailable || unidentifiedCompletionEvents == 0L)
+        require(firstCompletionsByDay.sumOf { it.completedUnits } == completedUnits)
+        require(firstCompletionsByDay.zipWithNext().all { (first, second) -> first.date < second.date })
+    }
+
+    val hasTrustworthyIdentity: Boolean
+        get() = identityAvailable && unidentifiedCompletionEvents == 0L
+}
+
+@Serializable
+enum class AnalyticsTitleAcquisitionBucketSize(val characters: Long) {
+    TEN_THOUSAND(10_000),
+    TWENTY_FIVE_THOUSAND(25_000),
+    FIFTY_THOUSAND(50_000),
+    ONE_HUNDRED_THOUSAND(100_000),
+}
+
+@Serializable
+data class AnalyticsTitleWordAcquisitionBucket(
+    val index: Int,
+    val startCharacter: Long,
+    val endCharacterInclusive: Long,
+    val newWords: Long,
+    val cumulativeNewWords: Long,
+) {
+    init {
+        require(index >= 0)
+        require(startCharacter >= 0)
+        require(endCharacterInclusive >= startCharacter)
+        require(newWords >= 0)
+        require(cumulativeNewWords >= newWords)
+    }
+}
+
+@Serializable
+data class AnalyticsTitleWordAcquisition(
+    val titleId: TitleId,
+    val bucketSize: AnalyticsTitleAcquisitionBucketSize,
+    val totalGrossCharacters: Long,
+    val buckets: List<AnalyticsTitleWordAcquisitionBucket>,
+) {
+    init {
+        require(totalGrossCharacters >= 0)
+        require(buckets.map { it.index } == buckets.indices.toList())
+        require(
+            buckets.zipWithNext().all { (first, second) ->
+                first.endCharacterInclusive + 1 == second.startCharacter &&
+                    first.cumulativeNewWords + second.newWords == second.cumulativeNewWords
+            },
+        )
+        require(
+            buckets.isEmpty() == (totalGrossCharacters == 0L) &&
+                (
+                    buckets.isEmpty() ||
+                        buckets.last().endCharacterInclusive == totalGrossCharacters - 1
+                    ),
+        )
+    }
+}
+
+@Serializable
+data class AnalyticsTitleCompletedUnit(
+    val titleId: TitleId,
+    val completionUnitId: String,
+    val firstCompletedAtEpochMillis: Long,
+    val lastCompletedAtEpochMillis: Long,
+    val firstCompletedDate: ImmersionLocalDate,
+    val completionEventCount: Long,
+) {
+    init {
+        require(completionUnitId.isNotBlank())
+        require(firstCompletedAtEpochMillis >= 0)
+        require(lastCompletedAtEpochMillis >= firstCompletedAtEpochMillis)
+        require(completionEventCount > 0)
+    }
+}
+
+@Serializable
 data class AnalyticsTitleRow(
     val titleId: TitleId,
     val displayTitle: String,
     val mediaKind: MediaKind,
+    val sourceKey: String,
+    val profileId: String,
     val languageTag: LanguageTag?,
+    val libraryId: Long?,
+    val trackerId: String?,
+    val mediaId: String?,
+    val status: String?,
+    val totalUnits: Long?,
+    val totalCharacterEstimate: Long?,
+    val deletedAtEpochMillis: Long?,
     val metrics: ReadingMetrics,
+    val coverage: AnalyticsTitleCoverage,
     val firstActiveDate: ImmersionLocalDate,
     val lastActiveDate: ImmersionLocalDate,
+    val activeDays: Int,
+    val calendarSpanDays: Int,
+    val averageCharactersPerActiveDay: Double,
+    val averageActiveTimePerActiveDayMillis: Double,
+    val dayHighlights: AnalyticsTitleDayHighlights,
+    val unitProgress: AnalyticsTitleUnitProgress,
+    val estimate: AnalyticsTitleEstimate?,
+    val speedRankingEligible: Boolean,
     val progress: Double?,
     val completed: Boolean?,
-)
+) {
+    init {
+        require(activeDays > 0)
+        require(calendarSpanDays >= activeDays)
+        require(averageCharactersPerActiveDay >= 0 && averageCharactersPerActiveDay.isFinite())
+        require(
+            averageActiveTimePerActiveDayMillis >= 0 &&
+                averageActiveTimePerActiveDayMillis.isFinite(),
+        )
+    }
+}
 
 @Serializable
 data class AnalyticsTitleMetadata(
     val titleId: TitleId,
     val displayTitle: String,
     val mediaKind: MediaKind,
+    val sourceKey: String,
+    val profileId: String,
     val languageTag: LanguageTag?,
+    val libraryId: Long?,
+    val trackerId: String?,
+    val mediaId: String?,
+    val status: String?,
     val totalUnits: Long?,
     val totalCharacterEstimate: Long?,
     val completed: Boolean?,
+    val deletedAtEpochMillis: Long?,
 ) {
     init {
         require(displayTitle.isNotBlank())
+        require(sourceKey.isNotBlank())
         require(totalUnits == null || totalUnits >= 0)
         require(totalCharacterEstimate == null || totalCharacterEstimate >= 0)
+        require(deletedAtEpochMillis == null || deletedAtEpochMillis >= 0)
     }
 }
 
@@ -327,6 +734,11 @@ data class AnalyticsWordRow(
     val frequencyRank: Long?,
     val maturity: MaturityTier,
     val matchConfidence: AnkiMatchConfidence?,
+    val jlptLevel: Int? = null,
+    val gradeLevel: Int? = null,
+    val script: VocabularyScript = VocabularyScript.OTHER,
+    val category: VocabularyCategory = VocabularyCategory.OTHER,
+    val excluded: Boolean = false,
 ) {
     init {
         require(id.isNotBlank())
@@ -336,6 +748,8 @@ data class AnalyticsWordRow(
         require(firstSeenAtEpochMillis >= 0)
         require(lastSeenAtEpochMillis >= firstSeenAtEpochMillis)
         require(frequencyRank == null || frequencyRank > 0)
+        require(jlptLevel == null || jlptLevel > 0)
+        require(gradeLevel == null || gradeLevel > 0)
     }
 }
 
@@ -344,24 +758,35 @@ data class AnalyticsCharacterRow(
     val codePoint: UnicodeCodePoint,
     val rendered: String,
     val unicodeName: String?,
+    val unicodeCategory: String,
     val unicodeScript: String,
+    val japaneseReadings: String?,
     val occurrenceCount: Long,
+    val sourceUnitCount: Long,
     val wordCount: Long,
     val titleCount: Long,
     val firstSeenAtEpochMillis: Long,
     val lastSeenAtEpochMillis: Long,
     val frequencyRank: Long?,
+    val jlptLevel: Int?,
+    val gradeLevel: Int?,
     val maturity: MaturityTier,
+    val priorityScore: Double,
 ) {
     init {
         require(rendered.isNotBlank())
+        require(unicodeCategory.isNotBlank())
         require(unicodeScript.isNotBlank())
         require(occurrenceCount >= 0)
+        require(sourceUnitCount >= 0)
         require(wordCount >= 0)
         require(titleCount >= 0)
         require(firstSeenAtEpochMillis >= 0)
         require(lastSeenAtEpochMillis >= firstSeenAtEpochMillis)
         require(frequencyRank == null || frequencyRank > 0)
+        require(jlptLevel == null || jlptLevel > 0)
+        require(gradeLevel == null || gradeLevel > 0)
+        require(priorityScore >= 0 && priorityScore.isFinite())
     }
 }
 
@@ -398,6 +823,7 @@ data class AnalyticsTimelineBucket(
     val cardsCreated: Long,
     val cardsUpdated: Long,
     val eventTypes: Set<EventType>,
+    val knownness: AnalyticsTimelineKnownness? = null,
 ) {
     init {
         require(startEpochMillis >= 0)
@@ -410,6 +836,35 @@ data class AnalyticsTimelineBucket(
         require(cardsCreated >= 0)
         require(cardsUpdated >= 0)
     }
+}
+
+@Serializable
+data class AnalyticsTimelineKnownness(
+    val sourceExposures: Long,
+    val indexedSourceExposures: Long,
+    val ankiReadySourceExposures: Long,
+    val unknownWords: Long,
+    val newWords: Long,
+    val learningWords: Long,
+    val youngWords: Long,
+    val matureWords: Long,
+) {
+    init {
+        require(sourceExposures >= 0)
+        require(indexedSourceExposures in 0..sourceExposures)
+        require(ankiReadySourceExposures in 0..indexedSourceExposures)
+        require(unknownWords >= 0)
+        require(newWords >= 0)
+        require(learningWords >= 0)
+        require(youngWords >= 0)
+        require(matureWords >= 0)
+    }
+
+    val totalWords: Long
+        get() = unknownWords + newWords + learningWords + youngWords + matureWords
+
+    val knownWords: Long
+        get() = totalWords - unknownWords
 }
 
 @Serializable
@@ -446,7 +901,110 @@ data class AnalyticsGoalProgress(
     val longestStreakDays: Int = 0,
     val isRestDay: Boolean = false,
     val forecastConfidence: CapabilityState = CapabilityState.UNAVAILABLE,
+    val remainingActiveDays: Int? = null,
+    val forecastSampleDays: Int = 0,
+    val forecastWindowDays: Int = 30,
+    val todayAchieved: Double = 0.0,
+    val todayTarget: Double = 0.0,
+) {
+    init {
+        require(remainingActiveDays == null || remainingActiveDays >= 0)
+        require(forecastSampleDays >= 0)
+        require(forecastWindowDays > 0)
+        require(todayAchieved.isFinite() && todayAchieved >= 0.0)
+        require(todayTarget.isFinite() && todayTarget >= 0.0)
+    }
+}
+
+@Serializable
+enum class AnalyticsAnkiReport {
+    INVENTORY,
+    CARD_ACTIVITY,
+    SOURCE_ATTRIBUTION,
+    READING_TO_CARD_LAG,
+    CARD_TO_MATURITY_LAG,
+    WEEKLY_FLOW,
+    REVIEW_HISTORY,
+    RETENTION,
+    REVIEW_TIME,
+}
+
+@Serializable
+enum class AnalyticsAnkiCapabilityReason {
+    AVAILABLE,
+    NO_CURRENT_INVENTORY,
+    STALE_INVENTORY,
+    PARTIAL_INVENTORY,
+    NO_LINKED_SAMPLE,
+    INSUFFICIENT_SAMPLE,
+    PROVIDER_UNSUPPORTED,
+    DATA_NOT_COLLECTED,
+}
+
+@Serializable
+data class AnalyticsAnkiReportCapability(
+    val report: AnalyticsAnkiReport,
+    val state: CapabilityState,
+    val reason: AnalyticsAnkiCapabilityReason,
 )
+
+@Serializable
+data class AnalyticsAnkiWeeklyImpact(
+    val weekStart: ImmersionLocalDate,
+    val weekEndInclusive: ImmersionLocalDate,
+    val partial: Boolean,
+    val activeDurationMillis: Long,
+    val grossCharacters: Long,
+    val cardsCreated: Long,
+    val cardsUpdated: Long,
+    val linkedOperations: Long,
+    val unattributedOperations: Long,
+    val sameWeekReadingToCardOperations: Long,
+    val maturedOperations: Long,
+    val meanReadingToCardLagMillis: Long?,
+    val meanCardToMaturityLagMillis: Long?,
+) {
+    init {
+        require(weekEndInclusive.epochDay >= weekStart.epochDay)
+        require(activeDurationMillis >= 0)
+        require(grossCharacters >= 0)
+        require(cardsCreated >= 0)
+        require(cardsUpdated >= 0)
+        require(linkedOperations >= 0)
+        require(unattributedOperations >= 0)
+        require(sameWeekReadingToCardOperations in 0..linkedOperations)
+        require(maturedOperations in 0..linkedOperations)
+        require(meanReadingToCardLagMillis == null || meanReadingToCardLagMillis >= 0)
+        require(meanCardToMaturityLagMillis == null || meanCardToMaturityLagMillis >= 0)
+    }
+}
+
+@Serializable
+data class AnalyticsAnkiTitleImpact(
+    val titleId: TitleId?,
+    val displayTitle: String?,
+    val mediaKind: MediaKind?,
+    val activeDurationMillis: Long,
+    val grossCharacters: Long,
+    val cardsCreated: Long,
+    val cardsUpdated: Long,
+    val operationCount: Long,
+) {
+    init {
+        require(displayTitle == null || displayTitle.isNotBlank())
+        require((titleId == null) == (mediaKind == null))
+        require(activeDurationMillis >= 0)
+        require(grossCharacters >= 0)
+        require(cardsCreated >= 0)
+        require(cardsUpdated >= 0)
+        require(operationCount >= 0)
+    }
+
+    fun cardsPerTenThousandGrossCharacters(): Double? =
+        grossCharacters.takeIf { it > 0 }?.let {
+            cardsCreated * 10_000.0 / it
+        }
+}
 
 @Serializable
 data class AnalyticsAnkiSummary(
@@ -464,6 +1022,11 @@ data class AnalyticsAnkiSummary(
     val meanReadingToCardLagMillis: Long? = null,
     val missingHighFrequencyWords: List<AnalyticsWordRow> = emptyList(),
     val missingHighFrequencyCharacters: List<AnalyticsCharacterRow> = emptyList(),
+    val capabilities: List<AnalyticsAnkiReportCapability> = emptyList(),
+    val weeklyImpact: List<AnalyticsAnkiWeeklyImpact> = emptyList(),
+    val titleImpact: List<AnalyticsAnkiTitleImpact> = emptyList(),
+    val generatedAtEpochMillis: Long? = null,
+    val minimumComparisonSampleSize: Int = 20,
 ) {
     init {
         require(wordCoverageEncountered >= 0)
@@ -476,6 +1039,15 @@ data class AnalyticsAnkiSummary(
         require(linkedOperationCount >= 0)
         require(unattributedOperationCount >= 0)
         require(meanReadingToCardLagMillis == null || meanReadingToCardLagMillis >= 0)
+        require(capabilities.distinctBy(AnalyticsAnkiReportCapability::report).size == capabilities.size)
+        require(
+            weeklyImpact.zipWithNext().all { (first, second) ->
+                first.weekStart.epochDay < second.weekStart.epochDay
+            },
+        )
+        require(titleImpact.distinctBy { it.titleId to it.mediaKind }.size == titleImpact.size)
+        require(generatedAtEpochMillis == null || generatedAtEpochMillis >= 0)
+        require(minimumComparisonSampleSize > 0)
     }
 }
 

@@ -44,9 +44,18 @@ class ImmersionRetentionJob(
                     updatedAtEpochMillis = now,
                 )
             }
+            val compactedHeartbeats = if (inputData.getBoolean(DRY_RUN, false)) {
+                0L
+            } else {
+                repository.compactFinalizedHeartbeats(
+                    limit = HEARTBEAT_COMPACTION_BATCH_SIZE,
+                    compactedAtEpochMillis = now,
+                )
+            }
             Result.success(
                 workDataOf(
                     AFFECTED_PRIVATE_TEXT_RECORDS to affected,
+                    COMPACTED_HEARTBEAT_EVENTS to compactedHeartbeats,
                     RETENTION_POLICY to retention.name,
                 ),
             )
@@ -61,7 +70,9 @@ class ImmersionRetentionJob(
         private const val PERIODIC_WORK_NAME = "immersion-statistics-retention-periodic"
         private const val MANUAL_WORK_NAME = "immersion-statistics-retention-manual"
         private const val DRY_RUN = "dry_run"
+        private const val HEARTBEAT_COMPACTION_BATCH_SIZE = 100
         const val AFFECTED_PRIVATE_TEXT_RECORDS = "affected_private_text_records"
+        const val COMPACTED_HEARTBEAT_EVENTS = "compacted_heartbeat_events"
         const val RETENTION_POLICY = "retention_policy"
 
         fun setupTask(context: Context) {

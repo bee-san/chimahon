@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <plurals name="stats_goal_reminder_body">
+        <item quantity="one">%1$d goal still has progress due today.</item>
+        <item quantity="other">%1$d goals still have progress due today.</item>
+    </plurals>
     <plurals name="stats_duration_hours">
         <item quantity="one">%1$d hour</item>
         <item quantity="other">%1$d hours</item>
@@ -43,5 +47,41 @@
     <plurals name="stats_word_count">
         <item quantity="one">%1$s word</item>
         <item quantity="other">%1$s words</item>
+    </plurals>
+    <plurals name="stats_source_unit_count">
+        <item quantity="one">%1$s source unit</item>
+        <item quantity="other">%1$s source units</item>
+    </plurals>
+    <plurals name="stats_session_count">
+        <item quantity="one">%1$s session</item>
+        <item quantity="other">%1$s sessions</item>
+    </plurals>
+    <plurals name="stats_title_count">
+        <item quantity="one">%1$s title</item>
+        <item quantity="other">%1$s titles</item>
+    </plurals>
+    <plurals name="stats_card_count">
+        <item quantity="one">%1$s card</item>
+        <item quantity="other">%1$s cards</item>
+    </plurals>
+    <plurals name="stats_chapter_count">
+        <item quantity="one">%1$s chapter</item>
+        <item quantity="other">%1$s chapters</item>
+    </plurals>
+    <plurals name="stats_page_count">
+        <item quantity="one">%1$s page</item>
+        <item quantity="other">%1$s pages</item>
+    </plurals>
+    <plurals name="stats_episode_count">
+        <item quantity="one">%1$s episode</item>
+        <item quantity="other">%1$s episodes</item>
+    </plurals>
+    <plurals name="stats_section_count">
+        <item quantity="one">%1$s section</item>
+        <item quantity="other">%1$s sections</item>
+    </plurals>
+    <plurals name="stats_completion_event_count">
+        <item quantity="one">%1$s completion</item>
+        <item quantity="other">%1$s completions</item>
     </plurals>
 </resources>

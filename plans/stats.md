@@ -1,6 +1,14 @@
 # Chimahon Immersion Statistics — Product and Implementation Plan
 
-Status: proposed
+Status: local implementation substantially complete; release qualification in progress
+
+Requirement-level evidence and remaining blockers are tracked in
+`docs/implementation/immersion-stats-completion-audit.md`.
+Completion checkboxes throughout this plan were re-audited on 2026-07-27.
+`[x]` means the requirement has local code, documentation, and automated-test
+evidence where applicable. It does not stand in for the device, performance,
+migration, release, distribution, or legacy-retirement gates tracked in the
+completion audit.
 Research date: 2026-07-25
 Target branch: `feat/stats`
 Target product: Chimahon / Komikku Android app
@@ -587,6 +595,13 @@ Columns include:
 - sessions, lookups, created/updated cards.
 - rollup version and last applied event sequence/time.
 
+#### `immersion_hourly_rollup`
+
+Rebuildable local-hour totals keyed by date, hour, profile, language, media kind,
+title, provenance, and replay state. This table preserves event-occurrence and
+legacy-session-start hour semantics while keeping all-time temporal filters off
+the raw event table.
+
 #### `immersion_lifetime_rollup`
 
 Global and per-title totals that remain after optional raw event/source retention cleanup. Include provenance-availability flags so the UI knows a drill-down cannot be reconstructed.
@@ -700,25 +715,25 @@ None. This is the mandatory first phase.
 
 ### Implementation tasks
 
-- [ ] Add an ADR covering event store, rollups, stable IDs, legacy import, raw text retention, and why gross/unique/net are separate.
-- [ ] Define enums/value types for `MediaKind`, `CharacterMetric`, `SessionStatus`, `EventType`, `SourceKind`, `AnkiOperationType`, `MaturityTier`, `CapabilityState`, and `ProvenanceState`.
-- [ ] Define validated value objects for session/event/title/source IDs, language tag, code point, local date, duration, and non-negative counters.
-- [ ] Define `StatsFilter` independently of Compose.
-- [ ] Define the count policy interface and default Unicode policy.
-- [ ] Specify active/idle/background/pause transitions as a state machine.
-- [ ] Define source locator interfaces for novel, manga, subtitle, and video OCR.
-- [ ] Define version numbers for schema, capture, normalization, tokenizer, and rollups.
-- [ ] Add feature flags:
+- [x] Add an ADR covering event store, rollups, stable IDs, legacy import, raw text retention, and why gross/unique/net are separate.
+- [x] Define enums/value types for `MediaKind`, `CharacterMetric`, `SessionStatus`, `EventType`, `SourceKind`, `AnkiOperationType`, `MaturityTier`, `CapabilityState`, and `ProvenanceState`.
+- [x] Define validated value objects for session/event/title/source IDs, language tag, code point, local date, duration, and non-negative counters.
+- [x] Define `StatsFilter` independently of Compose.
+- [x] Define the count policy interface and default Unicode policy.
+- [x] Specify active/idle/background/pause transitions as a state machine.
+- [x] Define source locator interfaces for novel, manga, subtitle, and video OCR.
+- [x] Define version numbers for schema, capture, normalization, tokenizer, and rollups.
+- [x] Add feature flags:
   - `immersion_stats_capture_enabled`
   - `immersion_stats_indexing_enabled`
   - `immersion_stats_ui_enabled`
   - `immersion_stats_anki_sync_enabled`
   - `immersion_stats_goals_enabled`
-- [ ] Add a local diagnostics state containing queue depth, last write/index/rollup error code, last repair, and dropped command count—never source text.
-- [ ] Capture anonymized test fixtures for current novel, manga, and Anki JSON shapes, including missing/corrupt/older forms.
-- [ ] Write a boundary map listing each current writer and reader, and assign an owner adapter for later phases.
-- [ ] Decide the initial inactivity timeout and video buffering grace value; make both preferences, not constants scattered across readers.
-- [ ] Decide whether novel backward navigation produces negative net progress or clamps per source section; encode the decision in tests.
+- [x] Add a local diagnostics state containing queue depth, last write/index/rollup error code, last repair, and dropped command count—never source text.
+- [x] Capture anonymized test fixtures for current novel, manga, and Anki JSON shapes, including missing/corrupt/older forms.
+- [x] Write a boundary map listing each current writer and reader, and assign an owner adapter for later phases.
+- [x] Decide the initial inactivity timeout and video buffering grace value; make both preferences, not constants scattered across readers.
+- [x] Decide whether novel backward navigation produces negative net progress or clamps per source section; encode the decision in tests.
 
 ### Tests and verification
 
@@ -794,23 +809,23 @@ At minimum:
 
 ### Implementation tasks
 
-- [ ] Add the schema and indexes using text/long adapters consistent with repository conventions.
-- [ ] Use foreign keys/cascade behavior only where deletion semantics are intentionally defined.
-- [ ] Ensure every event and session ID is caller-supplied so retries can reuse identity.
-- [ ] Implement one transaction that creates/gets a source unit, appends an exposure event, advances sequence, and updates the live session counter.
-- [ ] Make duplicate event insertion return an `AlreadyApplied` result rather than throw as an unexpected error.
-- [ ] Implement session finalization and abandoned-session recovery.
-- [ ] Add schema and rollup metadata rows.
-- [ ] Add query pagination primitives with stable cursor or stable `(sort value, id)` ordering.
-- [ ] Add data mappers that reject invalid database values with typed corruption errors.
-- [ ] Wire repositories in `KMKDomainModule`.
-- [ ] Add a no-op/failure-isolating recorder used when the feature flag is off.
-- [ ] Add a database integrity report query:
+- [x] Add the schema and indexes using text/long adapters consistent with repository conventions.
+- [x] Use foreign keys/cascade behavior only where deletion semantics are intentionally defined.
+- [x] Ensure every event and session ID is caller-supplied so retries can reuse identity.
+- [x] Implement one transaction that creates/gets a source unit, appends an exposure event, advances sequence, and updates the live session counter.
+- [x] Make duplicate event insertion return an `AlreadyApplied` result rather than throw as an unexpected error.
+- [x] Implement session finalization and abandoned-session recovery.
+- [x] Add schema and rollup metadata rows.
+- [x] Add query pagination primitives with stable cursor or stable `(sort value, id)` ordering.
+- [x] Add data mappers that reject invalid database values with typed corruption errors.
+- [x] Wire repositories in `KMKDomainModule`.
+- [x] Add a no-op/failure-isolating recorder used when the feature flag is off.
+- [x] Add a database integrity report query:
   - orphaned events/source occurrences.
   - duplicate session sequences.
   - negative counters.
   - rollup version mismatch.
-- [ ] Document indexes and expected query shapes; use `EXPLAIN QUERY PLAN` in tests for the primary lists if supported by the harness.
+- [x] Document indexes and expected query shapes; use `EXPLAIN QUERY PLAN` in tests for the primary lists if supported by the harness.
 
 ### Migration rules
 
@@ -876,19 +891,19 @@ Phases 0–1.
 
 ### Implementation tasks
 
-- [ ] Enumerate every real JSON location, naming rule, and version.
-- [ ] Hash each source file or logical record set and persist an import-ledger entry.
-- [ ] Parse defensively: isolate malformed titles/days rather than abort the entire import.
-- [ ] Preserve current max-merge behavior only inside the old storage compatibility layer.
-- [ ] Import records transactionally per source/title with restartable checkpoints.
-- [ ] Record imported/skipped/failed counts and typed reasons without source text.
-- [ ] Build a reconciliation query comparing old screen totals to `legacy + new SQL` totals by date/media/title.
-- [ ] Add a developer-only report/export for mismatches.
-- [ ] During dual-write rollout, keep the existing JSON writer and new event writer independently observable.
-- [ ] Add a preference to exclude legacy ambiguous totals from novelty/speed views; default summary views should include them with an info label.
-- [ ] Make detail routes explain why imported days have no sessions, words, characters, or source lines.
-- [ ] Do not mark the import complete until the database transaction and ledger write both succeed.
-- [ ] Keep source JSON files untouched.
+- [x] Enumerate every real JSON location, naming rule, and version.
+- [x] Hash each source file or logical record set and persist an import-ledger entry.
+- [x] Parse defensively: isolate malformed titles/days rather than abort the entire import.
+- [x] Preserve current max-merge behavior only inside the old storage compatibility layer.
+- [x] Import records transactionally per source/title with restartable checkpoints.
+- [x] Record imported/skipped/failed counts and typed reasons without source text.
+- [x] Build a reconciliation query comparing old screen totals to `legacy + new SQL` totals by date/media/title.
+- [x] Add a developer-only report/export for mismatches.
+- [x] During dual-write rollout, keep the existing JSON writer and new event writer independently observable.
+- [x] Add a preference to exclude legacy ambiguous totals from novelty/speed views; default summary views should include them with an info label.
+- [x] Make detail routes explain why imported days have no sessions, words, characters, or source lines.
+- [x] Do not mark the import complete until the database transaction and ledger write both succeed.
+- [x] Keep source JSON files untouched.
 
 ### Tests and verification
 
@@ -934,26 +949,26 @@ The concrete API may differ, but source adapters must not manipulate database ro
 
 ### Implementation tasks
 
-- [ ] Implement lifecycle states and legal transitions.
-- [ ] Allocate session UUID and device ID before the first database call.
-- [ ] Persist a session-start event synchronously enough to establish identity while never blocking content rendering for a long database operation.
-- [ ] Implement a bounded channel/queue with batch-size and flush-interval tuning.
-- [ ] Assign monotonic per-session sequence numbers before retry.
-- [ ] Flush on lifecycle stop, title change, and normal finalization.
-- [ ] Persist periodic heartbeats only when active; compact them after finalization if safe.
-- [ ] Split active durations at local midnight.
-- [ ] Exclude background, idle, pause, and excessive buffering.
-- [ ] Handle process death by abandoning at the last persisted active boundary.
-- [ ] Enforce incognito before queue insertion, not only at repository write.
-- [ ] Ensure toggling incognito finalizes any active tracked session before the barrier takes effect.
-- [ ] Add diagnostics for queue saturation, write latency, last error, abandoned recovery, and rollup lag.
-- [ ] Never include source text, dictionary query, or title in crash/log payloads unless the user's local debug export explicitly includes it.
-- [ ] Add shadow mode: compute session/day totals without exposing UI and compare against current trackers.
-- [ ] Define typed tolerances:
+- [x] Implement lifecycle states and legal transitions.
+- [x] Allocate session UUID and device ID before the first database call.
+- [x] Persist a session-start event synchronously enough to establish identity while never blocking content rendering for a long database operation.
+- [x] Implement a bounded channel/queue with batch-size and flush-interval tuning.
+- [x] Assign monotonic per-session sequence numbers before retry.
+- [x] Flush on lifecycle stop, title change, and normal finalization.
+- [x] Persist periodic heartbeats only when active; compact them after finalization if safe.
+- [x] Split active durations at local midnight.
+- [x] Exclude background, idle, pause, and excessive buffering.
+- [x] Handle process death by abandoning at the last persisted active boundary.
+- [x] Enforce incognito before queue insertion, not only at repository write.
+- [x] Ensure toggling incognito finalizes any active tracked session before the barrier takes effect.
+- [x] Add diagnostics for queue saturation, write latency, last error, abandoned recovery, and rollup lag.
+- [x] Never include source text, dictionary query, or title in crash/log payloads unless the user's local debug export explicitly includes it.
+- [x] Add shadow mode: compute session/day totals without exposing UI and compare against current trackers.
+- [x] Define typed tolerances:
   - reading time discrepancy allowed only for documented active-time policy changes.
   - novel net progress should match current tracker within an exact fixture.
   - no tolerance for duplicate session/event IDs.
-- [ ] Implement repair scheduling if live session counters and events diverge.
+- [x] Implement repair scheduling if live session counters and events diverge.
 
 ### Failure behavior
 
@@ -1017,20 +1032,20 @@ If exact stable ranges are not available in the current reader, first add a loca
 
 ### Implementation tasks
 
-- [ ] Start/finalize sessions on real reader lifecycle and title transitions.
-- [ ] Feed foreground, visibility, idle, and overlay pause events.
-- [ ] Replace implicit `String.length` counting with the canonical Unicode counter.
-- [ ] Preserve current net-position metric as `net progress`, not gross exposure.
-- [ ] Emit exposure only when a range becomes meaningfully visible under a documented threshold.
-- [ ] Deduplicate recomposition, layout, rotation, and font/theme changes.
-- [ ] Count deliberate backward rereading as gross exposure while keeping unique-source and net metrics distinct.
-- [ ] Create stable source units with enough retained context for word/character drill-down.
-- [ ] Record chapter/section completion and title progress where reliable.
-- [ ] Handle find/search jumps, bookmarks, table-of-contents jumps, and restored position.
-- [ ] Do not record text shown only in previews, background parsing, or offscreen prefetch.
-- [ ] Respect raw-text retention separately from aggregate exposure.
-- [ ] Dual-write existing daily JSON until Phase 21.
-- [ ] Add a developer reconciliation screen/report by session and day.
+- [x] Start/finalize sessions on real reader lifecycle and title transitions.
+- [x] Feed foreground, visibility, idle, and overlay pause events.
+- [x] Replace implicit `String.length` counting with the canonical Unicode counter.
+- [x] Preserve current net-position metric as `net progress`, not gross exposure.
+- [x] Emit exposure only when a range becomes meaningfully visible under a documented threshold.
+- [x] Deduplicate recomposition, layout, rotation, and font/theme changes.
+- [x] Count deliberate backward rereading as gross exposure while keeping unique-source and net metrics distinct.
+- [x] Create stable source units with enough retained context for word/character drill-down.
+- [x] Record chapter/section completion and title progress where reliable.
+- [x] Handle find/search jumps, bookmarks, table-of-contents jumps, and restored position.
+- [x] Do not record text shown only in previews, background parsing, or offscreen prefetch.
+- [x] Respect raw-text retention separately from aggregate exposure.
+- [x] Dual-write existing daily JSON until Phase 21.
+- [x] Add a developer reconciliation screen/report by session and day.
 
 ### Tests and verification
 
@@ -1084,21 +1099,21 @@ The page remains a valid progress unit even when OCR is unavailable. Text/charac
 
 ### Implementation tasks
 
-- [ ] Map manga/chapter/page to a stable `immersion_title` and source locator.
-- [ ] Reset/differentiate deduplication on chapter change.
-- [ ] Emit page-view/progress even if OCR does not exist.
-- [ ] Emit text exposure only from the OCR result actually associated with the viewable page.
-- [ ] Persist OCR engine/version, confidence/quality flag, and normalized hash.
-- [ ] Avoid counting OCR cache population, neighboring-page prefetch, or background recognition as exposure.
-- [ ] Define two-page/spread behavior and simultaneous visibility threshold.
-- [ ] Define webtoon continuous-scroll visibility and repeated partial block exposure.
-- [ ] Count reread/revisit as gross exposure after a real page leave/re-enter; unique-source stays deduplicated.
-- [ ] Attribute active time to page/session with the existing upper-bound protection reviewed against the canonical idle policy.
-- [ ] Ensure quick page flips do not fabricate a minimum reading duration.
-- [ ] Track chapter completion independently from OCR coverage.
-- [ ] Expose OCR coverage percentage for title/session so character totals can be interpreted.
-- [ ] Dual-write `MangaStatsStorage` until retirement.
-- [ ] Fix current zero-character ambiguity in legacy/UI query mapping.
+- [x] Map manga/chapter/page to a stable `immersion_title` and source locator.
+- [x] Reset/differentiate deduplication on chapter change.
+- [x] Emit page-view/progress even if OCR does not exist.
+- [x] Emit text exposure only from the OCR result actually associated with the viewable page.
+- [x] Persist OCR engine/version, confidence/quality flag, and normalized hash.
+- [x] Avoid counting OCR cache population, neighboring-page prefetch, or background recognition as exposure.
+- [x] Define two-page/spread behavior and simultaneous visibility threshold.
+- [x] Define webtoon continuous-scroll visibility and repeated partial block exposure.
+- [x] Count reread/revisit as gross exposure after a real page leave/re-enter; unique-source stays deduplicated.
+- [x] Attribute active time to page/session with the existing upper-bound protection reviewed against the canonical idle policy.
+- [x] Ensure quick page flips do not fabricate a minimum reading duration.
+- [x] Track chapter completion independently from OCR coverage.
+- [x] Expose OCR coverage percentage for title/session so character totals can be interpreted.
+- [x] Dual-write `MangaStatsStorage` until retirement.
+- [x] Fix current zero-character ambiguity in legacy/UI query mapping.
 
 ### Tests and verification
 
@@ -1156,20 +1171,20 @@ Video OCR source unit:
 
 ### Implementation tasks
 
-- [ ] Start/finalize on playable media and episode/title transition.
-- [ ] Count active time only while foreground, playing, and not beyond buffering/idle policy.
-- [ ] Record pause/resume, meaningful seek, subtitle-mode, and track-change events.
-- [ ] Emit exposure when a cue becomes active, not when the subtitle file is parsed.
-- [ ] Deduplicate repeated cue observer callbacks.
-- [ ] Treat seek-back cue re-entry as gross replay only after a documented hysteresis/window.
-- [ ] Avoid counting scrub previews or frame thumbnails.
-- [ ] Record primary and optional secondary subtitle roles; only configured learning-language text contributes to primary character/word metrics.
-- [ ] Track video OCR visibility separately from subtitle cues and deduplicate stable text across adjacent frames.
-- [ ] Persist timestamps and media IDs required to reopen the source if still available.
-- [ ] Link currently available screenshot/audio capture context without copying large media into the stats database.
-- [ ] Record subtitle/OCR coverage and language capability.
-- [ ] Handle external player handoff as unsupported/partial rather than estimating activity.
-- [ ] Add title/episode completion and estimated remaining data where the player can provide it.
+- [x] Start/finalize on playable media and episode/title transition.
+- [x] Count active time only while foreground, playing, and not beyond buffering/idle policy.
+- [x] Record pause/resume, meaningful seek, subtitle-mode, and track-change events.
+- [x] Emit exposure when a cue becomes active, not when the subtitle file is parsed.
+- [x] Deduplicate repeated cue observer callbacks.
+- [x] Treat seek-back cue re-entry as gross replay only after a documented hysteresis/window.
+- [x] Avoid counting scrub previews or frame thumbnails.
+- [x] Record primary and optional secondary subtitle roles; only configured learning-language text contributes to primary character/word metrics.
+- [x] Track video OCR visibility separately from subtitle cues and deduplicate stable text across adjacent frames.
+- [x] Persist timestamps and media IDs required to reopen the source if still available.
+- [x] Link currently available screenshot/audio capture context without copying large media into the stats database.
+- [x] Record subtitle/OCR coverage and language capability.
+- [x] Handle external player handoff as unsupported/partial rather than estimating activity.
+- [x] Add title/episode completion and estimated remaining data where the player can provide it.
 
 ### Tests and verification
 
@@ -1214,21 +1229,21 @@ Phases 3–6 for full media coverage; it may begin after Phase 3 with staged ada
 
 ### Implementation tasks
 
-- [ ] Inventory every explicit user lookup entry point.
-- [ ] Introduce a shared UI-intent boundary that records a lookup exactly once after explicit request.
-- [ ] Keep dictionary engine/repository internal calls uninstrumented by default.
-- [ ] Carry `SessionContext` and `SourceLocator` into lookup UI without coupling dictionary domain models to SQL.
-- [ ] Record raw query only under raw-text retention/privacy policy; always permit hash/normalized word linkage.
-- [ ] Resolve selected headword/reading/POS after the user selects a result where possible.
-- [ ] Record successful, empty, cancelled, and failed status separately; primary counters should use the documented successful/requested definition.
-- [ ] Wrap Anki actions in a stable operation UUID allocated before external invocation.
-- [ ] On success, persist returned note/card identity if the API exposes it.
-- [ ] Distinguish create from overwrite/update.
-- [ ] Do not increment create totals for duplicate rejection, preview, Anki open, or edit-only.
-- [ ] Retry database linkage using the same operation UUID if Anki succeeded but local persistence failed.
-- [ ] Provide a repair queue for externally successful/unlinked operations.
-- [ ] Ensure incognito does not persist lookup or linkage even if Anki itself is explicitly used.
-- [ ] Preserve current Anki daily JSON dual-write with corrected new/update semantics available only in the new store.
+- [x] Inventory every explicit user lookup entry point.
+- [x] Introduce a shared UI-intent boundary that records a lookup exactly once after explicit request.
+- [x] Keep dictionary engine/repository internal calls uninstrumented by default.
+- [x] Carry `SessionContext` and `SourceLocator` into lookup UI without coupling dictionary domain models to SQL.
+- [x] Record raw query only under raw-text retention/privacy policy; always permit hash/normalized word linkage.
+- [x] Resolve selected headword/reading/POS after the user selects a result where possible.
+- [x] Record successful, empty, cancelled, and failed status separately; primary counters should use the documented successful/requested definition.
+- [x] Wrap Anki actions in a stable operation UUID allocated before external invocation.
+- [x] On success, persist returned note/card identity if the API exposes it.
+- [x] Distinguish create from overwrite/update.
+- [x] Do not increment create totals for duplicate rejection, preview, Anki open, or edit-only.
+- [x] Retry database linkage using the same operation UUID if Anki succeeded but local persistence failed.
+- [x] Provide a repair queue for externally successful/unlinked operations.
+- [x] Ensure incognito does not persist lookup or linkage even if Anki itself is explicitly used.
+- [x] Preserve current Anki daily JSON dual-write with corrected new/update semantics available only in the new store.
 
 ### Tests and verification
 
@@ -1284,26 +1299,26 @@ interface ImmersionTokenizer {
 
 ### Implementation tasks
 
-- [ ] Implement Unicode code-point iteration with category/script classification.
-- [ ] Produce countable-character count, per-script counts, and distinct code points in one pass.
-- [ ] Normalize line endings, Unicode normalization form, whitespace, and optional repeated-character rules without mutating retained source display text.
-- [ ] Decide whether variation selectors and combining marks are excluded, attached, or exposed as advanced detail; test the decision.
-- [ ] Define Japanese token identity and reading normalization, including kana-only words and absent readings.
-- [ ] Reuse existing dictionary/tokenization assets through a small adapter rather than duplicating parser logic.
-- [ ] Keep user lookup and background tokenization paths separate.
-- [ ] Persist tokenizer ID/version/confidence and indexing state per source unit.
-- [ ] Implement an idempotent worker that claims pending source units in bounded batches.
-- [ ] Use one transaction to upsert words/characters/occurrences and mark a source unit indexed.
-- [ ] Make a failed unit retryable with typed cause and exponential scheduling.
-- [ ] Add an explicit `UNSUPPORTED_LANGUAGE` terminal state that can be requeued when capability changes.
-- [ ] Add reindex command by version/language/title/date with progress and cancellation.
-- [ ] Preserve first-seen identity when reindexing produces the same normalized word.
-- [ ] Define conflict behavior when a tokenizer upgrade splits/merges tokens:
+- [x] Implement Unicode code-point iteration with category/script classification.
+- [x] Produce countable-character count, per-script counts, and distinct code points in one pass.
+- [x] Normalize line endings, Unicode normalization form, whitespace, and optional repeated-character rules without mutating retained source display text.
+- [x] Decide whether variation selectors and combining marks are excluded, attached, or exposed as advanced detail; test the decision.
+- [x] Define Japanese token identity and reading normalization, including kana-only words and absent readings.
+- [x] Reuse existing dictionary/tokenization assets through a small adapter rather than duplicating parser logic.
+- [x] Keep user lookup and background tokenization paths separate.
+- [x] Persist tokenizer ID/version/confidence and indexing state per source unit.
+- [x] Implement an idempotent worker that claims pending source units in bounded batches.
+- [x] Use one transaction to upsert words/characters/occurrences and mark a source unit indexed.
+- [x] Make a failed unit retryable with typed cause and exponential scheduling.
+- [x] Add an explicit `UNSUPPORTED_LANGUAGE` terminal state that can be requeued when capability changes.
+- [x] Add reindex command by version/language/title/date with progress and cancellation.
+- [x] Preserve first-seen identity when reindexing produces the same normalized word.
+- [x] Define conflict behavior when a tokenizer upgrade splits/merges tokens:
   - occurrences are rebuilt for affected source units.
   - global first-seen is recomputed.
   - old orphan word rows are cleaned only after validation.
-- [ ] Add frequency/JLPT/grade metadata as optional local enrichments, not identity fields.
-- [ ] Implement exclusion matching after normalization and before analytics denominators.
+- [x] Add frequency/JLPT/grade metadata as optional local enrichments, not identity fields.
+- [x] Implement exclusion matching after normalization and before analytics denominators.
 
 ### Tests and verification
 
@@ -1356,22 +1371,22 @@ Before locking the implementation:
 
 ### Implementation tasks
 
-- [ ] Add Anki integration capability probe and persistent status.
-- [ ] Add settings for note types/decks/field mappings/language scope.
-- [ ] Implement incremental snapshot sync when modification timestamps permit; otherwise bounded full snapshots.
-- [ ] Build the new snapshot completely before atomically making it current.
-- [ ] Retain the last valid snapshot if refresh fails or is partial.
-- [ ] Store refresh status, age, capability, counts, and typed failure.
-- [ ] Compute `UNKNOWN`, `NEW`, `LEARNING`, `YOUNG`, and `MATURE`.
-- [ ] Make the mature interval threshold configurable with 21 days as the initial default.
-- [ ] Record reading match confidence and ambiguity.
-- [ ] Build word and character coverage queries.
-- [ ] Add refresh, cancel, retry, and clear-cache controls.
-- [ ] Avoid per-word/per-card UI queries; all UI reads the local snapshot.
-- [ ] Schedule refresh conservatively and only under acceptable device/battery conditions.
-- [ ] Add a manual live AnkiDroid verification checklist because mocks cannot prove provider behavior.
-- [ ] Add optional maturity colors/tags to vocabulary/reading surfaces only after accessibility tokens are defined.
-- [ ] Ensure disabled Anki integration yields `Unavailable`, not all unknown.
+- [x] Add Anki integration capability probe and persistent status.
+- [x] Add settings for note types/decks/field mappings/language scope.
+- [x] Implement incremental snapshot sync when modification timestamps permit; otherwise bounded full snapshots.
+- [x] Build the new snapshot completely before atomically making it current.
+- [x] Retain the last valid snapshot if refresh fails or is partial.
+- [x] Store refresh status, age, capability, counts, and typed failure.
+- [x] Compute `UNKNOWN`, `NEW`, `LEARNING`, `YOUNG`, and `MATURE`.
+- [x] Make the mature interval threshold configurable with 21 days as the initial default.
+- [x] Record reading match confidence and ambiguity.
+- [x] Build word and character coverage queries.
+- [x] Add refresh, cancel, retry, and clear-cache controls.
+- [x] Avoid per-word/per-card UI queries; all UI reads the local snapshot.
+- [x] Schedule refresh conservatively and only under acceptable device/battery conditions.
+- [x] Add a manual live AnkiDroid verification checklist because mocks cannot prove provider behavior.
+- [x] Add optional maturity colors/tags to vocabulary/reading surfaces only after accessibility tokens are defined.
+- [x] Ensure disabled Anki integration yields `Unavailable`, not all unknown.
 
 ### Tests and verification
 
@@ -1443,28 +1458,28 @@ Phases 1–9 for the full query surface. Base rollups may start after Phase 3.
 
 ### Implementation tasks
 
-- [ ] Define immutable domain query/result types independent of current UI.
-- [ ] Implement a common local-calendar bucket utility with configurable first day of week.
-- [ ] Split cross-midnight duration/events deterministically.
-- [ ] Generate zero-filled buckets for requested ranges.
-- [ ] Implement previous-period comparison with explicit partial-day handling.
-- [ ] Define streak qualification per metric/goal and timezone.
-- [ ] Implement globally-new vocabulary/characters using true first-seen timestamps, not per-title first-seen.
-- [ ] Implement title novelty and cards/lookups per 10k denominator handling.
-- [ ] Implement maturity/knownness joins using the current valid snapshot and status.
-- [ ] Implement legacy inclusion so unsupported detail remains absent but totals remain correct.
-- [ ] Return data-quality metadata alongside every result:
+- [x] Define immutable domain query/result types independent of current UI.
+- [x] Implement a common local-calendar bucket utility with configurable first day of week.
+- [x] Split cross-midnight duration/events deterministically.
+- [x] Generate zero-filled buckets for requested ranges.
+- [x] Implement previous-period comparison with explicit partial-day handling.
+- [x] Define streak qualification per metric/goal and timezone.
+- [x] Implement globally-new vocabulary/characters using true first-seen timestamps, not per-title first-seen.
+- [x] Implement title novelty and cards/lookups per 10k denominator handling.
+- [x] Implement maturity/knownness joins using the current valid snapshot and status.
+- [x] Implement legacy inclusion so unsupported detail remains absent but totals remain correct.
+- [x] Return data-quality metadata alongside every result:
   - legacy share.
   - OCR/text coverage.
   - indexing completion.
   - Anki freshness.
   - raw provenance availability.
-- [ ] Implement rollup dirty-range tracking after index, delete, import, timezone policy, or exclusion changes.
-- [ ] Implement bounded repair worker and manual rebuild.
-- [ ] Paginate sessions, words, characters, and source occurrences.
-- [ ] Add stable sort options and deterministic tie breakers.
-- [ ] Add query timing diagnostics with query family, filters hash, row count, and duration only.
-- [ ] Add database fixtures at 1 day, 1 year, and large multi-title scale.
+- [x] Implement rollup dirty-range tracking after index, delete, import, timezone policy, or exclusion changes.
+- [x] Implement bounded repair worker and manual rebuild.
+- [x] Paginate sessions, words, characters, and source occurrences.
+- [x] Add stable sort options and deterministic tie breakers.
+- [x] Add query timing diagnostics with query family, filters hash, row count, and duration only.
+- [x] Add database fixtures at 1 day, 1 year, and large multi-title scale.
 
 ### Performance goals
 
@@ -1549,21 +1564,21 @@ Additional content:
 
 ### Implementation tasks
 
-- [ ] Split the monolithic stats state into filter, overview, navigation, and independently loadable sections.
-- [ ] Persist filters with `SavedStateHandle`/screen state conventions.
-- [ ] Add date picker/custom range and clear filter summary.
-- [ ] Use `KMR` for every new label/content description/error/empty state.
-- [ ] Make cards tappable into the relevant detail tab with inherited filters.
-- [ ] Add concise metric-definition info sheet.
-- [ ] Show unavailable rather than `0` for missing OCR/index/Anki capability.
-- [ ] Add data-quality indicator for legacy share, OCR/index coverage, and stale Anki data.
-- [ ] Add textual chart summary for accessibility.
-- [ ] Use shapes/icons/text as well as color for positive/negative comparisons.
-- [ ] Preserve loading content during filter refresh rather than blanking the whole screen.
-- [ ] Handle partial section failures independently.
-- [ ] Update the home widget to read the same today's rollup and character-basis preference.
-- [ ] Keep widget work bounded and resilient when the database is locked/unavailable.
-- [ ] Add navigation scaffolding for later tabs without placeholder claims.
+- [x] Split the monolithic stats state into filter, overview, navigation, and independently loadable sections.
+- [x] Persist filters with `SavedStateHandle`/screen state conventions.
+- [x] Add date picker/custom range and clear filter summary.
+- [x] Use `KMR` for every new label/content description/error/empty state.
+- [x] Make cards tappable into the relevant detail tab with inherited filters.
+- [x] Add concise metric-definition info sheet.
+- [x] Show unavailable rather than `0` for missing OCR/index/Anki capability.
+- [x] Add data-quality indicator for legacy share, OCR/index coverage, and stale Anki data.
+- [x] Add textual chart summary for accessibility.
+- [x] Use shapes/icons/text as well as color for positive/negative comparisons.
+- [x] Preserve loading content during filter refresh rather than blanking the whole screen.
+- [x] Handle partial section failures independently.
+- [x] Update the home widget to read the same today's rollup and character-basis preference.
+- [x] Keep widget work bounded and resilient when the database is locked/unavailable.
+- [x] Add navigation scaffolding for later tabs without placeholder claims.
 
 ### Tests and verification
 
@@ -1575,6 +1590,11 @@ Additional content:
 - Widget totals match Overview for identical filters.
 - Compose screenshot/golden tests if the repository has a supported harness.
 - Mandatory `spotlessApply` → `spotlessCheck` → `assembleDebug`.
+
+Local JVM coverage asserts every Overview filter dimension across current,
+comparison, inventory, quality, and streak queries. It also asserts that the
+reading-stats widget uses the default Today filter and projects the selected
+character basis, time, speed, and cards from the same Overview metrics.
 
 ### End state / definition of done
 
@@ -1620,19 +1640,19 @@ Phases 10–11.
 
 ### Implementation tasks
 
-- [ ] Add 7/30/90/365/all/custom range shortcuts.
-- [ ] Select day/week/month aggregation based on range with user override.
-- [ ] Allow empty bucket visibility and explain it.
-- [ ] Add metric selector rather than rendering every chart simultaneously.
-- [ ] Add moving average with configurable/documented window.
-- [ ] Prevent "best speed" awards for trivially small sessions/days using a minimum character/time threshold.
-- [ ] Add title series cap appropriate to phone performance and legend space.
-- [ ] Persist title visibility/filter choice.
-- [ ] Add top/recent selection and search.
-- [ ] Show precise tooltip/table values and accessible list alternative.
-- [ ] Add compare-to-previous-period overlay only where legible.
-- [ ] Surface indexing/OCR/legacy coverage beneath affected series.
-- [ ] Ensure month grouping uses local calendar months, not 30-day windows.
+- [x] Add 7/30/90/365/all/custom range shortcuts.
+- [x] Select day/week/month aggregation based on range with user override.
+- [x] Allow empty bucket visibility and explain it.
+- [x] Add metric selector rather than rendering every chart simultaneously.
+- [x] Add moving average with configurable/documented window.
+- [x] Prevent "best speed" awards for trivially small sessions/days using a minimum character/time threshold.
+- [x] Add title series cap appropriate to phone performance and legend space.
+- [x] Persist title visibility/filter choice.
+- [x] Add top/recent selection and search.
+- [x] Show precise tooltip/table values and accessible list alternative.
+- [x] Add compare-to-previous-period overlay only where legible.
+- [x] Surface indexing/OCR/legacy coverage beneath affected series.
+- [x] Ensure month grouping uses local calendar months, not 30-day windows.
 
 ### Tests and verification
 
@@ -1709,22 +1729,22 @@ Filter:
 
 ### Implementation tasks
 
-- [ ] Create a stable title identity adapter across library manga, novel books, anime/episodes, removed content, and legacy imports.
-- [ ] Avoid losing stats if a library item is deleted; mark linkage unavailable while retaining the stats title.
-- [ ] Add cover/metadata lookup with local fallback and no stats-query network dependency.
-- [ ] Add sort/filter state and paging.
-- [ ] Use qualifying thresholds for speed ranking.
-- [ ] Compute estimated remaining only when total length/unit information and a stable pace exist; otherwise unavailable.
-- [ ] Label confidence on estimated remaining.
-- [ ] Add title rename/merge/split maintenance operations with preview and rollback strategy.
-- [ ] Add title deletion with options:
+- [x] Create a stable title identity adapter across library manga, novel books, anime/episodes, removed content, and legacy imports.
+- [x] Avoid losing stats if a library item is deleted; mark linkage unavailable while retaining the stats title.
+- [x] Add cover/metadata lookup with local fallback and no stats-query network dependency.
+- [x] Add sort/filter state and paging.
+- [x] Use qualifying thresholds for speed ranking.
+- [x] Compute estimated remaining only when total length/unit information and a stable pace exist; otherwise unavailable.
+- [x] Label confidence on estimated remaining.
+- [x] Add title rename/merge/split maintenance operations with preview and rollback strategy.
+- [x] Add title deletion with options:
   - stats only.
   - raw provenance only.
   - unlink from library but retain stats.
-- [ ] Link title detail to current reader/player position and history where possible.
-- [ ] Ensure novelty uses global first-seen and clearly differs from "unique words in title."
-- [ ] Add media-specific unit naming (chapter, page, episode, section) through `KMR` plurals.
-- [ ] Add a data-quality section showing OCR/index/raw/Anki/legacy coverage.
+- [x] Link title detail to current reader/player position and history where possible.
+- [x] Ensure novelty uses global first-seen and clearly differs from "unique words in title."
+- [x] Add media-specific unit naming (chapter, page, episode, section) through `KMR` plurals.
+- [x] Add a data-quality section showing OCR/index/raw/Anki/legacy coverage.
 
 ### Tests and verification
 
@@ -1787,20 +1807,20 @@ Phases 8–13; Phase 9 for knownness/maturity.
 
 ### Implementation tasks
 
-- [ ] Build paged list with stable search/sort/filter.
-- [ ] Add filters for knownness, maturity, script, POS, name, kana-only, grammar, occurrence count, date, title, media, and frequency rank.
-- [ ] Add configurable persisted exclusions by normalized word identity.
-- [ ] Define exclusion impact on growth/coverage denominators and expose it in settings.
-- [ ] Add bulk include/exclude with preview.
-- [ ] Add CSV export of the filtered list with versioned headers and no raw source text unless explicitly selected.
-- [ ] Add drill-down occurrence paging grouped by title/source.
-- [ ] Indicate when raw text was deleted but occurrence counts remain.
-- [ ] Link a retained source occurrence back to reader/player if locator resolution succeeds.
-- [ ] Reuse current mining flow with historical text/audio/screenshot only when those assets are still accessible and user confirms.
-- [ ] Never cache copyrighted media blobs in stats solely to enable future mining.
-- [ ] Add deep link to current dictionary/Anki search.
-- [ ] Add content descriptions combining maturity tier, occurrence count, and knownness without color reliance.
-- [ ] Keep list-state filters across detail navigation.
+- [x] Build paged list with stable search/sort/filter.
+- [x] Add filters for knownness, maturity, script, POS, name, kana-only, grammar, occurrence count, date, title, media, and frequency rank.
+- [x] Add configurable persisted exclusions by normalized word identity.
+- [x] Define exclusion impact on growth/coverage denominators and expose it in settings.
+- [x] Add bulk include/exclude with preview.
+- [x] Add CSV export of the filtered list with versioned headers and no raw source text unless explicitly selected.
+- [x] Add drill-down occurrence paging grouped by title/source.
+- [x] Indicate when raw text was deleted but occurrence counts remain.
+- [x] Link a retained source occurrence back to reader/player if locator resolution succeeds.
+- [x] Reuse current mining flow with historical text/audio/screenshot only when those assets are still accessible and user confirms.
+- [x] Never cache copyrighted media blobs in stats solely to enable future mining.
+- [x] Add deep link to current dictionary/Anki search.
+- [x] Add content descriptions combining maturity tier, occurrence count, and knownness without color reliance.
+- [x] Keep list-state filters across detail navigation.
 
 ### Tests and verification
 
@@ -1866,19 +1886,19 @@ Every mode must also expose a text/icon/border/semantic representation.
 
 ### Implementation tasks
 
-- [ ] Add script tabs/filters with Japanese-first defaults based on active profile language.
-- [ ] Implement virtualized grid and paging; never compose all characters in a huge dataset at once.
-- [ ] Use log-scaled frequency only after documenting the transformation and legend.
-- [ ] Add range presets such as all, encountered, new, unknown, young, mature, missing high-frequency.
-- [ ] Add coverage target setting and daily character acquisition suggestion without pretending it is an Anki schedule.
-- [ ] Implement priority modes inspired by frequency/JLPT/grade/mixed weighting with formula disclosure.
-- [ ] Add containing-word query and occurrence paging.
-- [ ] Keep character identity as code point; render variation/compatibility forms safely.
-- [ ] Handle fonts missing a glyph with code-point fallback.
-- [ ] Add export of selected characters and supporting words.
-- [ ] Add search by glyph, code point, reading, meaning, or containing word where metadata permits.
-- [ ] Separate encounter coverage from mature coverage.
-- [ ] Label character knownness as unavailable when Anki field mapping does not support characters.
+- [x] Add script tabs/filters with Japanese-first defaults based on active profile language.
+- [x] Implement virtualized grid and paging; never compose all characters in a huge dataset at once.
+- [x] Use log-scaled frequency only after documenting the transformation and legend.
+- [x] Add range presets such as all, encountered, new, unknown, young, mature, missing high-frequency.
+- [x] Add coverage target setting and daily character acquisition suggestion without pretending it is an Anki schedule.
+- [x] Implement priority modes inspired by frequency/JLPT/grade/mixed weighting with formula disclosure.
+- [x] Add containing-word query and occurrence paging.
+- [x] Keep character identity as code point; render variation/compatibility forms safely.
+- [x] Handle fonts missing a glyph with code-point fallback.
+- [x] Add export of selected characters and supporting words.
+- [x] Add search by glyph, code point, reading, meaning, or containing word where metadata permits.
+- [x] Separate encounter coverage from mature coverage.
+- [x] Label character knownness as unavailable when Anki field mapping does not support characters.
 
 ### Tests and verification
 
@@ -1940,23 +1960,32 @@ Phases 3–15.
 
 ### Implementation tasks
 
-- [ ] Build paged session list and grouped section queries.
-- [ ] Implement timeline downsampling so long sessions do not render one point per event.
-- [ ] Define marker collision/aggregation behavior.
+- [x] Build paged session list and grouped section queries.
+- [x] Implement timeline downsampling so long sessions do not render one point per event.
+- [x] Define marker collision/aggregation behavior.
 - [ ] Add knownness timeline only after index/snapshot joins meet performance budgets.
-- [ ] Add source search using an indexed local strategy appropriate to SQLDelight/SQLite; evaluate FTS availability and migration cost.
-- [ ] Keep raw text search isolated from summary queries.
-- [ ] Implement reopen resolvers:
+- [x] Add source search using an indexed local strategy appropriate to SQLDelight/SQLite; evaluate FTS availability and migration cost.
+- [x] Keep raw text search isolated from summary queries.
+- [x] Implement reopen resolvers:
   - novel range/chapter.
   - manga chapter/page.
   - video episode/timestamp/subtitle track.
-- [ ] Validate resolver target before navigation and show a non-destructive unavailable state.
-- [ ] Add historical mine actions using the existing editor/confirmation flow.
-- [ ] Implement delete preview with affected sessions/time/characters/words/characters/goals.
-- [ ] On delete, write tombstones, remove private source data, mark dirty rollups, rebuild, and present progress.
-- [ ] Add "delete raw text only" separately.
-- [ ] Add session correction tools only for safe fields such as title link; do not permit arbitrary counter edits without an auditable adjustment event.
-- [ ] Add local diagnostic export with user-controlled inclusion of titles/text.
+- [x] Validate resolver target before navigation and show a non-destructive unavailable state.
+- [x] Add historical mine actions using the existing editor/confirmation flow.
+- [x] Implement delete preview with affected sessions/time/characters/words/characters/goals.
+- [x] On delete, write tombstones, remove private source data, mark dirty rollups, rebuild, and present progress.
+- [x] Add "delete raw text only" separately.
+- [x] Add session correction tools only for safe fields such as title link; do not permit arbitrary counter edits without an auditable adjustment event.
+- [x] Add local diagnostic export with user-controlled inclusion of titles/text.
+
+The knownness join, maturity distribution chart, accessible summary, and
+focused repository fixture are implemented. The checkbox remains open until
+its query and render budgets pass on representative data and Android hardware.
+
+Session correction is limited to completed, non-legacy sessions. It uses an
+exact preview and journaled title relink that moves only exclusive source
+history, blocks incompatible/shared/active state, rebuilds rollups, and
+supports guarded rollback. Counters cannot be edited directly.
 
 ### Tests and verification
 
@@ -2017,21 +2046,25 @@ Phases 10–13. Character/vocabulary goals may additionally depend on Phases 14�
 
 ### Implementation tasks
 
-- [ ] Add create/edit/archive flows with metric definition previews.
-- [ ] Prevent invalid goal/metric combinations where capability is unavailable.
-- [ ] Decide whether a day follows its original timezone or current timezone for streaks; document and test.
-- [ ] Implement daily target calculation with weekday multipliers.
-- [ ] Define current-day partial progress without declaring failure before the day ends.
-- [ ] Implement forecast using a robust recent-window average and minimum data requirement.
-- [ ] Show confidence/unavailable rather than a false precise completion date.
-- [ ] For title completion, prefer known unit progress; use character estimates only when trustworthy.
-- [ ] Store immutable achievement events.
-- [ ] Allow goal edits to apply prospectively or restart history; do not silently rewrite earned milestones.
-- [ ] Add reminder hooks only if there is an existing notification preference pattern and the user opts in.
-- [ ] Add compact Today goal cards to Overview/widget where space permits.
-- [ ] Add progress explanations: actual, target to date, needed per remaining active day, and projection assumptions.
-- [ ] Add manual check-in with optional local note under privacy controls.
-- [ ] Add goal export/backup.
+- [x] Add create/edit/archive flows with metric definition previews.
+- [x] Prevent invalid goal/metric combinations where capability is unavailable.
+- [x] Decide whether a day follows its original timezone or current timezone for streaks; document and test.
+- [x] Implement daily target calculation with weekday multipliers.
+- [x] Define current-day partial progress without declaring failure before the day ends.
+- [x] Implement forecast using a robust recent-window average and minimum data requirement.
+- [x] Show confidence/unavailable rather than a false precise completion date.
+- [x] For title completion, prefer known unit progress; use character estimates only when trustworthy.
+- [x] Store immutable achievement events.
+- [x] Allow goal edits to apply prospectively or restart history; do not silently rewrite earned milestones.
+- [x] Add reminder hooks only if there is an existing notification preference pattern and the user opts in.
+- [x] Add compact Today goal cards to Overview/widget where space permits.
+- [x] Add progress explanations: actual, target to date, needed per remaining active day, and projection assumptions.
+- [x] Add manual check-in with optional local note under privacy controls.
+- [x] Add goal export/backup.
+
+Restart-history edits atomically archive the old goal identity while retaining
+its check-ins and achievements. Daily reminders are opt-in, generic, and omit
+titles/source text. Optional check-in notes follow private-text archive scope.
 
 ### Tests and verification
 
@@ -2110,19 +2143,19 @@ Actions:
 
 ### Implementation tasks
 
-- [ ] Build capability matrix and hide/disable only unavailable reports with an explanation.
-- [ ] Define source attribution for cards mined outside Chimahon or with ambiguous mapping.
-- [ ] Define reading-to-card and card-to-maturity lag formulas.
-- [ ] Never infer title attribution solely from note text when no source operation link exists; use `Unattributed`.
-- [ ] Add weekly aligned buckets with complete/partial-week labeling.
-- [ ] Require minimum sample sizes for retention/speed comparisons.
-- [ ] Label all reading/outcome relationships as observational correlations.
-- [ ] Add maturity/coverage target settings.
-- [ ] Implement missing high-frequency priority formula with inspectable components.
-- [ ] Add pagination and CSV export to the missing-item workbench.
-- [ ] Reuse word/character detail and historical action flows.
-- [ ] Cache expensive aggregate results by snapshot and rollup version.
-- [ ] Add data-freshness banner and refresh control.
+- [x] Build capability matrix and hide/disable only unavailable reports with an explanation.
+- [x] Define source attribution for cards mined outside Chimahon or with ambiguous mapping.
+- [x] Define reading-to-card and card-to-maturity lag formulas.
+- [x] Never infer title attribution solely from note text when no source operation link exists; use `Unattributed`.
+- [x] Add weekly aligned buckets with complete/partial-week labeling.
+- [x] Require minimum sample sizes for retention/speed comparisons.
+- [x] Label all reading/outcome relationships as observational correlations.
+- [x] Add maturity/coverage target settings.
+- [x] Implement missing high-frequency priority formula with inspectable components.
+- [x] Add pagination and CSV export to the missing-item workbench.
+- [x] Reuse word/character detail and historical action flows.
+- [x] Cache expensive aggregate results by snapshot and rollup version.
+- [x] Add data-freshness banner and refresh control.
 
 ### Tests and verification
 
@@ -2193,28 +2226,28 @@ Model after an event-identity approach:
 
 ### Implementation tasks
 
-- [ ] Extend the existing backup framework with a versioned immersion payload or database-aware backup.
-- [ ] Add restore preflight summary and free-space/version checks.
-- [ ] Make restore/merge resumable and transactional by bounded chunks.
-- [ ] Add post-restore integrity validation and rollup rebuild.
-- [ ] Add device ID lifecycle and reset semantics.
-- [ ] Implement deterministic legacy import IDs.
-- [ ] Implement event/session/source/tombstone merge.
-- [ ] Add conflict quarantine table/report and safe resolution.
-- [ ] Implement retention worker with dry-run preview.
-- [ ] Compact finalized heartbeats/telemetry without changing totals.
-- [ ] Add raw-text removal that also updates search indexes/excerpts but retains counters and hashed source identity as required.
-- [ ] Add per-title capture exclusion and verify it prevents queue insertion.
-- [ ] Add full reset requiring explicit confirmation; use recoverable backup prompt where possible.
-- [ ] Add export schema version and metric definitions.
-- [ ] Ensure exports escape spreadsheet-formula injection.
-- [ ] Ensure no secret Anki/provider tokens or private external identifiers are exported unnecessarily.
-- [ ] Add local maintenance UI:
+- [x] Extend the existing backup framework with a versioned immersion payload or database-aware backup.
+- [x] Add restore preflight summary and free-space/version checks.
+- [x] Make restore/merge resumable and transactional by bounded chunks.
+- [x] Add post-restore integrity validation and rollup rebuild.
+- [x] Add device ID lifecycle and reset semantics.
+- [x] Implement deterministic legacy import IDs.
+- [x] Implement event/session/source/tombstone merge.
+- [x] Add conflict quarantine table/report and safe resolution.
+- [x] Implement retention worker with dry-run preview.
+- [x] Compact finalized heartbeats/telemetry without changing totals.
+- [x] Add raw-text removal that also updates search indexes/excerpts but retains counters and hashed source identity as required.
+- [x] Add per-title capture exclusion and verify it prevents queue insertion.
+- [x] Add full reset requiring explicit confirmation; use recoverable backup prompt where possible.
+- [x] Add export schema version and metric definitions.
+- [x] Ensure exports escape spreadsheet-formula injection.
+- [x] Ensure no secret Anki/provider tokens or private external identifiers are exported unnecessarily.
+- [x] Add local maintenance UI:
   - database size by category.
   - last backup/repair/index/rollup.
   - integrity status.
   - rebuild/reindex/cleanup.
-- [ ] Integrate any TTU/remote sync only after local backup merge tests pass.
+- [x] Integrate any TTU/remote sync only after local backup merge tests pass.
 
 ### Tests and verification
 
@@ -2252,47 +2285,55 @@ Phases 1–19.
 
 - [ ] Add macro/microbenchmarks for capture enqueue, batch writes, indexing, rollups, Overview, Trends, title detail, vocabulary, character grid, sessions, and search.
 - [ ] Profile 1 week, 1 year, and multi-year/100k+ source-unit datasets.
-- [ ] Validate indexes with query plans.
-- [ ] Remove N+1 cover/metadata/Anki queries.
-- [ ] Bound Compose series and use paging/virtualization.
-- [ ] Coalesce invalidations and filter changes.
-- [ ] Run indexing/repair/retention under appropriate dispatcher/work constraints.
+- [x] Validate indexes with query plans.
+- [x] Remove N+1 cover/metadata/Anki queries.
+- [x] Bound Compose series and use paging/virtualization.
+- [x] Coalesce invalidations and filter changes.
+- [x] Run indexing/repair/retention under appropriate dispatcher/work constraints.
 - [ ] Verify recorder does not wake the device excessively or write per frame/scroll tick.
 - [ ] Measure database and raw-text growth per hour/10k characters.
 - [ ] Add user-visible storage forecast/cleanup only if estimates are stable.
 
 ### Accessibility
 
-- [ ] Every chart has a textual summary/table alternative.
-- [ ] Every grid cell has meaningful semantics.
-- [ ] Maturity/heat/frequency never uses color alone.
+- [x] Every chart has a textual summary/table alternative.
+- [x] Every grid cell has meaningful semantics.
+- [x] Maturity/heat/frequency never uses color alone.
 - [ ] Validate TalkBack order, focus, gestures, dialogs, and filter announcements.
 - [ ] Validate 200% font scale and display size.
 - [ ] Respect reduced motion.
-- [ ] Use readable contrast through existing UI tokens.
-- [ ] Make large glyphs and ruby/readings pronounceable or provide semantic text.
+- [x] Use readable contrast through existing UI tokens.
+- [x] Make large glyphs and ruby/readings pronounceable or provide semantic text.
 
 ### Internationalization
 
-- [ ] Move every new string to `i18n-kmk/src/commonMain/moko-resources/base/`.
-- [ ] Import `tachiyomi.i18n.kmk.KMR`.
-- [ ] Add plurals for character, word, card, session, title, chapter, page, episode, day, and hour/minute where natural language requires it.
-- [ ] Use locale-aware number/date/duration/percentage formatting.
-- [ ] Avoid concatenated/transposed English fragments.
-- [ ] Do not edit non-base locale XML.
-- [ ] Add translator comments/context where the resource system supports it.
+- [x] Move every new string to `i18n-kmk/src/commonMain/moko-resources/base/`.
+- [x] Import `tachiyomi.i18n.kmk.KMR`.
+- [x] Add plurals for character, word, card, session, title, chapter, page, episode, day, and hour/minute where natural language requires it.
+- [x] Use locale-aware number/date/duration/percentage formatting.
+- [x] Avoid concatenated/transposed English fragments.
+- [x] Do not edit non-base locale XML.
+- [x] Add translator comments/context where the resource system supports it.
 
 ### Reliability and polish
 
-- [ ] Audit every loading/empty/partial/error/stale/rebuilding state.
-- [ ] Make section retries independent.
-- [ ] Add data-quality glossary and privacy/retention onboarding.
-- [ ] Add metric help and versioned export documentation.
-- [ ] Add developer integrity/benchmark documentation.
-- [ ] Review titles/source excerpts for privacy in Android recents/screenshots where applicable.
+- [x] Audit every loading/empty/partial/error/stale/rebuilding state.
+- [x] Make section retries independent.
+- [x] Add data-quality glossary and privacy/retention onboarding.
+- [x] Add metric help and versioned export documentation.
+- [x] Add developer integrity/benchmark documentation.
+- [x] Review titles/source excerpts for privacy in Android recents/screenshots where applicable.
 - [ ] Add screenshot tests for light/dark/dynamic color, phone/tablet, and large font if supported.
-- [ ] Ensure navigation/filter state survives process recreation.
-- [ ] Review all analytics for misleading labels, axes, truncated ranges, and denominator omissions.
+- [x] Ensure navigation/filter state survives process recreation.
+- [x] Review all analytics for misleading labels, axes, truncated ranges, and denominator omissions.
+
+The local state audit distinguishes initial loading, empty, content,
+refreshing content, initial failure, and stale content with failure. Each
+top-level section retries independently and keeps last-known successful data.
+Stats screens disable Android 13+ recents screenshots while active; older
+versions secure the window during pause and restore the global secure-screen
+policy on resume. Hardware screenshot, TalkBack, large-font, and reduced-motion
+validation remain part of the open verification gate.
 
 ### Verification gate
 
@@ -2304,6 +2345,12 @@ At minimum:
 ./gradlew assembleDebug
 ./gradlew testReleaseUnitTest
 ```
+
+While the audited animated-scene and native corresponding-source gates remain
+blocked, `testReleaseUnitTest` is expected to stop in the protected release task
+graph before tests execute. Run `./gradlew testDebugUnitTest` for the equivalent
+local JVM suite, record the exact release-gate failure, and keep release
+qualification open rather than bypassing either gate.
 
 Also run:
 
@@ -2394,15 +2441,15 @@ Disable capture/UI flags or return to old query path if:
 
 ### Implementation tasks
 
-- [ ] Add versioned local rollout flags and safe defaults.
-- [ ] Add reconciliation report accessible to developers/testers.
-- [ ] Add one-tap local stats diagnostic export with privacy review.
-- [ ] Track local health counters without remote raw telemetry.
+- [x] Add versioned local rollout flags and safe defaults.
+- [x] Add reconciliation report accessible to developers/testers.
+- [x] Add one-tap local stats diagnostic export with privacy review.
+- [x] Track local health counters without remote raw telemetry.
 - [ ] Exercise upgrade from several supported app versions.
 - [ ] Validate release build, min SDK device behavior, and database migration.
-- [ ] Update home widget and backup authority before stopping legacy writes.
+- [x] Update home widget and backup authority before stopping legacy writes.
 - [ ] Announce legacy read-only transition in release notes.
-- [ ] Keep a rollback reader for old JSON through the agreed compatibility window.
+- [x] Keep a rollback reader for old JSON through the agreed compatibility window.
 - [ ] Delete obsolete code only in a separate, reviewable commit/PR after evidence is captured.
 
 ### End state / definition of done

@@ -185,6 +185,7 @@ data class ImmersionDeletionPreview(
     val sourceUnits: Long,
     val words: Long,
     val characters: Long,
+    val goals: Long = 0,
     val selectionDigest: String? = null,
     val databaseRevision: Long? = null,
 ) {
@@ -195,6 +196,7 @@ data class ImmersionDeletionPreview(
         require(sourceUnits >= 0)
         require(words >= 0)
         require(characters >= 0)
+        require(goals >= 0)
         require((selectionDigest == null) == (databaseRevision == null)) {
             "Scoped deletion identity and revision must be supplied together"
         }

@@ -66,11 +66,18 @@ sealed interface SessionStartResult {
 sealed interface CaptureCommand {
     data class Activity(
         val eventType: EventType = EventType.PROGRESS,
+        val completionUnitId: String? = null,
     ) : CaptureCommand {
         init {
             require(eventType != EventType.EXPOSURE) { "Exposure activity must include a source unit" }
             require(eventType != EventType.SESSION_STARTED && eventType != EventType.SESSION_FINALIZED) {
                 "Session boundary events are owned by the recorder"
+            }
+            require(eventType == EventType.UNIT_COMPLETED || completionUnitId == null) {
+                "Only unit-completion activity can include a completion unit identity"
+            }
+            require(eventType != EventType.UNIT_COMPLETED || !completionUnitId.isNullOrBlank()) {
+                "Unit-completion activity requires a stable unit identity"
             }
         }
     }

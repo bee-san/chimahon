@@ -64,6 +64,9 @@ data class ReadingMetrics(
     fun noveltyRate(): Double? =
         ratio(newWords.value, uniqueWords.value)
 
+    fun newWordsPerTenThousandGrossCharacters(): Double? =
+        ratePer(newWords.value, characters.gross.value, TEN_THOUSAND)
+
     fun vocabularyDensityPerTenThousandGrossCharacters(): Double? =
         ratePer(uniqueWords.value, characters.gross.value, TEN_THOUSAND)
 

@@ -231,7 +231,12 @@ class DefaultImmersionRecorder(
             when (command) {
                 is CaptureCommand.Activity -> {
                     if (command.eventType != EventType.PROGRESS) {
-                        drafts += EventDraft.Session(command.eventType, now, 0)
+                        drafts += EventDraft.Session(
+                            eventType = command.eventType,
+                            time = now,
+                            activeDurationMillis = 0,
+                            completionUnitId = command.completionUnitId,
+                        )
                     }
                 }
                 is CaptureCommand.Progress -> {
@@ -405,13 +410,9 @@ class DefaultImmersionRecorder(
         start: ImmersionSessionStart,
         startEvent: SessionEvent,
     ): EventWriteOutcome {
-        persistSingleWithRetry { repository.upsertTitle(context.title) }.let {
-            if (!it.successful) return it
+        val persisted = persistSingleWithRetry {
+            repository.startSession(context.title, start, startEvent)
         }
-        persistSingleWithRetry { repository.createSession(start) }.let {
-            if (!it.successful) return it
-        }
-        val persisted = persistEventsWithRetry(listOf(startEvent))
         if (persisted.successful) {
             diagnostics.addRollupLag(1)
             rollupScheduler.schedule(startEvent.id, 1)
@@ -611,6 +612,7 @@ class DefaultImmersionRecorder(
                     type = draft.eventType,
                     activeDuration = MillisecondDuration(draft.activeDurationMillis),
                     netCharacters = draft.netCharacters,
+                    completionUnitId = draft.completionUnitId,
                 )
                 is EventDraft.Exposure -> ExposureEvent(
                     id = EventId(UUID.randomUUID().toString()),
@@ -906,6 +908,7 @@ class DefaultImmersionRecorder(
             val activeDurationMillis: Long,
             val timezoneOffsetSeconds: Int? = null,
             val netCharacters: NetCharacterProgress = NetCharacterProgress.ZERO,
+            val completionUnitId: String? = null,
         ) : EventDraft
 
         data class Exposure(

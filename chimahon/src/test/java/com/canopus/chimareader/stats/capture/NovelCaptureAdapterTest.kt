@@ -470,8 +470,10 @@ class NovelCaptureAdapterTest {
         diagnostics.state.value.adapterDiagnostics
             .getValue(ImmersionCaptureAdapter.NOVEL)
             .workerFailureCount shouldBe NonNegativeCounter(1)
-        recorder.commands.filterIsInstance<CaptureCommand.Activity>()
-            .map(CaptureCommand.Activity::eventType) shouldBe listOf(EventType.UNIT_COMPLETED)
+        recorder.commands.filterIsInstance<CaptureCommand.Activity>().single().let {
+            it.eventType shouldBe EventType.UNIT_COMPLETED
+            it.completionUnitId shouldBe "chapter-2.xhtml"
+        }
     }
 
     @Test

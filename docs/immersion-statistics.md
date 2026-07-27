@@ -44,10 +44,17 @@ Aggregate counters and retained source text are separate:
 - **Until deleted** retains text until you remove it.
 
 Deleting retained text also removes its search document and excerpt. It does
-not change aggregate totals. Deleting a session previews its time and
-characters, writes sync tombstones, removes source context that is not shared
-with another session, and rebuilds affected totals. A full reset keeps
-tombstones so an old device or backup cannot resurrect deleted history.
+not change aggregate totals. Deleting a session previews affected sessions,
+time, gross characters, source units, words, characters, and goals. Deletion
+fails closed if the database changes after that preview, writes sync
+tombstones, removes source context that is not shared with another session,
+and rebuilds affected totals. A full reset keeps tombstones so an old device or
+backup cannot resurrect deleted history.
+
+Goal forecasts use a recent 30-day pace, normalize fractional weekday targets,
+include zero-progress active days, and cap extreme high-volume days. Goal cards
+show the sample size, remaining active days, required pace, and confidence.
+Insufficient history or unknown title length stays unavailable.
 
 ## Backup, restore, and export
 

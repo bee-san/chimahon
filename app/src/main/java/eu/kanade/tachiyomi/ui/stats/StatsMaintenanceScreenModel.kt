@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import mihon.feature.stats.capture.MangaCaptureReconciliationReporter
 import mihon.feature.stats.capture.VideoCaptureReconciliationReporter
+import tachiyomi.domain.backup.service.BackupPreferences
 import tachiyomi.domain.immersion.model.ImmersionDeletionPreview
 import tachiyomi.domain.immersion.model.ImmersionIntegrityReport
 import tachiyomi.domain.immersion.model.ImmersionMaintenanceSummary
@@ -23,6 +24,7 @@ import tachiyomi.domain.immersion.model.ImmersionReindexRequest
 import tachiyomi.domain.immersion.model.ImmersionStatsDeletionScope
 import tachiyomi.domain.immersion.model.RawTextRetention
 import tachiyomi.domain.immersion.model.StatsFilter
+import tachiyomi.domain.immersion.model.TitleId
 import tachiyomi.domain.immersion.repository.ImmersionAnkiRepository
 import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
 import tachiyomi.domain.immersion.service.ImmersionAnalyticsService
@@ -36,6 +38,7 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 
 class StatsMaintenanceScreenModel(
+    private val initialTitleId: TitleId? = null,
     private val maintenance: ImmersionMaintenanceRepository = Injekt.get(),
     private val analytics: ImmersionAnalyticsService = Injekt.get(),
     private val exports: ImmersionExportService = Injekt.get(),
@@ -44,6 +47,7 @@ class StatsMaintenanceScreenModel(
     private val preferences: ImmersionStatsPreferences = Injekt.get(),
     private val diagnostics: ImmersionStatsDiagnosticsStore = Injekt.get(),
     private val syncPreferences: SyncPreferences = Injekt.get(),
+    private val backupPreferences: BackupPreferences = Injekt.get(),
 ) : ScreenModel {
     private val mutableState = MutableStateFlow(
         StatsMaintenanceState(
@@ -56,6 +60,7 @@ class StatsMaintenanceScreenModel(
             uiEnabled = preferences.uiEnabled().get(),
             ankiSyncEnabled = preferences.ankiSyncEnabled().get(),
             goalsEnabled = preferences.goalsEnabled().get(),
+            goalRemindersEnabled = preferences.goalRemindersEnabled().get(),
             legacyWritesEnabled = preferences.legacyWritesEnabled().get(),
         ),
     )
@@ -132,12 +137,27 @@ class StatsMaintenanceScreenModel(
 
     fun setGoalsEnabled(enabled: Boolean) {
         preferences.goalsEnabled().set(enabled)
-        mutableState.update { it.copy(goalsEnabled = enabled) }
+        if (!enabled) preferences.goalRemindersEnabled().set(false)
+        mutableState.update {
+            it.copy(
+                goalsEnabled = enabled,
+                goalRemindersEnabled = it.goalRemindersEnabled && enabled,
+            )
+        }
+    }
+
+    fun setGoalRemindersEnabled(enabled: Boolean) {
+        if (enabled && !preferences.goalsEnabled().get()) return
+        preferences.goalRemindersEnabled().set(enabled)
+        mutableState.update { it.copy(goalRemindersEnabled = enabled) }
     }
 
     fun deleteRawText() {
         launchTask {
-            val deleted = maintenance.deleteRawText(updatedAtEpochMillis = System.currentTimeMillis())
+            val deleted = maintenance.deleteRawText(
+                titleId = initialTitleId,
+                updatedAtEpochMillis = System.currentTimeMillis(),
+            )
             mutableState.update {
                 it.copy(
                     rawTextDeletionPreview = 0,
@@ -157,6 +177,7 @@ class StatsMaintenanceScreenModel(
                 updatedAtEpochMillis = System.currentTimeMillis(),
             )
             val rows = repairAllDirtyRollups()
+            diagnostics.recordRollupSuccess(System.currentTimeMillis())
             mutableState.update {
                 it.copy(
                     lastAffectedRows = rows,
@@ -170,6 +191,7 @@ class StatsMaintenanceScreenModel(
     fun rebuildIndex() {
         launchTask {
             val progress = reindexController.reindex(ImmersionReindexRequest())
+            diagnostics.recordIndexSuccess(System.currentTimeMillis())
             mutableState.update {
                 it.copy(
                     lastAffectedRows = progress.processed,
@@ -277,12 +299,23 @@ class StatsMaintenanceScreenModel(
     private suspend fun refreshSnapshot() {
         val summary = maintenance.maintenanceSummary()
         val integrity = maintenance.validateInvariants(ImmersionStatsVersions.ROLLUP)
-        val rawTextPreview = maintenance.previewRawTextDeletion()
+        val rawTextPreview = maintenance.previewRawTextDeletion(titleId = initialTitleId)
         val deletionPreview = maintenance.previewAllStatsDeletion()
+        val diagnosticSnapshot = diagnostics.state.value
         mutableState.update {
             it.copy(
                 summary = summary,
                 integrity = integrity,
+                timestamps = StatsMaintenanceTimestamps(
+                    lastBackupAtEpochMillis = backupPreferences
+                        .lastImmersionBackupTimestamp()
+                        .get()
+                        .takeIf { timestamp -> timestamp > 0 },
+                    lastRepairAtEpochMillis = diagnosticSnapshot.lastRepairAtEpochMillis,
+                    lastIndexAtEpochMillis = diagnosticSnapshot.lastIndexAtEpochMillis,
+                    lastRollupAtEpochMillis = diagnosticSnapshot.lastRollupAtEpochMillis,
+                    lastCleanupAtEpochMillis = summary.lastRawTextCleanupAtEpochMillis,
+                ),
                 rawTextDeletionPreview = rawTextPreview,
                 deletionPreview = deletionPreview,
                 captureEnabled = preferences.captureEnabled().get(),
@@ -293,6 +326,7 @@ class StatsMaintenanceScreenModel(
                 uiEnabled = preferences.uiEnabled().get(),
                 ankiSyncEnabled = preferences.ankiSyncEnabled().get(),
                 goalsEnabled = preferences.goalsEnabled().get(),
+                goalRemindersEnabled = preferences.goalRemindersEnabled().get(),
                 legacyWritesEnabled = preferences.legacyWritesEnabled().get(),
             )
         }
@@ -317,6 +351,7 @@ private const val ROLLUP_REPAIR_BATCH_SIZE = 366
 data class StatsMaintenanceState(
     val summary: ImmersionMaintenanceSummary? = null,
     val integrity: ImmersionIntegrityReport? = null,
+    val timestamps: StatsMaintenanceTimestamps = StatsMaintenanceTimestamps(),
     val rawTextDeletionPreview: Long = 0,
     val deletionPreview: ImmersionDeletionPreview? = null,
     val scopedDeletionScope: ImmersionStatsDeletionScope? = null,
@@ -328,12 +363,29 @@ data class StatsMaintenanceState(
     val uiEnabled: Boolean,
     val ankiSyncEnabled: Boolean,
     val goalsEnabled: Boolean,
+    val goalRemindersEnabled: Boolean,
     val legacyWritesEnabled: Boolean,
     val busy: Boolean = false,
     val error: StatsMaintenanceError? = null,
     val lastAffectedRows: Long = 0,
     val lastOperation: StatsMaintenanceOperation? = null,
 )
+
+data class StatsMaintenanceTimestamps(
+    val lastBackupAtEpochMillis: Long? = null,
+    val lastRepairAtEpochMillis: Long? = null,
+    val lastIndexAtEpochMillis: Long? = null,
+    val lastRollupAtEpochMillis: Long? = null,
+    val lastCleanupAtEpochMillis: Long? = null,
+) {
+    init {
+        require(lastBackupAtEpochMillis == null || lastBackupAtEpochMillis >= 0)
+        require(lastRepairAtEpochMillis == null || lastRepairAtEpochMillis >= 0)
+        require(lastIndexAtEpochMillis == null || lastIndexAtEpochMillis >= 0)
+        require(lastRollupAtEpochMillis == null || lastRollupAtEpochMillis >= 0)
+        require(lastCleanupAtEpochMillis == null || lastCleanupAtEpochMillis >= 0)
+    }
+}
 
 enum class StatsExportKind {
     AGGREGATE_JSON,

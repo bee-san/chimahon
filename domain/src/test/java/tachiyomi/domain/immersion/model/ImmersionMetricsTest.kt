@@ -34,6 +34,7 @@ class ImmersionMetricsTest {
         metrics.lookupRatePerTenThousandGrossCharacters()!! shouldBeExactly 20.0
         metrics.miningRatePerTenThousandGrossCharacters()!! shouldBeExactly 10.0
         metrics.noveltyRate()!! shouldBeExactly 0.25
+        metrics.newWordsPerTenThousandGrossCharacters()!! shouldBeExactly 500.0
         metrics.vocabularyDensityPerTenThousandGrossCharacters()!! shouldBeExactly 2_000.0
         metrics.characterCoverage.ratio()!! shouldBeExactly 0.8
     }
@@ -44,6 +45,7 @@ class ImmersionMetricsTest {
         ReadingMetrics().lookupRatePerTenThousandGrossCharacters() shouldBe null
         ReadingMetrics().miningRatePerTenThousandGrossCharacters() shouldBe null
         ReadingMetrics().noveltyRate() shouldBe null
+        ReadingMetrics().newWordsPerTenThousandGrossCharacters() shouldBe null
         ReadingMetrics().vocabularyDensityPerTenThousandGrossCharacters() shouldBe null
         ReadingMetrics().characterCoverage.ratio() shouldBe null
 

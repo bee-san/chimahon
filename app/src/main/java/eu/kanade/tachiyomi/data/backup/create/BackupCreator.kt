@@ -167,9 +167,15 @@ class BackupCreator(
             // Make sure it's a valid backup file
             BackupFileValidator(context).validate(fileUri)
 
+            val completedAt = Instant.now().toEpochMilli()
             if (isAutoBackup) {
-                backupPreferences.lastAutoBackupTimestamp().set(Instant.now().toEpochMilli())
+                backupPreferences.lastAutoBackupTimestamp().set(completedAt)
             }
+            // Chimahon -->
+            if (options.immersionStats) {
+                backupPreferences.lastImmersionBackupTimestamp().set(completedAt)
+            }
+            // Chimahon <--
 
             return fileUri.toString()
         } catch (e: Exception) {

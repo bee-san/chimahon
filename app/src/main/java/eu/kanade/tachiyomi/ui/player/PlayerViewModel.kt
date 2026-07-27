@@ -58,6 +58,7 @@ import eu.kanade.presentation.more.settings.screen.player.custombutton.getButton
 import eu.kanade.tachiyomi.animesource.AnimeSource
 import eu.kanade.tachiyomi.animesource.model.ChapterType
 import eu.kanade.tachiyomi.animesource.model.Hoster
+import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SerializableHoster.Companion.toHosterList
 import eu.kanade.tachiyomi.animesource.model.TimeStamp
 import eu.kanade.tachiyomi.animesource.model.Video
@@ -2876,6 +2877,7 @@ class PlayerViewModel @JvmOverloads internal constructor(
         val languageTag = profile.languageCode
             .takeIf(String::isNotBlank)
             ?.let { runCatching { LanguageTag.from(it) }.getOrNull() }
+        val knownEpisodeCount = getEpisodesByAnimeId.await(anime.id).size.toLong()
         val adapter = videoCaptureLifecycle.switchEpisode(episodeId) {
             VideoCaptureAdapter(
                 captureTitle = VideoCaptureTitle(
@@ -2885,6 +2887,12 @@ class PlayerViewModel @JvmOverloads internal constructor(
                     profileId = profile.id,
                     languageTag = languageTag,
                     createdAtEpochMillis = anime.dateAdded.coerceAtLeast(0),
+                    status = if (anime.status == SAnime.COMPLETED.toLong()) {
+                        "COMPLETED"
+                    } else {
+                        "IN_PROGRESS"
+                    },
+                    totalUnits = knownEpisodeCount,
                 ),
                 episode = VideoEpisodeCapture(
                     episodeId = episodeId,

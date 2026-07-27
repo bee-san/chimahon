@@ -51,6 +51,8 @@ data class ImmersionDurableDiagnostics(
     val lastWriteError: ImmersionDiagnosticErrorCode? = null,
     val lastIndexError: ImmersionDiagnosticErrorCode? = null,
     val lastRollupError: ImmersionDiagnosticErrorCode? = null,
+    val lastIndexAtEpochMillis: Long? = null,
+    val lastRollupAtEpochMillis: Long? = null,
     val lastRepairAtEpochMillis: Long? = null,
     val droppedCommandCount: NonNegativeCounter = NonNegativeCounter.ZERO,
     val abandonedRecoveryCount: NonNegativeCounter = NonNegativeCounter.ZERO,
@@ -58,6 +60,8 @@ data class ImmersionDurableDiagnostics(
     init {
         require(maximumQueueDepth >= 0)
         require(lastWriteLatencyMillis == null || lastWriteLatencyMillis >= 0)
+        require(lastIndexAtEpochMillis == null || lastIndexAtEpochMillis >= 0)
+        require(lastRollupAtEpochMillis == null || lastRollupAtEpochMillis >= 0)
         require(lastRepairAtEpochMillis == null || lastRepairAtEpochMillis >= 0)
     }
 }
@@ -69,6 +73,8 @@ data class ImmersionStatsDiagnostics(
     val lastWriteError: ImmersionDiagnosticErrorCode? = null,
     val lastIndexError: ImmersionDiagnosticErrorCode? = null,
     val lastRollupError: ImmersionDiagnosticErrorCode? = null,
+    val lastIndexAtEpochMillis: Long? = null,
+    val lastRollupAtEpochMillis: Long? = null,
     val lastRepairAtEpochMillis: Long? = null,
     val droppedCommandCount: NonNegativeCounter = NonNegativeCounter.ZERO,
     val abandonedRecoveryCount: NonNegativeCounter = NonNegativeCounter.ZERO,
@@ -81,6 +87,12 @@ data class ImmersionStatsDiagnostics(
         require(maximumQueueDepth >= queueDepth) { "Maximum queue depth cannot be below current depth" }
         require(lastWriteLatencyMillis == null || lastWriteLatencyMillis >= 0) {
             "Write latency cannot be negative"
+        }
+        require(lastIndexAtEpochMillis == null || lastIndexAtEpochMillis >= 0) {
+            "Index timestamp cannot be negative"
+        }
+        require(lastRollupAtEpochMillis == null || lastRollupAtEpochMillis >= 0) {
+            "Rollup timestamp cannot be negative"
         }
         require(lastRepairAtEpochMillis == null || lastRepairAtEpochMillis >= 0) {
             "Repair timestamp cannot be negative"
@@ -134,6 +146,14 @@ class PreferenceImmersionStatsDiagnosticsPersistence(
         Preference.appStateKey("immersion_stats_diagnostics_last_rollup_error"),
         "",
     )
+    private val lastIndexAtEpochMillis = preferenceStore.getLong(
+        Preference.appStateKey("immersion_stats_diagnostics_last_index_at"),
+        NULL_LONG,
+    )
+    private val lastRollupAtEpochMillis = preferenceStore.getLong(
+        Preference.appStateKey("immersion_stats_diagnostics_last_rollup_at"),
+        NULL_LONG,
+    )
     private val lastRepairAtEpochMillis = preferenceStore.getLong(
         Preference.appStateKey("immersion_stats_diagnostics_last_repair_at"),
         NULL_LONG,
@@ -161,7 +181,7 @@ class PreferenceImmersionStatsDiagnosticsPersistence(
         }
 
     override fun readDurableDiagnostics(): ImmersionDurableDiagnostics {
-        if (schemaVersion.get() != DIAGNOSTICS_SCHEMA_VERSION) {
+        if (schemaVersion.get() !in MIN_SUPPORTED_DIAGNOSTICS_SCHEMA_VERSION..DIAGNOSTICS_SCHEMA_VERSION) {
             return ImmersionDurableDiagnostics()
         }
         return ImmersionDurableDiagnostics(
@@ -170,6 +190,8 @@ class PreferenceImmersionStatsDiagnosticsPersistence(
             lastWriteError = lastWriteError.get().diagnosticErrorOrNull(),
             lastIndexError = lastIndexError.get().diagnosticErrorOrNull(),
             lastRollupError = lastRollupError.get().diagnosticErrorOrNull(),
+            lastIndexAtEpochMillis = lastIndexAtEpochMillis.get().nullableNonNegative(),
+            lastRollupAtEpochMillis = lastRollupAtEpochMillis.get().nullableNonNegative(),
             lastRepairAtEpochMillis = lastRepairAtEpochMillis.get().nullableNonNegative(),
             droppedCommandCount = NonNegativeCounter(
                 droppedCommandCount.get().coerceAtLeast(0L),
@@ -187,6 +209,8 @@ class PreferenceImmersionStatsDiagnosticsPersistence(
         lastWriteError.set(diagnostics.lastWriteError?.name.orEmpty())
         lastIndexError.set(diagnostics.lastIndexError?.name.orEmpty())
         lastRollupError.set(diagnostics.lastRollupError?.name.orEmpty())
+        lastIndexAtEpochMillis.set(diagnostics.lastIndexAtEpochMillis ?: NULL_LONG)
+        lastRollupAtEpochMillis.set(diagnostics.lastRollupAtEpochMillis ?: NULL_LONG)
         lastRepairAtEpochMillis.set(diagnostics.lastRepairAtEpochMillis ?: NULL_LONG)
         droppedCommandCount.set(diagnostics.droppedCommandCount.value)
         abandonedRecoveryCount.set(diagnostics.abandonedRecoveryCount.value)
@@ -213,6 +237,8 @@ class PreferenceImmersionStatsDiagnosticsPersistence(
         lastWriteError.delete()
         lastIndexError.delete()
         lastRollupError.delete()
+        lastIndexAtEpochMillis.delete()
+        lastRollupAtEpochMillis.delete()
         lastRepairAtEpochMillis.delete()
         droppedCommandCount.delete()
         abandonedRecoveryCount.delete()
@@ -225,7 +251,8 @@ class PreferenceImmersionStatsDiagnosticsPersistence(
     )
 
     private companion object {
-        const val DIAGNOSTICS_SCHEMA_VERSION = 1
+        const val MIN_SUPPORTED_DIAGNOSTICS_SCHEMA_VERSION = 1
+        const val DIAGNOSTICS_SCHEMA_VERSION = 2
         const val NULL_LONG = -1L
     }
 }
@@ -295,6 +322,26 @@ class ImmersionStatsDiagnosticsStore(
         updateVolatileState {
             it.copy(
                 rollupLagEventCount = it.rollupLagEventCount + NonNegativeCounter(eventCount),
+            )
+        }
+    }
+
+    fun recordIndexSuccess(epochMillis: Long) {
+        require(epochMillis >= 0) { "Index timestamp cannot be negative" }
+        updateDurableState {
+            it.copy(
+                lastIndexAtEpochMillis = epochMillis,
+                lastIndexError = null,
+            )
+        }
+    }
+
+    fun recordRollupSuccess(epochMillis: Long) {
+        require(epochMillis >= 0) { "Rollup timestamp cannot be negative" }
+        updateDurableState {
+            it.copy(
+                lastRollupAtEpochMillis = epochMillis,
+                lastRollupError = null,
             )
         }
     }
@@ -402,6 +449,8 @@ private fun ImmersionDurableDiagnostics.toDiagnostics(
     lastWriteError = lastWriteError,
     lastIndexError = lastIndexError,
     lastRollupError = lastRollupError,
+    lastIndexAtEpochMillis = lastIndexAtEpochMillis,
+    lastRollupAtEpochMillis = lastRollupAtEpochMillis,
     lastRepairAtEpochMillis = lastRepairAtEpochMillis,
     droppedCommandCount = droppedCommandCount,
     abandonedRecoveryCount = abandonedRecoveryCount,
@@ -414,6 +463,8 @@ private fun ImmersionStatsDiagnostics.toDurableDiagnostics() = ImmersionDurableD
     lastWriteError = lastWriteError,
     lastIndexError = lastIndexError,
     lastRollupError = lastRollupError,
+    lastIndexAtEpochMillis = lastIndexAtEpochMillis,
+    lastRollupAtEpochMillis = lastRollupAtEpochMillis,
     lastRepairAtEpochMillis = lastRepairAtEpochMillis,
     droppedCommandCount = droppedCommandCount,
     abandonedRecoveryCount = abandonedRecoveryCount,

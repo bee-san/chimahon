@@ -39,15 +39,18 @@ import cafe.adriel.voyager.navigator.currentOrThrow
 import eu.kanade.presentation.components.AppBar
 import eu.kanade.presentation.more.settings.widget.SwitchPreferenceWidget
 import eu.kanade.presentation.util.Screen
+import eu.kanade.presentation.util.relativeTimeSpanString
 import eu.kanade.tachiyomi.util.storage.getUriCompat
 import eu.kanade.tachiyomi.util.system.toShareIntent
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import mihon.feature.stats.anki.AnkiInventorySyncJob
+import mihon.feature.stats.goals.ImmersionGoalReminderJob
 import mihon.feature.stats.indexing.ImmersionIndexJob
 import tachiyomi.domain.immersion.model.ImmersionStatsDeletionScope
 import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.RawTextRetention
+import tachiyomi.domain.immersion.model.TitleId
 import tachiyomi.i18n.kmk.KMR
 import tachiyomi.presentation.core.components.material.Scaffold
 import tachiyomi.presentation.core.i18n.pluralStringResource
@@ -57,13 +60,20 @@ import java.text.NumberFormat
 
 class StatsMaintenanceScreen(
     private val initialTitleId: String? = null,
+    private val initialAction: StatsMaintenanceInitialAction? = null,
 ) : Screen() {
 
     @Composable
     override fun Content() {
+        StatsRecentsPrivacy()
         val context = LocalContext.current
         val navigator = LocalNavigator.currentOrThrow
-        val screenModel = rememberScreenModel { StatsMaintenanceScreenModel() }
+        val parsedTitleId = remember(initialTitleId) {
+            initialTitleId?.let { value -> runCatching { TitleId(value) }.getOrNull() }
+        }
+        val screenModel = rememberScreenModel {
+            StatsMaintenanceScreenModel(initialTitleId = parsedTitleId)
+        }
         val state by screenModel.state.collectAsState()
         var showExportDialog by remember { mutableStateOf(false) }
         var showRawTextExportConfirmation by remember { mutableStateOf(false) }
@@ -73,6 +83,24 @@ class StatsMaintenanceScreen(
         var showReaderIdleTimeoutDialog by remember { mutableStateOf(false) }
         var showScopedDeletionDialog by remember { mutableStateOf(false) }
         var showAnkiCacheDeletionDialog by remember { mutableStateOf(false) }
+        var initialActionHandled by remember(initialAction) { mutableStateOf(false) }
+
+        LaunchedEffect(initialAction, state.summary) {
+            val initialScopeValid = initialTitleId == null || parsedTitleId != null
+            if (!initialActionHandled && initialScopeValid) {
+                when (initialAction) {
+                    StatsMaintenanceInitialAction.DELETE_STATS -> {
+                        showScopedDeletionDialog = true
+                        initialActionHandled = true
+                    }
+                    StatsMaintenanceInitialAction.DELETE_RAW_TEXT -> if (state.summary != null) {
+                        showRawTextDeleteConfirmation = true
+                        initialActionHandled = true
+                    }
+                    null -> initialActionHandled = true
+                }
+            }
+        }
 
         LaunchedEffect(screenModel) {
             screenModel.exportDocuments.collect { document ->
@@ -114,7 +142,14 @@ class StatsMaintenanceScreen(
                     screenModel.setAnkiSyncEnabled(it)
                     AnkiInventorySyncJob.setEnabled(context, it)
                 },
-                onGoalsEnabledChange = screenModel::setGoalsEnabled,
+                onGoalsEnabledChange = {
+                    screenModel.setGoalsEnabled(it)
+                    if (!it) ImmersionGoalReminderJob.setEnabled(context, false)
+                },
+                onGoalRemindersEnabledChange = {
+                    screenModel.setGoalRemindersEnabled(it)
+                    ImmersionGoalReminderJob.setEnabled(context, it)
+                },
                 onRebuildRollups = screenModel::rebuildRollups,
                 onRebuildIndex = screenModel::rebuildIndex,
                 onResolveConflicts = screenModel::resolveMergeConflicts,
@@ -225,6 +260,11 @@ class StatsMaintenanceScreen(
     }
 }
 
+enum class StatsMaintenanceInitialAction {
+    DELETE_STATS,
+    DELETE_RAW_TEXT,
+}
+
 @Composable
 private fun StatsMaintenanceContent(
     state: StatsMaintenanceState,
@@ -241,6 +281,7 @@ private fun StatsMaintenanceContent(
     onUiEnabledChange: (Boolean) -> Unit,
     onAnkiSyncEnabledChange: (Boolean) -> Unit,
     onGoalsEnabledChange: (Boolean) -> Unit,
+    onGoalRemindersEnabledChange: (Boolean) -> Unit,
     onRebuildRollups: () -> Unit,
     onRebuildIndex: () -> Unit,
     onResolveConflicts: () -> Unit,
@@ -300,6 +341,14 @@ private fun StatsMaintenanceContent(
         }
         item {
             ListItem(
+                headlineContent = { Text(stringResource(KMR.strings.stats_recents_privacy)) },
+                supportingContent = {
+                    Text(stringResource(KMR.strings.stats_recents_privacy_summary))
+                },
+            )
+        }
+        item {
+            ListItem(
                 headlineContent = { Text(stringResource(KMR.strings.stats_integrity)) },
                 supportingContent = {
                     Text(
@@ -310,6 +359,42 @@ private fun StatsMaintenanceContent(
                         },
                     )
                 },
+            )
+        }
+        item {
+            Text(
+                text = stringResource(KMR.strings.stats_maintenance_history),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+        }
+        item {
+            MaintenanceTimestamp(
+                title = stringResource(KMR.strings.stats_last_stats_backup),
+                epochMillis = state.timestamps.lastBackupAtEpochMillis,
+            )
+        }
+        item {
+            MaintenanceTimestamp(
+                title = stringResource(KMR.strings.stats_last_repair),
+                epochMillis = state.timestamps.lastRepairAtEpochMillis,
+            )
+        }
+        item {
+            MaintenanceTimestamp(
+                title = stringResource(KMR.strings.stats_last_index),
+                epochMillis = state.timestamps.lastIndexAtEpochMillis,
+            )
+        }
+        item {
+            MaintenanceTimestamp(
+                title = stringResource(KMR.strings.stats_last_rollup),
+                epochMillis = state.timestamps.lastRollupAtEpochMillis,
+            )
+        }
+        item {
+            MaintenanceTimestamp(
+                title = stringResource(KMR.strings.stats_last_raw_text_cleanup),
+                epochMillis = state.timestamps.lastCleanupAtEpochMillis,
             )
         }
         item { HorizontalDivider() }
@@ -380,6 +465,16 @@ private fun StatsMaintenanceContent(
                 onCheckedChanged = onGoalsEnabledChange,
             )
         }
+        if (state.goalsEnabled) {
+            item {
+                SwitchPreferenceWidget(
+                    title = stringResource(KMR.strings.stats_goal_reminders_enabled),
+                    subtitle = stringResource(KMR.strings.stats_goal_reminders_enabled_summary),
+                    checked = state.goalRemindersEnabled,
+                    onCheckedChanged = onGoalRemindersEnabledChange,
+                )
+            }
+        }
         state.summary?.quarantinedConflicts?.takeIf { it > 0 }?.let { conflicts ->
             item {
                 MaintenanceAction(
@@ -405,6 +500,16 @@ private fun StatsMaintenanceContent(
                 description = retentionLabel(state.retention),
                 enabled = !state.busy,
                 onClick = onRetention,
+            )
+        }
+        item {
+            ListItem(
+                headlineContent = {
+                    Text(stringResource(KMR.strings.stats_vocabulary_exclusions))
+                },
+                supportingContent = {
+                    Text(stringResource(KMR.strings.stats_vocabulary_exclusions_summary))
+                },
             )
         }
         item {
@@ -485,6 +590,25 @@ private fun StatsMaintenanceContent(
             }
         }
     }
+}
+
+@Composable
+private fun MaintenanceTimestamp(
+    title: String,
+    epochMillis: Long?,
+) {
+    ListItem(
+        headlineContent = { Text(title) },
+        supportingContent = {
+            Text(
+                if (epochMillis != null) {
+                    relativeTimeSpanString(epochMillis)
+                } else {
+                    stringResource(KMR.strings.stats_unavailable)
+                },
+            )
+        },
+    )
 }
 
 @Composable
@@ -649,6 +773,7 @@ private fun ScopedDeletionDialog(
                             NumberFormat.getIntegerInstance().format(it.sourceUnits),
                             NumberFormat.getIntegerInstance().format(it.words),
                             NumberFormat.getIntegerInstance().format(it.characters),
+                            NumberFormat.getIntegerInstance().format(it.goals),
                         ),
                     )
                 }
