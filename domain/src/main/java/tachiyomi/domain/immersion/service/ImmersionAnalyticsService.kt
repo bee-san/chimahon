@@ -68,7 +68,7 @@ class ImmersionAnalyticsService(
         measured(AnalyticsQueryFamily.OVERVIEW, filter) {
             val range = effectiveRange(filter)
             val currentRows = analyticsRepository.dailyRollups(range).filter(filter::matches)
-            val currentFilter = filter.copy(dateRange = range)
+            val currentFilter = filter.copy(dateRange = range, comparisonRange = null)
             val current = currentRows.sumMetrics().withInventory(
                 analyticsRepository.inventoryMetrics(currentFilter),
             )
@@ -101,8 +101,8 @@ class ImmersionAnalyticsService(
                         previous.activeTime.value,
                     ),
                     characterChangeRatio = ratioChange(
-                        current.characters.gross.value,
-                        previous.characters.gross.value,
+                        current.characters.valueFor(filter.characterMetric),
+                        previous.characters.valueFor(filter.characterMetric),
                     ),
                 ),
                 streak = streak(

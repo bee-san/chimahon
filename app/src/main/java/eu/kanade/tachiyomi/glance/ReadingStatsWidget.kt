@@ -23,8 +23,10 @@ import eu.kanade.tachiyomi.ui.stats.statsDurationParts
 import tachiyomi.core.common.Constants
 import tachiyomi.core.common.i18n.pluralStringResource
 import tachiyomi.core.common.i18n.stringResource
+import tachiyomi.domain.immersion.model.CharacterMetric
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
 import tachiyomi.domain.immersion.model.LocalDateRange
+import tachiyomi.domain.immersion.model.ReadingMetrics
 import tachiyomi.domain.immersion.model.StatsFilter
 import tachiyomi.domain.immersion.service.ImmersionAnalyticsService
 import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
@@ -136,19 +138,14 @@ class ReadingStatsWidget : GlanceAppWidget() {
         return readingStatsWidgetLoadState(
             runCatching {
                 val overview = Injekt.get<ImmersionAnalyticsService>().overview(
-                    StatsFilter(
-                        dateRange = LocalDateRange(today, today),
-                        includeLegacyAggregates = preferences.includeLegacyAggregates().get(),
+                    readingStatsWidgetFilter(
+                        today = today,
                         characterMetric = basis,
+                        includeLegacyAggregates = preferences.includeLegacyAggregates().get(),
                         includeRereadsAndReplays = preferences.dashboardIncludeRereads().get(),
                     ),
                 ).value.comparison.current
-                ReadingStatsWidgetData(
-                    characters = overview.characters.valueFor(basis),
-                    activeTimeMillis = overview.activeTime.value,
-                    charactersPerHour = overview.readingSpeedPerHour(basis)?.toInt(),
-                    cardsCreated = overview.cardsCreated.value,
-                )
+                readingStatsWidgetData(overview, basis)
             },
         )
     }
@@ -181,6 +178,28 @@ internal fun readingStatsWidgetLoadState(
 ): ReadingStatsWidgetLoadState = result.fold(
     onSuccess = ReadingStatsWidgetLoadState::Available,
     onFailure = { ReadingStatsWidgetLoadState.Unavailable },
+)
+
+internal fun readingStatsWidgetFilter(
+    today: ImmersionLocalDate,
+    characterMetric: CharacterMetric,
+    includeLegacyAggregates: Boolean,
+    includeRereadsAndReplays: Boolean,
+): StatsFilter = StatsFilter(
+    dateRange = LocalDateRange(today, today),
+    includeLegacyAggregates = includeLegacyAggregates,
+    characterMetric = characterMetric,
+    includeRereadsAndReplays = includeRereadsAndReplays,
+)
+
+internal fun readingStatsWidgetData(
+    metrics: ReadingMetrics,
+    characterMetric: CharacterMetric,
+): ReadingStatsWidgetData = ReadingStatsWidgetData(
+    characters = metrics.characters.valueFor(characterMetric),
+    activeTimeMillis = metrics.activeTime.value,
+    charactersPerHour = metrics.readingSpeedPerHour(characterMetric)?.toInt(),
+    cardsCreated = metrics.cardsCreated.value,
 )
 
 internal fun readingStatsWidgetDurationParts(totalTimeMs: Long): ReadingStatsWidgetDurationParts {

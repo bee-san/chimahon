@@ -42,6 +42,8 @@ Separating replay rows makes the reread/replay filter affect totals, rates, word
 
 Session counts are assigned to the start date. Event counters are assigned to the event date. Active time is split across midnight. Indexed word/character occurrences are joined to every retained exposure; globally-new values use canonical first-seen timestamps.
 
+Overview applies one filter contract to current totals, the explicit or equal-length comparison period, inventory metrics, data quality, and streak history. Character comparison ratios use the selected gross, unique-source, or net-progress basis. The reading-stats widget builds the same default Today filter and projects its values directly from the current Overview metrics.
+
 Hourly activity uses a rebuildable `immersion_hourly_rollup` keyed by local date/hour and the same filter dimensions. Event counters and active-duration deltas remain assigned to the event's local occurrence hour; legacy aggregates remain assigned to their synthetic session-start hour. All-time hour-of-day queries therefore scan bounded derived rows rather than `immersion_event`.
 
 Every applied event is recorded with the rollup version. A date/title dirty queue is updated after session lifecycle changes, event/interaction writes, indexing, legacy import, deletion, and explicit rebuild. The battery-aware worker repairs bounded batches; manual date-range rebuild and cancellation are available.
