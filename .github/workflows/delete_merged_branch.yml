@@ -23,9 +23,17 @@ jobs:
 
           if [[ "$BRANCH_NAME" == "main" || "$BRANCH_NAME" == "master" ]]; then
             echo "Skipping deletion of main or master branch"
-          elif git ls-remote --exit-code --heads origin "refs/heads/$BRANCH_NAME" > /dev/null; then
-            echo "Deleting branch $BRANCH_NAME"
-            git push origin --delete "$BRANCH_NAME"
           else
-            echo "Branch $BRANCH_NAME is already absent"
+            if git ls-remote --exit-code --heads origin "refs/heads/$BRANCH_NAME" > /dev/null; then
+              echo "Deleting branch $BRANCH_NAME"
+              git push origin --delete "$BRANCH_NAME"
+            else
+              remote_status=$?
+              if [[ "$remote_status" -eq 2 ]]; then
+                echo "Branch $BRANCH_NAME is already absent"
+              else
+                echo "::error::Unable to query branch $BRANCH_NAME from origin"
+                exit "$remote_status"
+              fi
+            fi
           fi
