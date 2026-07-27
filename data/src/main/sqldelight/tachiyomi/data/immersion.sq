@@ -533,6 +533,33 @@ ON immersion_daily_rollup(local_date DESC, scope_key);
 CREATE INDEX immersion_daily_rollup_title_date_index
 ON immersion_daily_rollup(title_id, local_date DESC, scope_key);
 
+CREATE TABLE immersion_hourly_rollup(
+    scope_key TEXT NOT NULL PRIMARY KEY,
+    local_date INTEGER NOT NULL,
+    local_hour INTEGER NOT NULL,
+    profile_id TEXT NOT NULL DEFAULT '',
+    language_tag TEXT NOT NULL DEFAULT '',
+    media_kind TEXT NOT NULL DEFAULT '',
+    title_id TEXT NOT NULL DEFAULT '',
+    active_duration_ms INTEGER NOT NULL DEFAULT 0,
+    gross_characters INTEGER NOT NULL DEFAULT 0,
+    unique_source_characters INTEGER NOT NULL DEFAULT 0,
+    net_characters INTEGER NOT NULL DEFAULT 0,
+    provenance_state TEXT NOT NULL DEFAULT 'AVAILABLE',
+    replay_state TEXT NOT NULL DEFAULT 'PRIMARY',
+    rollup_version INTEGER NOT NULL,
+    CHECK(local_hour BETWEEN 0 AND 23),
+    CHECK(active_duration_ms >= 0),
+    CHECK(gross_characters >= 0),
+    CHECK(unique_source_characters >= 0)
+);
+
+CREATE INDEX immersion_hourly_rollup_date_index
+ON immersion_hourly_rollup(local_date DESC, local_hour, scope_key);
+
+CREATE INDEX immersion_hourly_rollup_hour_index
+ON immersion_hourly_rollup(local_hour, local_date DESC, scope_key);
+
 CREATE TABLE immersion_lifetime_rollup(
     scope_key TEXT NOT NULL PRIMARY KEY,
     profile_id TEXT NOT NULL DEFAULT '',
@@ -2146,6 +2173,10 @@ SELECT
         WHERE rollup_version != :expectedRollupVersion
     ) + (
         SELECT count(*)
+        FROM immersion_hourly_rollup
+        WHERE rollup_version != :expectedRollupVersion
+    ) + (
+        SELECT count(*)
         FROM immersion_lifetime_rollup
         WHERE rollup_version != :expectedRollupVersion
     ) AS rollup_version_mismatches,
@@ -2242,6 +2273,9 @@ SELECT
 
 clearImmersionRollups:
 DELETE FROM immersion_daily_rollup;
+
+clearImmersionHourlyRollups:
+DELETE FROM immersion_hourly_rollup;
 
 clearImmersionLifetimeRollups:
 DELETE FROM immersion_lifetime_rollup;
@@ -2933,6 +2967,10 @@ deleteImmersionDailyRollupsInRange:
 DELETE FROM immersion_daily_rollup
 WHERE local_date BETWEEN :startDate AND :endDate;
 
+deleteImmersionHourlyRollupsInRange:
+DELETE FROM immersion_hourly_rollup
+WHERE local_date BETWEEN :startDate AND :endDate;
+
 insertImmersionDailyRollup:
 INSERT INTO immersion_daily_rollup(
     scope_key,
@@ -2985,6 +3023,40 @@ VALUES (
     :replayState,
     :rollupVersion,
     :lastAppliedEventAt
+);
+
+insertImmersionHourlyRollup:
+INSERT INTO immersion_hourly_rollup(
+    scope_key,
+    local_date,
+    local_hour,
+    profile_id,
+    language_tag,
+    media_kind,
+    title_id,
+    active_duration_ms,
+    gross_characters,
+    unique_source_characters,
+    net_characters,
+    provenance_state,
+    replay_state,
+    rollup_version
+)
+VALUES (
+    :scopeKey,
+    :localDate,
+    :localHour,
+    :profileId,
+    :languageTag,
+    :mediaKind,
+    :titleId,
+    :activeDurationMs,
+    :grossCharacters,
+    :uniqueSourceCharacters,
+    :netCharacters,
+    :provenanceState,
+    :replayState,
+    :rollupVersion
 );
 
 rebuildImmersionLifetimeRollups:
@@ -3195,100 +3267,27 @@ WHERE
     );
 
 selectImmersionAnalyticsHourActivity:
-WITH event_activity AS (
-    SELECT
-        CAST(
-            (
-                (
-                    (event.occurred_at + event.timezone_offset_seconds * 1000) / 3600000
-                ) % 24 + 24
-            ) % 24
-            AS INTEGER
-        ) AS bucket_index,
-        sum(event.active_duration_delta_ms) AS active_duration_ms,
-        sum(event.gross_character_delta) AS gross_characters,
-        sum(event.unique_source_character_delta) AS unique_source_characters,
-        sum(event.net_character_delta) AS net_characters
-    FROM immersion_event AS event
-    JOIN immersion_session AS session ON session.id = event.session_id
-    LEFT JOIN immersion_source_exposure AS exposure ON exposure.event_id = event.id
-    WHERE
-        session.status != 'DELETED'
-        AND session.legacy_import = 0
-        AND (
-            :filterDate = 0
-            OR event.local_date BETWEEN :startDate AND :endDate
-        )
-        AND (:filterMediaKinds = 0 OR session.media_kind IN :mediaKinds)
-        AND (:filterProfileIds = 0 OR session.profile_id IN :profileIds)
-        AND (
-            :filterLanguageTags = 0
-            OR coalesce(session.language_tag, '') IN :languageTags
-        )
-        AND (:filterTitleIds = 0 OR session.title_id IN :titleIds)
-        AND (
-            :includeRereads = 1
-            OR exposure.replay_ordinal IS NULL
-            OR exposure.replay_ordinal = 0
-        )
-        AND (
-            :filterProvenance = 0
-            OR 'AVAILABLE' IN :provenanceStates
-        )
-    GROUP BY bucket_index
-),
-legacy_activity AS (
-    SELECT
-        CAST(
-            (
-                (
-                    (session.started_at + session.start_offset_seconds * 1000) / 3600000
-                ) % 24 + 24
-            ) % 24
-            AS INTEGER
-        ) AS bucket_index,
-        sum(session.active_duration_ms) AS active_duration_ms,
-        sum(session.gross_characters) AS gross_characters,
-        sum(session.unique_source_characters) AS unique_source_characters,
-        sum(session.net_characters) AS net_characters
-    FROM immersion_session AS session
-    WHERE
-        session.status != 'DELETED'
-        AND session.legacy_import = 1
-        AND :includeLegacy = 1
-        AND (
-            :filterDate = 0
-            OR coalesce(
-                session.legacy_local_date,
-                (session.started_at + session.start_offset_seconds * 1000) / 86400000
-            ) BETWEEN :startDate AND :endDate
-        )
-        AND (:filterMediaKinds = 0 OR session.media_kind IN :mediaKinds)
-        AND (:filterProfileIds = 0 OR session.profile_id IN :profileIds)
-        AND (
-            :filterLanguageTags = 0
-            OR coalesce(session.language_tag, '') IN :languageTags
-        )
-        AND (:filterTitleIds = 0 OR session.title_id IN :titleIds)
-        AND (
-            :filterProvenance = 0
-            OR 'LEGACY_AGGREGATE' IN :provenanceStates
-        )
-    GROUP BY bucket_index
-)
 SELECT
-    bucket_index,
-    CAST(sum(active_duration_ms) AS INTEGER) AS active_duration_ms,
-    CAST(sum(gross_characters) AS INTEGER) AS gross_characters,
-    CAST(sum(unique_source_characters) AS INTEGER) AS unique_source_characters,
-    CAST(sum(net_characters) AS INTEGER) AS net_characters
-FROM (
-    SELECT * FROM event_activity
-    UNION ALL
-    SELECT * FROM legacy_activity
-)
-GROUP BY bucket_index
-ORDER BY bucket_index;
+    local_hour AS bucket_index,
+    sum(active_duration_ms) AS active_duration_ms,
+    sum(gross_characters) AS gross_characters,
+    sum(unique_source_characters) AS unique_source_characters,
+    sum(net_characters) AS net_characters
+FROM immersion_hourly_rollup
+WHERE
+    (
+        :filterDate = 0
+        OR local_date BETWEEN :startDate AND :endDate
+    )
+    AND (:filterMediaKinds = 0 OR media_kind IN :mediaKinds)
+    AND (:filterProfileIds = 0 OR profile_id IN :profileIds)
+    AND (:filterLanguageTags = 0 OR language_tag IN :languageTags)
+    AND (:filterTitleIds = 0 OR title_id IN :titleIds)
+    AND (:includeLegacy = 1 OR provenance_state != 'LEGACY_AGGREGATE')
+    AND (:filterProvenance = 0 OR provenance_state IN :provenanceStates)
+    AND (:includeRereads = 1 OR replay_state = 'PRIMARY')
+GROUP BY local_hour
+ORDER BY local_hour;
 
 selectImmersionAnalyticsWeekdayActivity:
 SELECT

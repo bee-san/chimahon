@@ -139,6 +139,7 @@ import java.security.MessageDigest
 import java.text.Normalizer
 import java.time.Instant
 import java.time.ZoneId
+import java.time.ZoneOffset
 import java.util.Locale
 import java.util.UUID
 
@@ -2928,9 +2929,15 @@ class SqlDelightImmersionRepository(
                 chunk,
             )
             val fingerprint = rawHandler.awaitRawDriver {
-                it.immersionDailyRollupFingerprint(
+                val daily = it.immersionDailyRollupFingerprint(
                     range = chunk,
                     seedDigest = progress.digest,
+                )
+                daily.copy(
+                    digest = it.immersionHourlyRollupDigest(
+                        range = chunk,
+                        seedDigest = daily.digest,
+                    ),
                 )
             }
             check(rebuilt.rowCount == fingerprint.rowCount) {
@@ -3616,6 +3623,7 @@ class SqlDelightImmersionRepository(
             updatedAt = updatedAtEpochMillis,
         )
         immersionQueries.clearImmersionRollups()
+        immersionQueries.clearImmersionHourlyRollups()
         immersionQueries.clearImmersionLifetimeRollups()
         immersionQueries.clearImmersionAppliedEvents()
         immersionQueries.clearImmersionRollupDirty()
@@ -3671,6 +3679,7 @@ class SqlDelightImmersionRepository(
             MAX_RECORDED_IMMERSION_EVENT_ACTIVE_DURATION_MILLIS,
         )
         val aggregates = linkedMapOf<RollupKey, MutableRollup>()
+        val hourlyAggregates = linkedMapOf<HourlyRollupKey, MutableHourlyRollup>()
 
         fun accumulator(
             date: ImmersionLocalDate,
@@ -3696,6 +3705,34 @@ class SqlDelightImmersionRepository(
                 replay = replay,
             )
             return aggregates.getOrPut(key, ::MutableRollup)
+        }
+
+        fun hourlyAccumulator(
+            date: ImmersionLocalDate,
+            hour: Int,
+            titleId: String,
+            mediaKind: String,
+            profileId: String,
+            languageTag: String?,
+            legacy: Boolean,
+            replay: Boolean,
+        ): MutableHourlyRollup? {
+            if (date < range.start || date > range.endInclusive) return null
+            val key = HourlyRollupKey(
+                date = date,
+                hour = hour,
+                titleId = titleId,
+                mediaKind = MediaKind.valueOf(mediaKind),
+                profileId = profileId,
+                languageTag = languageTag?.let(::LanguageTag),
+                provenance = if (legacy) {
+                    ProvenanceState.LEGACY_AGGREGATE
+                } else {
+                    ProvenanceState.AVAILABLE
+                },
+                replay = replay,
+            )
+            return hourlyAggregates.getOrPut(key, ::MutableHourlyRollup)
         }
 
         val sessions = immersionQueries
@@ -3732,6 +3769,29 @@ class SqlDelightImmersionRepository(
                     cardsUpdated = Math.addExact(cardsUpdated, session.cards_updated)
                 }
             }
+            if (session.legacy_import == 1L) {
+                hourlyAccumulator(
+                    date = date,
+                    hour = localHour(
+                        session.started_at,
+                        session.start_offset_seconds.toIntExact("session offset"),
+                    ),
+                    titleId = session.title_id,
+                    mediaKind = session.media_kind,
+                    profileId = session.profile_id,
+                    languageTag = session.language_tag,
+                    legacy = true,
+                    replay = false,
+                )?.apply {
+                    activeDuration = Math.addExact(activeDuration, session.active_duration_ms)
+                    grossCharacters = Math.addExact(grossCharacters, session.gross_characters)
+                    uniqueSourceCharacters = Math.addExact(
+                        uniqueSourceCharacters,
+                        session.unique_source_characters,
+                    )
+                    netCharacters = Math.addExact(netCharacters, session.net_characters)
+                }
+            }
         }
 
         val events = immersionQueries
@@ -3747,6 +3807,7 @@ class SqlDelightImmersionRepository(
                 event.occurred_at,
                 event.timezone_offset_seconds.toIntExact("event offset"),
             )
+            val replay = event.replay_ordinal > 0
             accumulator(
                 eventDate,
                 event.title_id,
@@ -3754,7 +3815,7 @@ class SqlDelightImmersionRepository(
                 event.profile_id,
                 event.language_tag,
                 event.legacy_import == 1L,
-                event.replay_ordinal > 0,
+                replay,
             )?.apply {
                 grossCharacters = Math.addExact(grossCharacters, event.gross_character_delta)
                 uniqueSourceCharacters = Math.addExact(
@@ -3769,6 +3830,38 @@ class SqlDelightImmersionRepository(
                 cardsCreated = Math.addExact(cardsCreated, event.cards_created_delta)
                 cardsUpdated = Math.addExact(cardsUpdated, event.cards_updated_delta)
                 lastAppliedEventAt = maxOf(lastAppliedEventAt ?: 0, event.occurred_at)
+            }
+            if (event.legacy_import == 0L) {
+                hourlyAccumulator(
+                    date = eventDate,
+                    hour = localHour(
+                        event.occurred_at,
+                        event.timezone_offset_seconds.toIntExact("event offset"),
+                    ),
+                    titleId = event.title_id,
+                    mediaKind = event.media_kind,
+                    profileId = event.profile_id,
+                    languageTag = event.language_tag,
+                    legacy = false,
+                    replay = replay,
+                )?.apply {
+                    activeDuration = Math.addExact(
+                        activeDuration,
+                        event.active_duration_delta_ms,
+                    )
+                    grossCharacters = Math.addExact(
+                        grossCharacters,
+                        event.gross_character_delta,
+                    )
+                    uniqueSourceCharacters = Math.addExact(
+                        uniqueSourceCharacters,
+                        event.unique_source_character_delta,
+                    )
+                    netCharacters = Math.addExact(
+                        netCharacters,
+                        event.net_character_delta,
+                    )
+                }
             }
             calendar.splitDuration(
                 event.occurred_at,
@@ -3868,6 +3961,10 @@ class SqlDelightImmersionRepository(
             range.start.epochDay,
             range.endInclusive.epochDay,
         )
+        immersionQueries.deleteImmersionHourlyRollupsInRange(
+            range.start.epochDay,
+            range.endInclusive.epochDay,
+        )
         immersionQueries.deleteImmersionAppliedEventsInRange(
             range.start.epochDay,
             range.endInclusive.epochDay,
@@ -3898,6 +3995,24 @@ class SqlDelightImmersionRepository(
                 replayState = if (key.replay) "REPLAY" else "PRIMARY",
                 rollupVersion = rollupVersion.toLong(),
                 lastAppliedEventAt = value.lastAppliedEventAt,
+            )
+        }
+        hourlyAggregates.forEach { (key, value) ->
+            immersionQueries.insertImmersionHourlyRollup(
+                scopeKey = key.scopeKey(),
+                localDate = key.date.epochDay,
+                localHour = key.hour.toLong(),
+                profileId = key.profileId,
+                languageTag = key.languageTag?.value.orEmpty(),
+                mediaKind = key.mediaKind.name,
+                titleId = key.titleId,
+                activeDurationMs = value.activeDuration,
+                grossCharacters = value.grossCharacters,
+                uniqueSourceCharacters = value.uniqueSourceCharacters,
+                netCharacters = value.netCharacters,
+                provenanceState = key.provenance.name,
+                replayState = if (key.replay) "REPLAY" else "PRIMARY",
+                rollupVersion = rollupVersion.toLong(),
             )
         }
         events.asSequence()
@@ -4706,6 +4821,33 @@ private data class RollupKey(
         ).joinToString("\u001f")
 }
 
+private data class HourlyRollupKey(
+    val date: ImmersionLocalDate,
+    val hour: Int,
+    val titleId: String,
+    val mediaKind: MediaKind,
+    val profileId: String,
+    val languageTag: LanguageTag?,
+    val provenance: ProvenanceState,
+    val replay: Boolean,
+) {
+    init {
+        require(hour in 0..23)
+    }
+
+    fun scopeKey(): String =
+        listOf(
+            date.epochDay,
+            hour,
+            profileId,
+            languageTag?.value.orEmpty(),
+            mediaKind.name,
+            titleId,
+            provenance.name,
+            if (replay) "REPLAY" else "PRIMARY",
+        ).joinToString("\u001f")
+}
+
 private class MutableRollup {
     var activeDuration: Long = 0
     var grossCharacters: Long = 0
@@ -4724,6 +4866,18 @@ private class MutableRollup {
     val distinctCharacterIds = mutableSetOf<Long>()
     val newCharacterIds = mutableSetOf<Long>()
 }
+
+private class MutableHourlyRollup {
+    var activeDuration: Long = 0
+    var grossCharacters: Long = 0
+    var uniqueSourceCharacters: Long = 0
+    var netCharacters: Long = 0
+}
+
+private fun localHour(epochMillis: Long, offsetSeconds: Int): Int =
+    Instant.ofEpochMilli(epochMillis)
+        .atOffset(ZoneOffset.ofTotalSeconds(offsetSeconds))
+        .hour
 
 private class MutableInventoryMetrics {
     private val wordIds = mutableSetOf<String>()
@@ -6002,6 +6156,49 @@ private fun SqlDriver.immersionDailyRollupFingerprint(
     }.value
 }
 
+private fun SqlDriver.immersionHourlyRollupDigest(
+    range: LocalDateRange,
+    seedDigest: String,
+): String {
+    require(seedDigest.isNotBlank())
+    val tableName = "immersion_hourly_rollup"
+    val columns = portableColumns(tableName)
+    val projection = columns.joinToString(", ") { it.name.quotedIdentifier() }
+    val primaryKeyOrder = columns
+        .filter { it.primaryKeyPosition > 0 }
+        .sortedBy { it.primaryKeyPosition }
+        .joinToString(", ") { it.name.quotedIdentifier() }
+    return executeQuery(
+        identifier = null,
+        sql = """
+            SELECT $projection
+            FROM ${tableName.quotedIdentifier()}
+            WHERE local_date BETWEEN ? AND ?
+            ORDER BY local_date, local_hour, $primaryKeyOrder
+        """.trimIndent(),
+        mapper = { cursor ->
+            var digest = seedDigest
+            while (cursor.next().value) {
+                val row = cursor.readPortableRow(
+                    tableName = tableName,
+                    columns = columns,
+                    includePrivateText = true,
+                )
+                digest = portableRollupSemanticDigest(
+                    previousDigest = digest,
+                    rowKind = "hourly",
+                    rowDigest = row.portableHash(),
+                )
+            }
+            QueryResult.Value(digest)
+        },
+        parameters = 2,
+    ) {
+        bindLong(0, range.start.epochDay)
+        bindLong(1, range.endInclusive.epochDay)
+    }.value
+}
+
 private fun portableRollupSemanticDigest(
     previousDigest: String,
     rowKind: String,
@@ -6964,12 +7161,12 @@ private const val IMMERSION_ROLLUP_SECOND_PASS_LIFETIME_CHECKPOINT =
     "immersion_rollup_second_pass_lifetime"
 private const val PORTABLE_ROLLUP_FIRST_PASS = 1
 private const val PORTABLE_ROLLUP_SECOND_PASS = 2
-private const val PORTABLE_ROLLUP_PROGRESS_FORMAT_VERSION = 2
-private const val PORTABLE_ROLLUP_FINGERPRINT_VERSION = 2
+private const val PORTABLE_ROLLUP_PROGRESS_FORMAT_VERSION = 3
+private const val PORTABLE_ROLLUP_FINGERPRINT_VERSION = 3
 private const val PORTABLE_ROLLUP_CHUNK_DAYS = 31L
 private const val PORTABLE_ROLLUP_LIFETIME_PAGE_SIZE = 256
 private const val PORTABLE_ROLLUP_FINGERPRINT_DOMAIN =
-    "chimahon:immersion:portable-rollup-semantic:v2"
+    "chimahon:immersion:portable-rollup-semantic:v3"
 private const val IMMERSION_TITLE_EXCLUSION_TYPE = "TITLE"
 private const val IMMERSION_CAPTURE_EXCLUSION_SCOPE = "capture"
 private const val MILLIS_PER_DAY = 86_400_000L
@@ -7075,6 +7272,7 @@ private val IMMERSION_RESET_DERIVED_TABLES = listOf(
     "immersion_anki_operation",
     "immersion_anki_snapshot",
     "immersion_daily_rollup",
+    "immersion_hourly_rollup",
     "immersion_lifetime_rollup",
     "immersion_applied_event",
     "immersion_rollup_dirty",

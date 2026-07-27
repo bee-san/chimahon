@@ -1,0 +1,67 @@
+-- SPDX-License-Identifier: MIT
+
+CREATE TABLE immersion_hourly_rollup(
+    scope_key TEXT NOT NULL PRIMARY KEY,
+    local_date INTEGER NOT NULL,
+    local_hour INTEGER NOT NULL,
+    profile_id TEXT NOT NULL DEFAULT '',
+    language_tag TEXT NOT NULL DEFAULT '',
+    media_kind TEXT NOT NULL DEFAULT '',
+    title_id TEXT NOT NULL DEFAULT '',
+    active_duration_ms INTEGER NOT NULL DEFAULT 0,
+    gross_characters INTEGER NOT NULL DEFAULT 0,
+    unique_source_characters INTEGER NOT NULL DEFAULT 0,
+    net_characters INTEGER NOT NULL DEFAULT 0,
+    provenance_state TEXT NOT NULL DEFAULT 'AVAILABLE',
+    replay_state TEXT NOT NULL DEFAULT 'PRIMARY',
+    rollup_version INTEGER NOT NULL,
+    CHECK(local_hour BETWEEN 0 AND 23),
+    CHECK(active_duration_ms >= 0),
+    CHECK(gross_characters >= 0),
+    CHECK(unique_source_characters >= 0)
+);
+
+CREATE INDEX immersion_hourly_rollup_date_index
+ON immersion_hourly_rollup(local_date DESC, local_hour, scope_key);
+
+CREATE INDEX immersion_hourly_rollup_hour_index
+ON immersion_hourly_rollup(local_hour, local_date DESC, scope_key);
+
+INSERT INTO immersion_rollup_dirty(local_date, title_id, reason, updated_at)
+SELECT
+    local_date,
+    title_id,
+    'ROLLUP_V3_HOURLY',
+    max(coalesce(last_applied_event_at, 0))
+FROM immersion_daily_rollup
+GROUP BY local_date, title_id
+ON CONFLICT(local_date, title_id, reason) DO UPDATE SET
+    updated_at = max(updated_at, excluded.updated_at);
+
+INSERT INTO immersion_rollup_dirty(local_date, title_id, reason, updated_at)
+SELECT
+    coalesce(
+        legacy_local_date,
+        (started_at + start_offset_seconds * 1000) / 86400000
+    ),
+    title_id,
+    'ROLLUP_V3_HOURLY',
+    max(coalesce(ended_at, started_at))
+FROM immersion_session
+WHERE status != 'DELETED'
+GROUP BY 1, 2
+ON CONFLICT(local_date, title_id, reason) DO UPDATE SET
+    updated_at = max(updated_at, excluded.updated_at);
+
+INSERT INTO immersion_rollup_dirty(local_date, title_id, reason, updated_at)
+SELECT
+    event.local_date,
+    session.title_id,
+    'ROLLUP_V3_HOURLY',
+    max(event.occurred_at)
+FROM immersion_event AS event
+JOIN immersion_session AS session ON session.id = event.session_id
+WHERE session.status != 'DELETED'
+GROUP BY event.local_date, session.title_id
+ON CONFLICT(local_date, title_id, reason) DO UPDATE SET
+    updated_at = max(updated_at, excluded.updated_at);

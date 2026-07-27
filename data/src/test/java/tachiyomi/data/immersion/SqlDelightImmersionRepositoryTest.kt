@@ -154,6 +154,7 @@ class SqlDelightImmersionRepositoryTest {
             "immersion_anki_item",
             "immersion_anki_character",
             "immersion_daily_rollup",
+            "immersion_hourly_rollup",
             "immersion_lifetime_rollup",
             "immersion_applied_event",
             "immersion_goal",
@@ -231,10 +232,83 @@ class SqlDelightImmersionRepositoryTest {
             ) shouldBe 1
             queryLong(
                 migrationDriver,
+                "SELECT count(*) FROM pragma_table_info('immersion_hourly_rollup') WHERE name IN ('local_hour', 'provenance_state', 'replay_state')",
+            ) shouldBe 3
+            queryLong(
+                migrationDriver,
                 "SELECT count(*) FROM pragma_table_info('immersion_event') WHERE name = 'local_date'",
             ) shouldBe 1
             queryImmersionSchema(migrationDriver) shouldContainExactly queryImmersionSchema(driver)
             assertLegacySessionConstraints(migrationDriver)
+        } finally {
+            migrationDriver.close()
+        }
+    }
+
+    @Test
+    fun `migration 60 adds hourly rollups and dirties historical activity`() {
+        val migrationDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        try {
+            Database.Schema.migrate(
+                driver = migrationDriver,
+                oldVersion = 47,
+                newVersion = 60,
+            ).value
+            migrationDriver.execute(
+                null,
+                """
+                INSERT INTO immersion_daily_rollup(
+                    scope_key,
+                    local_date,
+                    title_id,
+                    gross_characters,
+                    rollup_version,
+                    last_applied_event_at
+                )
+                VALUES ('historical', 20000, 'historical-title', 100, 2, 1234)
+                """.trimIndent(),
+                0,
+            ).value
+            migrationDriver.execute(
+                null,
+                """
+                UPDATE immersion_rollup_state
+                SET rollup_version = 2
+                WHERE scope_key = 'global'
+                """.trimIndent(),
+                0,
+            ).value
+
+            Database.Schema.migrate(
+                driver = migrationDriver,
+                oldVersion = 60,
+                newVersion = Database.Schema.version,
+            ).value
+
+            queryLong(
+                migrationDriver,
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'immersion_hourly_rollup'",
+            ) shouldBe 1
+            queryLong(
+                migrationDriver,
+                "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name LIKE 'immersion_hourly_rollup_%_index'",
+            ) shouldBe 2
+            queryLong(
+                migrationDriver,
+                """
+                SELECT count(*)
+                FROM immersion_rollup_dirty
+                WHERE
+                    local_date = 20000
+                    AND title_id = 'historical-title'
+                    AND reason = 'ROLLUP_V3_HOURLY'
+                """.trimIndent(),
+            ) shouldBe 1
+            queryLong(
+                migrationDriver,
+                "SELECT rollup_version FROM immersion_rollup_state WHERE scope_key = 'global'",
+            ) shouldBe 2
+            queryLong(migrationDriver, "SELECT count(*) FROM immersion_hourly_rollup") shouldBe 0
         } finally {
             migrationDriver.close()
         }
@@ -2765,6 +2839,23 @@ class SqlDelightImmersionRepositoryTest {
             it.sessionCount shouldBe 1
             it.rowCount shouldBe 3
         }
+        repository.temporalActivity(
+            StatsFilter(dateRange = range),
+        ).hours.single().let { hour ->
+            hour.hourOfDay shouldBe 0
+            hour.totals.activeDurationMillis shouldBe 70 * 60 * 1_000L
+            hour.totals.grossCharacters shouldBe 150
+        }
+        repository.temporalActivity(
+            StatsFilter(
+                dateRange = range,
+                includeRereadsAndReplays = false,
+            ),
+        ).hours.single().let { hour ->
+            hour.hourOfDay shouldBe 0
+            hour.totals.activeDurationMillis shouldBe 60 * 60 * 1_000L
+            hour.totals.grossCharacters shouldBe 100
+        }
 
         val daily = repository.dailyRollups(range)
         daily.size shouldBe 3
@@ -2862,6 +2953,7 @@ class SqlDelightImmersionRepositoryTest {
         val titleA = TitleId("00000000-0000-0000-0003-000000000001")
         val titleB = TitleId("00000000-0000-0000-0003-000000000002")
         val titleC = TitleId("00000000-0000-0000-0003-000000000003")
+        val titleD = TitleId("00000000-0000-0000-0003-000000000004")
         val profile = "temporal-profile"
         val japanese = LanguageTag("ja")
 
@@ -2991,7 +3083,37 @@ class SqlDelightImmersionRepositoryTest {
             grossCharacters = 200,
             uniqueSourceCharacters = 200,
         )
-        repository.rebuildRollups(range, 2, Instant.parse("2026-07-22T00:00:00Z").toEpochMilli())
+        val legacyAt = Instant.parse("2026-07-21T13:00:00Z").toEpochMilli()
+        val legacyAggregate = legacyBatch().aggregates.single().copy(
+            sessionId = sessionId(3_005),
+            titleId = titleD,
+            titleSourceKey = "legacy:temporal",
+            displayTitle = "Legacy temporal",
+            profileId = profile,
+            languageTag = japanese,
+            localDate = tuesday,
+            startAnchorEpochMillis = legacyAt,
+            activeDuration = MillisecondDuration(1_800_000),
+            originalReadingTimeSeconds = 1_800.0,
+            characters = NonNegativeCounter(80),
+            cardsTotal = NonNegativeCounter.ZERO,
+        )
+        repository.importLegacyBatch(
+            legacyBatch(contentHash = "d".repeat(64)).copy(
+                identity = LegacyImportIdentity(
+                    sourceKey = "legacy/temporal/statistics.json",
+                    sourceVersion = 1,
+                    contentHash = "d".repeat(64),
+                ),
+                aggregates = listOf(legacyAggregate),
+                importedAtEpochMillis = legacyAt + 1,
+            ),
+        ).state shouldBe LegacyImportResultState.IMPORTED
+        repository.rebuildRollups(
+            range,
+            ImmersionStatsVersions.ROLLUP,
+            Instant.parse("2026-07-22T00:00:00Z").toEpochMilli(),
+        )
 
         val filter = StatsFilter(
             dateRange = range,
@@ -3009,6 +3131,38 @@ class SqlDelightImmersionRepositoryTest {
             activity.weekdays.map { it.isoDayOfWeek } shouldContainExactly listOf(1, 2)
             activity.weekdays.map { it.totals.grossCharacters } shouldContainExactly listOf(300, 200)
         }
+        repository.temporalActivity(
+            filter.copy(includeRereadsAndReplays = true),
+        ).hours.let { hours ->
+            hours.map { it.hourOfDay } shouldContainExactly listOf(9, 10, 12)
+            hours.map { it.totals.grossCharacters } shouldContainExactly listOf(300, 50, 200)
+        }
+        repository.temporalActivity(
+            filter.copy(
+                includeLegacyAggregates = true,
+                provenanceStates = emptySet(),
+            ),
+        ).hours.let { hours ->
+            hours.map { it.hourOfDay } shouldContainExactly listOf(9, 12, 13)
+            hours.map { it.totals.grossCharacters } shouldContainExactly listOf(300, 200, 80)
+            hours.last().totals.activeDurationMillis shouldBe 1_800_000
+        }
+        repository.temporalActivity(
+            filter.copy(
+                titleIds = setOf(titleD),
+                includeLegacyAggregates = true,
+                provenanceStates = setOf(
+                    tachiyomi.domain.immersion.model.ProvenanceState.LEGACY_AGGREGATE,
+                ),
+            ),
+        ).hours.single().let { legacy ->
+            legacy.hourOfDay shouldBe 13
+            legacy.totals.grossCharacters shouldBe 80
+        }
+        repository.temporalActivity(
+            filter.copy(dateRange = LocalDateRange(monday, monday)),
+        ).hours.map { it.hourOfDay } shouldContainExactly listOf(9)
+        queryLong("SELECT count(*) FROM immersion_hourly_rollup") shouldBe 5
         repository.titleTrendDaily(
             filter,
             AnalyticsTitleSeriesSelection.TOP_CHARACTERS,
@@ -3029,6 +3183,17 @@ class SqlDelightImmersionRepositoryTest {
             AnalyticsTitleSeriesSelection.TOP_CHARACTERS,
             20,
         ).single().metrics.characters.gross shouldBe NonNegativeCounter(300)
+        driver.execute(
+            null,
+            """
+            UPDATE immersion_hourly_rollup
+            SET rollup_version = ${ImmersionStatsVersions.ROLLUP - 1}
+            WHERE scope_key = (SELECT min(scope_key) FROM immersion_hourly_rollup)
+            """.trimIndent(),
+            0,
+        ).value
+        repository.validateInvariants(ImmersionStatsVersions.ROLLUP)
+            .rollupVersionMismatches shouldBe NonNegativeCounter(1)
     }
 
     @Test
@@ -3620,6 +3785,13 @@ class SqlDelightImmersionRepositoryTest {
             createdAtEpochMillis = 3_000,
         )
         privateArchive.includesRawText shouldBe false
+        privateArchive.tables.none {
+            it.name in setOf(
+                "immersion_daily_rollup",
+                "immersion_hourly_rollup",
+                "immersion_lifetime_rollup",
+            )
+        } shouldBe true
         privateArchive.tables.single { it.name == "immersion_source_unit" }.let { table ->
             val rawTextIndex = table.columns.indexOfFirst { it.name == "raw_text" }
             table.rows.single().cells[rawTextIndex].kind.name shouldBe "NULL"
@@ -3664,6 +3836,7 @@ class SqlDelightImmersionRepositoryTest {
                 it.sessions shouldBe NonNegativeCounter(1)
                 it.grossCharacters shouldBe NonNegativeCounter(100)
             }
+            queryLong(targetDriver, "SELECT count(*) FROM immersion_hourly_rollup") shouldBe 1
             target.mergePortableArchive(privateArchive, 4_001).let {
                 it shouldBe firstPrivateMerge.copy(
                     disposition = ImmersionMergeDisposition.ALREADY_COMPLETE,
@@ -4516,6 +4689,67 @@ class SqlDelightImmersionRepositoryTest {
     }
 
     @Test
+    fun `portable merge restarts validation for legacy rollup progress`() = runTest {
+        val archive = multiChunkPortableArchive()
+        val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        try {
+            Database.Schema.create(targetDriver).value
+            targetDriver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+            val targetHandler = AndroidDatabaseHandler(
+                createDatabase(targetDriver),
+                targetDriver,
+                databaseDispatcher,
+                databaseDispatcher,
+            )
+            var interruptFirstChunk = true
+            val interrupted = SqlDelightImmersionRepository(
+                handler = targetHandler,
+                portableMergeCheckpointObserver = { _, tableName, nextRowOffset ->
+                    if (
+                        interruptFirstChunk &&
+                        tableName == "immersion_rollup_first_pass_chunk" &&
+                        nextRowOffset == 1
+                    ) {
+                        interruptFirstChunk = false
+                        error("simulated legacy progress upgrade")
+                    }
+                },
+            )
+            runCatching {
+                interrupted.mergePortableArchive(archive, 12_000_000_000)
+            }.exceptionOrNull() shouldNotBe null
+            targetDriver.execute(
+                null,
+                """
+                UPDATE immersion_portable_merge_checkpoint
+                SET verification_json = json_set(
+                    verification_json,
+                    '$.formatVersion',
+                    2
+                )
+                """.trimIndent(),
+                0,
+            ).value
+
+            val restartedFirstPassChunks = mutableListOf<Int>()
+            SqlDelightImmersionRepository(
+                handler = targetHandler,
+                portableMergeCheckpointObserver = { _, tableName, nextRowOffset ->
+                    if (tableName == "immersion_rollup_first_pass_chunk") {
+                        restartedFirstPassChunks += nextRowOffset
+                    }
+                },
+            ).mergePortableArchive(archive, 12_000_001_000).let { report ->
+                report.disposition shouldBe ImmersionMergeDisposition.RESUMED
+                report.verification.isHealthy shouldBe true
+            }
+            restartedFirstPassChunks shouldContainExactly listOf(1, 2, 3, 4)
+        } finally {
+            targetDriver.close()
+        }
+    }
+
+    @Test
     fun `portable merge resumes lifetime fingerprint paging from its committed scope cursor`() =
         runTest {
             val archive = multiLifetimePagePortableArchive()
@@ -5143,6 +5377,7 @@ class SqlDelightImmersionRepositoryTest {
             nowEpochMillis = 2_500,
         )
         queryLong("SELECT count(*) FROM immersion_daily_rollup") shouldBe 1
+        queryLong("SELECT count(*) FROM immersion_hourly_rollup") shouldBe 1
         val oldArchive = repository.exportPortableArchive(false, 3_000)
 
         repository.deleteSession(SESSION_ID) shouldBe true
@@ -5163,6 +5398,7 @@ class SqlDelightImmersionRepositoryTest {
         queryLong("SELECT count(*) FROM immersion_word") shouldBe 0
         queryLong("SELECT count(*) FROM immersion_character") shouldBe 0
         queryLong("SELECT count(*) FROM immersion_daily_rollup") shouldBe 0
+        queryLong("SELECT count(*) FROM immersion_hourly_rollup") shouldBe 0
         queryLong("SELECT count(*) FROM immersion_lifetime_rollup") shouldBe 0
     }
 
@@ -5842,6 +6078,29 @@ class SqlDelightImmersionRepositoryTest {
 
         details.shouldNotBeEmpty()
         details.any { "immersion_event_local_date_scope_index" in it } shouldBe true
+    }
+
+    @Test
+    fun `all-time hourly analytics scan only the hourly rollup`() {
+        val details = queryStrings(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT
+                local_hour,
+                sum(active_duration_ms),
+                sum(gross_characters),
+                sum(unique_source_characters),
+                sum(net_characters)
+            FROM immersion_hourly_rollup
+            GROUP BY local_hour
+            ORDER BY local_hour
+            """.trimIndent(),
+            column = 3,
+        )
+
+        details.shouldNotBeEmpty()
+        details.any { "immersion_hourly_rollup_hour_index" in it } shouldBe true
+        details.none { "immersion_event" in it || "immersion_session" in it } shouldBe true
     }
 
     @Test
