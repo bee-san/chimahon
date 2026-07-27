@@ -15,6 +15,7 @@ import eu.kanade.presentation.more.stats.StatsTab
 import eu.kanade.presentation.more.stats.StatsTrendMetric
 import eu.kanade.presentation.more.stats.decodePersistedStatsFilterSelection
 import eu.kanade.tachiyomi.ui.dictionary.DictionaryPreferences
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -1238,17 +1239,32 @@ class StatsScreenModel(
                     } else {
                         StatsLoadable(refreshing = true)
                     },
+                    sessionDeletionPreview = if (session == null) {
+                        StatsLoadable()
+                    } else {
+                        StatsLoadable(refreshing = true)
+                    },
                 ),
             )
         }
         if (session != null) {
             screenModelScope.launch {
                 val state = successState() ?: return@launch
-                val result = runCatching {
-                    analyticsService.sessionDetail(
-                        state.toStatsFilter(),
-                        session.id,
-                    )
+                val (detailResult, deletionPreviewResult) = coroutineScope {
+                    val detail = async {
+                        runCatching {
+                            analyticsService.sessionDetail(
+                                state.toStatsFilter(),
+                                session.id,
+                            )
+                        }
+                    }
+                    val deletionPreview = async {
+                        runCatching {
+                            maintenanceRepository.previewSessionDeletion(session.id)
+                        }
+                    }
+                    detail.await() to deletionPreview.await()
                 }
                 if (
                     !sessionDetailRequests.isCurrent(requestGeneration) ||
@@ -1259,8 +1275,15 @@ class StatsScreenModel(
                 updateSuccess {
                     it.copy(
                         details = it.details.copy(
-                            session = result.fold(
+                            session = detailResult.fold(
                                 onSuccess = { value -> StatsLoadable(value) },
+                                onFailure = { StatsLoadable(error = true) },
+                            ),
+                            sessionDeletionPreview = deletionPreviewResult.fold(
+                                onSuccess = { value ->
+                                    value?.let { StatsLoadable(value = it) }
+                                        ?: StatsLoadable(error = true)
+                                },
                                 onFailure = { StatsLoadable(error = true) },
                             ),
                         ),
@@ -1271,8 +1294,19 @@ class StatsScreenModel(
     }
 
     fun deleteSession(session: tachiyomi.domain.immersion.model.ImmersionSession) {
+        val expectedPreview = successState()?.details?.sessionDeletionPreview?.value ?: return
         screenModelScope.launch {
-            if (!maintenanceRepository.deleteSession(session.id)) return@launch
+            val deleted = try {
+                maintenanceRepository.deleteSession(session.id, expectedPreview)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                null
+            }
+            if (deleted == null) {
+                selectSession(session)
+                return@launch
+            }
             repairAllDirtyRollups()
             selectSession(null)
             refresh()

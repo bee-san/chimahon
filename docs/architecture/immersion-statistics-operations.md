@@ -67,21 +67,39 @@ remote exposure to the same source. The session tombstone prevents the deleted
 activity from being restored, and post-merge orphan cleanup removes any
 unreferenced source text reintroduced by an older archive.
 
-Full reset previews sessions, time, gross characters, source units, words, and
-characters. It tombstones every portable source identity before deletion,
-clears derived/cache/import/sync/conflict state, and preserves the tombstones.
+Full reset previews sessions, time, gross characters, source units, words,
+characters, and goals. It tombstones every portable source identity before
+deletion, clears derived/cache/import/sync/conflict state, and preserves the
+tombstones.
 
 Scoped deletion uses a separate, non-empty scope type. Date range, title, media,
 profile, and language predicates are combined, and an empty or malformed scope
 is rejected rather than widened to a full reset. The UI first freezes the scope
-and displays its affected sessions, active time, gross characters, and source
-units. Delete reloads that same scope and fails closed if its preview changed.
-Each matching session follows the same tombstone, source cleanup, dirty-rollup,
-and revision path as an individual session deletion. The maintenance UI also
-exposes raw-text-only and per-profile Anki-cache-only deletion; clearing the
-Anki cache never deletes AnkiDroid cards. A title report can disable capture for
-that title, and the exclusion is checked before an event reaches a capture
-queue.
+and displays its affected sessions, active time, gross characters, source
+units, words, characters, and goals. The preview carries a selection digest and
+database revision. Delete reloads that same scope and fails closed if either
+identity changed. Individual-session deletion uses the same exact-preview
+contract. Each matching session follows the same tombstone, source cleanup,
+dirty-rollup, and revision path. The maintenance UI also exposes raw-text-only
+and per-profile Anki-cache-only deletion; clearing the Anki cache never deletes
+AnkiDroid cards. A title report can disable capture for that title, and the
+exclusion is checked before an event reaches a capture queue.
+
+## Goal forecast contract
+
+Goal progress keeps activity on the local date recorded at capture time.
+Current and future boundaries use the device's current timezone. Weekday
+multipliers are weights: a 50% day contributes half a full-target active day,
+and a zero-target rest day contributes no required pace and does not break a
+streak.
+
+Forecasts use at most the latest 30 calendar days, normalize each active day by
+its configured multiplier, include zero-progress active days, and cap extreme
+high-volume days before averaging. A date is hidden until at least three
+qualifying progress days exist and is labeled fully available only at seven.
+The UI exposes the window, qualifying-day count, remaining active-day count,
+and required pace per full-target active day. Unknown title length or an
+unusable pace remains unavailable rather than producing a precise date.
 
 ## Performance and battery budgets
 
@@ -125,4 +143,7 @@ Disable capture/UI or return to the legacy query path if duplicate events,
 incognito writes, queue drops, corrupt migration/repair, unacceptable
 reader/player performance, excessive storage/battery growth, or non-reproducible
 backup restore is observed. Obsolete readers and writers are removed only in a
-later, separately reviewable change after field evidence exists.
+later, separately reviewable change after field evidence exists. The evidence
+bundle, writer inventory, staged read-only transition, and rollback procedure
+are defined in
+`../implementation/immersion-stats-legacy-retirement-runbook.md`.

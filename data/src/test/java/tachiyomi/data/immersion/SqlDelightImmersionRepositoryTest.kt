@@ -6828,12 +6828,27 @@ class SqlDelightImmersionRepositoryTest {
             86_402_000,
             MillisecondDuration(1_000),
         ) shouldBe PersistenceResult.Applied
+        repository.upsertGoal(goal(id = "affected"))
+        repository.upsertGoal(
+            goal(
+                id = "outside-date",
+                startDate = ImmersionLocalDate(1),
+            ),
+        )
+        repository.upsertGoal(
+            goal(
+                id = "manual",
+                type = "MANUAL",
+                metric = "manual",
+            ),
+        )
         val scope = ImmersionStatsDeletionScope(
             dateRange = LocalDateRange(ImmersionLocalDate(0), ImmersionLocalDate(0)),
         )
 
         val preview = repository.previewScopedStatsDeletion(scope)
         preview.sessions shouldBe 1
+        preview.goals shouldBe 1
         repository.deleteScopedStats(scope, preview).sessions shouldBe 1
 
         repository.getSession(SESSION_ID) shouldBe null
@@ -6922,10 +6937,70 @@ class SqlDelightImmersionRepositoryTest {
     }
 
     @Test
+    fun `session deletion requires a current exact impact preview`() = runTest {
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        repository.createSession(sessionStart()) shouldBe PersistenceResult.Applied
+        repository.appendExposure(exposure(sequence = 1, eventNumber = 604)) shouldBe PersistenceResult.Applied
+        repository.finalizeSession(
+            SESSION_ID,
+            SessionStatus.COMPLETED,
+            2_000,
+            MillisecondDuration(1_000),
+        ) shouldBe PersistenceResult.Applied
+        val stalePreview = requireNotNull(repository.previewSessionDeletion(SESSION_ID))
+        stalePreview.sessions shouldBe 1
+        stalePreview.grossCharacters shouldBe 100
+        stalePreview.sourceUnits shouldBe 1
+        stalePreview.goals shouldBe 0
+
+        repository.upsertGoal(goal(id = "session-goal"))
+
+        runCatching {
+            repository.deleteSession(SESSION_ID, stalePreview)
+        }.exceptionOrNull() shouldNotBe null
+        repository.getSession(SESSION_ID)?.id shouldBe SESSION_ID
+        deletedSessionCallbacks shouldBe emptyList()
+
+        val currentPreview = requireNotNull(repository.previewSessionDeletion(SESSION_ID))
+        currentPreview.goals shouldBe 1
+        repository.deleteSession(SESSION_ID, currentPreview) shouldBe currentPreview
+        repository.getSession(SESSION_ID) shouldBe null
+        deletedSessionCallbacks shouldContainExactly listOf(SESSION_ID)
+    }
+
+    @Test
+    fun `session deletion preview includes goals affected after the session start date`() = runTest {
+        val nextDay = 86_401_000L
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        repository.createSession(sessionStart()) shouldBe PersistenceResult.Applied
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = 605).copy(
+                occurredAtEpochMillis = nextDay,
+                source = source(nextDay),
+            ),
+        ) shouldBe PersistenceResult.Applied
+        repository.finalizeSession(
+            SESSION_ID,
+            SessionStatus.COMPLETED,
+            nextDay + 1_000,
+            MillisecondDuration(1_000),
+        ) shouldBe PersistenceResult.Applied
+        repository.upsertGoal(
+            goal(
+                id = "next-day-goal",
+                startDate = ImmersionLocalDate(1),
+            ),
+        )
+
+        requireNotNull(repository.previewSessionDeletion(SESSION_ID)).goals shouldBe 1
+    }
+
+    @Test
     fun `full reset previews impact and tombstones prevent archive resurrection`() = runTest {
         repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
         repository.createSession(sessionStart()) shouldBe PersistenceResult.Applied
         repository.appendExposure(exposure(sequence = 1, eventNumber = 603)) shouldBe PersistenceResult.Applied
+        repository.upsertGoal(goal(id = "reset-goal"))
         repository.finalizeSession(
             SESSION_ID,
             SessionStatus.COMPLETED,
@@ -6937,6 +7012,7 @@ class SqlDelightImmersionRepositoryTest {
             it.sessions shouldBe 1
             it.grossCharacters shouldBe 100
             it.sourceUnits shouldBe 1
+            it.goals shouldBe 1
         }
 
         repository.resetAllStats("device-reset", 4_000).sessions shouldBe 1
@@ -7303,6 +7379,30 @@ class SqlDelightImmersionRepositoryTest {
         startOffsetSeconds = 0,
         captureVersion = 1,
         schemaVersion = 1,
+    )
+
+    private fun goal(
+        id: String,
+        type: String = "DATE_BOUND_TOTAL",
+        metric: String = "gross_characters",
+        startDate: ImmersionLocalDate? = ImmersionLocalDate(0),
+    ) = ImmersionGoal(
+        id = id,
+        type = type,
+        metric = metric,
+        target = 1_000.0,
+        period = "TOTAL",
+        startDate = startDate,
+        endDate = null,
+        mediaKind = null,
+        profileId = null,
+        languageTag = null,
+        titleId = null,
+        weekdayMultipliers = null,
+        restDayPolicy = "SKIP",
+        state = "ACTIVE",
+        createdAtEpochMillis = 1,
+        updatedAtEpochMillis = 1,
     )
 
     private fun sessionStartedEvent() = SessionEvent(

@@ -871,7 +871,16 @@ data class AnalyticsGoalProgress(
     val longestStreakDays: Int = 0,
     val isRestDay: Boolean = false,
     val forecastConfidence: CapabilityState = CapabilityState.UNAVAILABLE,
-)
+    val remainingActiveDays: Int? = null,
+    val forecastSampleDays: Int = 0,
+    val forecastWindowDays: Int = 30,
+) {
+    init {
+        require(remainingActiveDays == null || remainingActiveDays >= 0)
+        require(forecastSampleDays >= 0)
+        require(forecastWindowDays > 0)
+    }
+}
 
 @Serializable
 enum class AnalyticsAnkiReport {

@@ -5,6 +5,7 @@ import android.graphics.Paint
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -754,10 +755,15 @@ private fun ActivityHeatmap(
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     week.forEach { point ->
                         if (point == null) {
-                            Spacer(Modifier.size(14.dp))
+                            Spacer(Modifier.size(24.dp))
                         } else {
                             val value = point.metrics.characterValue(metric)
                             val fraction = value.toFloat() / maximum.toFloat()
+                            val level = if (value == 0L) {
+                                0
+                            } else {
+                                (fraction * 4).roundToInt().coerceIn(1, 4)
+                            }
                             val description = stringResource(
                                 KMR.strings.stats_heatmap_day,
                                 formatLocalDate(point.range.start),
@@ -769,15 +775,33 @@ private fun ActivityHeatmap(
                             )
                             Box(
                                 modifier = Modifier
-                                    .size(14.dp)
+                                    .size(24.dp)
                                     .background(
-                                        color = MaterialTheme.colorScheme.primary.copy(
-                                            alpha = 0.12f + (0.88f * fraction),
+                                        color = lerp(
+                                            MaterialTheme.colorScheme.surfaceVariant,
+                                            MaterialTheme.colorScheme.primaryContainer,
+                                            fraction,
                                         ),
                                         shape = RoundedCornerShape(3.dp),
                                     )
+                                    .border(
+                                        width = if (level >= 3) 2.dp else 1.dp,
+                                        color = MaterialTheme.colorScheme.outline,
+                                        shape = RoundedCornerShape(3.dp),
+                                    )
                                     .semantics { contentDescription = description },
-                            )
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    text = level.toString(),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (value == 0L) {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    } else {
+                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                    },
+                                )
+                            }
                         }
                     }
                 }
@@ -2496,6 +2520,7 @@ private fun SessionsTab(
                 SessionDetail(
                     fallback = session,
                     detail = state.details.session,
+                    deletionPreview = state.details.sessionDeletionPreview,
                     onClose = { onSelect(null) },
                     onDelete = { onDelete(session) },
                 )
@@ -4119,6 +4144,7 @@ private fun SessionRow(session: ImmersionSession, onClick: () -> Unit) {
 private fun SessionDetail(
     fallback: ImmersionSession,
     detail: StatsLoadable<AnalyticsResult<AnalyticsSessionDetail?>>,
+    deletionPreview: StatsLoadable<tachiyomi.domain.immersion.model.ImmersionDeletionPreview>,
     onClose: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -4161,16 +4187,33 @@ private fun SessionDetail(
             onDismissRequest = { confirmDelete = false },
             title = { Text(stringResource(KMR.strings.stats_delete_session)) },
             text = {
-                Text(
-                    stringResource(
-                        KMR.strings.stats_delete_session_warning,
-                        formatDuration(session.activeDuration.value),
-                        formatCount(session.grossCharacters.value),
-                    ),
-                )
+                when {
+                    deletionPreview.value != null -> {
+                        val preview = requireNotNull(deletionPreview.value)
+                        Text(
+                            stringResource(
+                                KMR.strings.stats_delete_scoped_preview,
+                                formatCount(preview.sessions),
+                                formatDuration(preview.activeDurationMillis),
+                                formatCount(preview.grossCharacters),
+                                formatCount(preview.sourceUnits),
+                                formatCount(preview.words),
+                                formatCount(preview.characters),
+                                formatCount(preview.goals),
+                            ),
+                        )
+                    }
+                    deletionPreview.error -> {
+                        Text(stringResource(KMR.strings.stats_delete_preview_failed))
+                    }
+                    else -> {
+                        Text(stringResource(KMR.strings.stats_loading_section))
+                    }
+                }
             },
             confirmButton = {
                 TextButton(
+                    enabled = deletionPreview.value != null,
                     onClick = {
                         confirmDelete = false
                         onDelete()
@@ -4368,6 +4411,7 @@ private fun GoalCard(
                     stringResource(
                         KMR.strings.stats_goal_required_pace,
                         formatGoalValue(goal.goal.metric, it),
+                        goal.remainingActiveDays ?: 0,
                     ),
                 )
             }
@@ -4385,6 +4429,17 @@ private fun GoalCard(
                         KMR.strings.stats_goal_rolling_thirty,
                         formatGoalValue(goal.goal.metric, it),
                     ),
+                )
+            }
+            if (statsGoalForecastPresentation(goal) != StatsGoalForecastPresentation.NONE) {
+                Text(
+                    stringResource(
+                        KMR.strings.stats_goal_forecast_assumptions,
+                        goal.forecastWindowDays,
+                        goal.forecastSampleDays,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             Text(

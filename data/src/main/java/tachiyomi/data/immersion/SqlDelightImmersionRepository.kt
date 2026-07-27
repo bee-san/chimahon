@@ -2652,6 +2652,54 @@ class SqlDelightImmersionRepository(
         return result.preview
     }
 
+    override suspend fun previewSessionDeletion(
+        sessionId: SessionId,
+    ): ImmersionDeletionPreview? =
+        handler.await(inTransaction = true) {
+            val session = immersionQueries
+                .selectImmersionSessionById(sessionId.value)
+                .executeAsOneOrNull()
+                ?.toDomain()
+                ?: return@await null
+            scopedDeletionPreview(
+                sessions = listOf(session),
+                databaseRevision = immersionQueries.selectImmersionRevision().executeAsOne(),
+            )
+        }
+
+    override suspend fun deleteSession(
+        sessionId: SessionId,
+        expectedPreview: ImmersionDeletionPreview,
+    ): ImmersionDeletionPreview? {
+        require(
+            expectedPreview.selectionDigest != null &&
+                expectedPreview.databaseRevision != null,
+        ) {
+            "Session deletion requires an exact preview identity; preview again before deleting"
+        }
+        val deletedAt = System.currentTimeMillis()
+        val preview = handler.await(inTransaction = true) {
+            val session = immersionQueries
+                .selectImmersionSessionById(sessionId.value)
+                .executeAsOneOrNull()
+                ?.toDomain()
+                ?: return@await null
+            val currentPreview = scopedDeletionPreview(
+                sessions = listOf(session),
+                databaseRevision = immersionQueries.selectImmersionRevision().executeAsOne(),
+            )
+            require(currentPreview == expectedPreview) {
+                "Session deletion changed after preview; preview again before deleting"
+            }
+            check(deleteSessionInDatabase(sessionId, deletedAt)) {
+                "Session deletion changed while deleting ${sessionId.value}"
+            }
+            currentPreview
+        }
+        if (preview != null) onSessionDeleted(sessionId)
+        return preview
+    }
+
     override suspend fun deleteSession(sessionId: SessionId): Boolean {
         val deletedAt = System.currentTimeMillis()
         val deleted = handler.await(inTransaction = true) {
@@ -2808,6 +2856,12 @@ class SqlDelightImmersionRepository(
         }
         val wordIds = selectImmersionWordIdsForSources(sourceIds)
         val characterCodePoints = selectImmersionCharacterCodePointsForSources(sourceIds)
+        val affectedGoals = immersionQueries
+            .selectImmersionGoals()
+            .executeAsList()
+            .map(Immersion_goal::toDomain)
+            .count { goal -> sessions.any(goal::isAffectedByDeletionOf) }
+            .toLong()
         return ImmersionDeletionPreview(
             sessions = sessions.size.toLong(),
             activeDurationMillis = sessions.sumOf { it.activeDuration.value },
@@ -2815,6 +2869,7 @@ class SqlDelightImmersionRepository(
             sourceUnits = sourceIds.size.toLong(),
             words = wordIds.size.toLong(),
             characters = characterCodePoints.size.toLong(),
+            goals = affectedGoals,
             selectionDigest = sessions.selectionDigest(),
             databaseRevision = databaseRevision,
         )
@@ -8359,7 +8414,8 @@ private fun SqlDriver.previewAllImmersionDeletion(): ImmersionDeletionPreview =
                 (SELECT coalesce(sum(gross_characters), 0) FROM immersion_session),
                 (SELECT count(*) FROM immersion_source_unit),
                 (SELECT count(*) FROM immersion_word),
-                (SELECT count(*) FROM immersion_character)
+                (SELECT count(*) FROM immersion_character),
+                (SELECT count(*) FROM immersion_goal)
         """.trimIndent(),
         mapper = { cursor ->
             check(cursor.next().value)
@@ -8371,11 +8427,33 @@ private fun SqlDriver.previewAllImmersionDeletion(): ImmersionDeletionPreview =
                     sourceUnits = checkNotNull(cursor.getLong(3)),
                     words = checkNotNull(cursor.getLong(4)),
                     characters = checkNotNull(cursor.getLong(5)),
+                    goals = checkNotNull(cursor.getLong(6)),
                 ),
             )
         },
         parameters = 0,
     ).value
+
+private fun ImmersionGoal.isAffectedByDeletionOf(session: ImmersionSession): Boolean {
+    if (type == "MANUAL" || metric == "manual") return false
+    val goalStartDate = startDate
+    val goalEndDate = endDate
+    val calendar = ImmersionAnalyticsCalendar()
+    val sessionStartDate = calendar.localDate(
+        session.startedAtEpochMillis,
+        session.startOffsetSeconds,
+    )
+    val sessionEndDate = calendar.localDate(
+        session.endedAtEpochMillis ?: session.startedAtEpochMillis,
+        session.startOffsetSeconds,
+    )
+    return (goalStartDate == null || sessionEndDate >= goalStartDate) &&
+        (goalEndDate == null || sessionStartDate <= goalEndDate) &&
+        (mediaKind == null || mediaKind == session.mediaKind) &&
+        (profileId == null || profileId == session.profileId) &&
+        (languageTag == null || languageTag == session.languageTag) &&
+        (titleId == null || titleId == session.titleId)
+}
 
 private fun SqlDriver.singleLong(sql: String): Long =
     checkNotNull(singleNullableLong(sql)) { "Query returned no value: $sql" }

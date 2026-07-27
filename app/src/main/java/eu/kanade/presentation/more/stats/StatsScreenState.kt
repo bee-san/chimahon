@@ -29,6 +29,7 @@ import tachiyomi.domain.immersion.model.AnalyticsVocabularyFirstSeen
 import tachiyomi.domain.immersion.model.AnalyticsWordRow
 import tachiyomi.domain.immersion.model.CharacterMetric
 import tachiyomi.domain.immersion.model.ImmersionAnkiItem
+import tachiyomi.domain.immersion.model.ImmersionDeletionPreview
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
 import tachiyomi.domain.immersion.model.ImmersionSession
 import tachiyomi.domain.immersion.model.MaturityTier
@@ -153,6 +154,7 @@ data class StatsDetails(
         StatsLoadable(),
     val characterAnkiItems: StatsLoadable<List<ImmersionAnkiItem>> = StatsLoadable(),
     val session: StatsLoadable<AnalyticsResult<AnalyticsSessionDetail?>> = StatsLoadable(),
+    val sessionDeletionPreview: StatsLoadable<ImmersionDeletionPreview> = StatsLoadable(),
     val sourceSearch: StatsLoadable<AnalyticsResult<AnalyticsPage<AnalyticsSourceOccurrence>>> =
         StatsLoadable(),
 )
