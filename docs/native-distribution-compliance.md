@@ -1,71 +1,90 @@
 # Native distribution compliance
 
-This is a release gate for every APK or app bundle that contains the current
-FFmpegKit or mpv native artifacts. It is not a declaration that the gate has
-already been satisfied.
+This records the evidence for the exact native coordinates distributed by
+Chimahon. The native source gate is verified for these artifacts; replacing
+either coordinate requires a new audit and manifest update.
 
-## Verified binary facts
+## Verified artifacts
 
-- `com.github.jmir1:ffmpeg-kit:1.17` has SHA-256
-  `4570a5cb8fa2c87808e81ebf4b7f3747cb5aa52b1662dc8a1c03831c37b26b89`.
-  Its wrapper POM declares LGPL-3.0, while the tagged wrapper source headers
-  grant LGPL-3.0-or-later terms. Its bundled FFmpeg configuration enables GPL
-  and version-3 code. The native payload identifies itself as GPL version 3 or
-  later.
-- `com.github.aniyomiorg:aniyomi-mpv-lib:1.17.n` has SHA-256
-  `a08c2d3345fb1f46f7ffe2f68999f244666de4a1ed1f90a0cef6c1c761a6d793`.
-  Its POM declares MIT only. The exact AAR contains GPL-enabled mpv and
-  `libpostproc.so`, which identifies itself as GPL version 3 or later.
-- AboutLibraries overrides disclose both the wrapper and native-payload terms.
-  The app license detail screen renders every declared license, not only the
-  first one.
-- The manifest verifier resolves each declared coordinate without transitive
-  dependencies, requires exactly one AAR, and hashes that resolved file. A
-  coordinate cannot borrow another artifact's binary or source evidence.
-- The verifier resolves each annotated upstream tag with `git ls-remote`,
-  checks its tag-object ID, and requires `sourceCommit` to equal the tag's
-  peeled commit. AboutLibraries and notice links point to those real commit
-  trees rather than to annotated-tag objects.
+### FFmpegKit
+
+- Coordinate: `com.github.bee-san:ffmpeg-kit:1.18-chimahon.2`
+- AAR SHA-256:
+  `840ab71ef95a3fe056bf085e17d58f647397b2fdaea8b3bc2e95b1d4577f9a61`
+- Annotated tag object: `c3b7bb33d9d97554ef7b433f737e26eb30df3469`
+- Peeled commit: `6a937c79cea09748385215891b68bf7d78215f81`
+- Source SHA-256:
+  `a68fe00a26e52e322f516a581079778efb4614a9447ae8da557b8109388020cc`
+- Toolchain SHA-256:
+  `85acdd55b61b93a265abf95a8c64eebcb04ed659385ba3c5f33917db6dc761a6`
+- Build run:
+  <https://github.com/bee-san/ffmpeg-kit/actions/runs/30281363862>
+
+### Aniyomi mpv
+
+- Coordinate: `com.github.bee-san:aniyomi-mpv-lib:1.18.n-chimahon.4`
+- AAR SHA-256:
+  `33749a56f8afbc9b83252705f9e1dbdaba22f8418448e67d2f60efd6946e0cb8`
+- Annotated tag object: `295cb75a01066fa3f157ea4fb75eed19a91b2b78`
+- Peeled commit: `ff7447ea918eb460bf379cc8de16e076865b067b`
+- Source SHA-256:
+  `4083e436db9a7b9d44d54d876ede48a139ac2de59d4b5b4d01198b6b9d71fec3`
+- Toolchain SHA-256:
+  `535a7996e0701e37b8a46bd9707b0b872d3be1d958b4ec20a2ef234911b6136d`
+- Build run:
+  <https://github.com/bee-san/aniyomi-mpv-lib/actions/runs/30281268648>
+
+Both JitPack coordinates resolve to AARs that are byte-identical to their
+GitHub release AARs.
+
+## Source and build audit
+
+- Both release `SHA256SUMS` files validate every attached AAR, source archive,
+  and toolchain archive.
+- The FFmpegKit source archive contains 34,332 entries, no `.git` metadata, and
+  47 license, notice, copyright, or copying files. It includes the exact
+  FFmpegKit wrapper, patched FFmpeg tree, mpv build source, transitive native
+  dependencies, recursive submodules, patches, and build configuration.
+- The mpv source archive contains 22,984 entries, no `.git` metadata, all 12
+  native dependency roots, seven recorded recursive submodule trees, and 36
+  license, notice, copyright, or copying files.
+- Both source locks record Android NDK `27.2.12479018`, SDK platform `34`,
+  build tools `34.0.0`, FFmpeg `n7.1` at
+  `b08d7969c550a804a59511c7b83f2dd8cc0499b8`, and mpv at
+  `d82701962f99051a18d65c215b70d41ebadd9a22`.
+- The FFmpegKit AAR contains ten native libraries for each of `arm64-v8a`,
+  `armeabi-v7a`, `x86`, and `x86_64`. The mpv AAR contains four native
+  libraries for each of the same four ABIs.
+- Toolchain archives include the exact successful workflow URL, commit, runner
+  image, JDK, Gradle, NDK identity, helper-script checksum, and complete native
+  build logs.
+- AboutLibraries overrides disclose both wrapper and native-payload terms. The
+  app license detail screen renders every declared license, not only the first.
 - Native notices are a custom AboutLibraries license entry, so they are
   generated into the app's `R.raw.aboutlibraries` database even though generic
   `META-INF/NOTICE` files are excluded from APK packaging.
 
-## Why distribution is currently blocked
+## Enforcement
 
-The tagged native build scripts clone some dependencies from an unpinned
-default branch, including dav1d, libass, and libplacebo. The tag and build
-scripts are therefore not enough to reconstruct the exact sources used for the
-published AARs. Neither inspected AAR contains a source bundle or native
-license/notice bundle.
+`verifyNativeComplianceMetadata` resolves each coordinate without transitive
+dependencies, checks the AAR hash and annotated tag, and validates packaged
+license metadata. `verifyNativeSourceCompliance` additionally requires the
+verified gate, exact source and toolchain URLs and hashes, structured in-app
+Corresponding Source links, and an annotated application release tag that
+peels to the checked-out commit.
 
-`verifyNativeSourceCompliance` intentionally blocks release, release-test,
-FOSS, preview, and benchmark assembly, bundle, package, signing, publishing,
-and upload task paths while `docs/native-source-manifest.json` remains
-`blocked`. Debug builds remain available for development and verification.
+Release, release-test, FOSS, preview, and benchmark assembly, bundle, package,
+signing, publishing, and upload task paths depend on this enforcement. Source
+archives and equivalent-source directions must remain available for as long as
+their binaries are offered.
 
-## Unblocking a binary release
+## Application release status
 
-1. Prefer replacing both artifacts with reproducible builds whose direct and
-   transitive native sources, patches, submodules, and immutable revisions are
-   recorded.
-2. Archive the complete corresponding source, build scripts, patches, and
-   configuration needed to reproduce the exact distributed native binaries.
-3. Record the source archive URL and SHA-256, exact source commit and revision
-   URL, and a toolchain evidence archive URL and SHA-256 for each coordinate in
-   `native-source-manifest.json`.
-4. Point each artifact's structured AboutLibraries `Corresponding Source`
-   funding link at that artifact's exact source archive. Record the exact
-   application revision URL under `Application Corresponding Source` in the
-   native-notices entry. These structured links are rendered and clickable in
-   the app; prose containing the URL does not satisfy the gate.
-5. Preserve all applicable license texts, copyright notices, and attribution
-   files in the source archive and in the app's generated license database.
-6. Put equivalent-source directions next to every offered binary and keep the
-   source available for as long as that binary remains offered.
-7. Run `verifyNativeComplianceMetadata`, inspect the generated APK/AAB license
-   database and source links, and verify each archive checksum independently.
-8. Change `releaseGate` to `verified` only after a reviewer has checked the
-   archived source against the exact artifact hashes.
+Native compliance is complete. Application distribution remains independently
+blocked until every entry in `animated-scene-device-validation.json` has
+reviewed device evidence and its release gate is `verified`. A missing release
+OAuth client secret also prevents the GitHub Actions release build. Neither
+condition is waived by this native audit.
 
 Generated scene media is user output and does not become GPL-covered merely
 because FFmpeg decoded or muxed it. Users remain responsible for having a

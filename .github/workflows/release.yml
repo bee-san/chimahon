@@ -38,9 +38,11 @@ jobs:
           patch="${BASH_REMATCH[3]}"
           version_code=$((major * 10000 + minor * 100 + patch))
 
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version_name=$version_name" >> "$GITHUB_OUTPUT"
-          echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=$tag"
+            echo "version_name=$version_name"
+            echo "version_code=$version_code"
+          } >> "$GITHUB_OUTPUT"
 
   build:
     name: Build
@@ -62,6 +64,27 @@ jobs:
             git config --global url."https://$GH_PAT@github.com/".insteadOf "https://github.com/"
           fi
           git submodule update --init --recursive
+
+      - name: Verify annotated release tag
+        env:
+          RELEASE_TAG: ${{ needs.get_tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          tag_ref="refs/tags/$RELEASE_TAG"
+          peeled_tag_ref="$tag_ref^{}"
+          remote_refs=$(git ls-remote origin "$tag_ref" "$peeled_tag_ref")
+          tag_object=$(awk -v ref="$tag_ref" '$2 == ref { print $1 }' <<< "$remote_refs")
+          tag_commit=$(awk -v ref="$peeled_tag_ref" '$2 == ref { print $1 }' <<< "$remote_refs")
+          head_commit=$(git rev-parse HEAD)
+
+          if [ -z "$tag_object" ] || [ -z "$tag_commit" ] || [ "$tag_object" = "$tag_commit" ]; then
+            echo "::error::$RELEASE_TAG must be an annotated remote tag"
+            exit 1
+          fi
+          if [ "$tag_commit" != "$head_commit" ]; then
+            echo "::error::$RELEASE_TAG does not peel to the checked-out commit"
+            exit 1
+          fi
 
       - name: Set up JDK
         uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0

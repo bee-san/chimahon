@@ -54,17 +54,21 @@ val animatedSceneFixtureProvenance =
     rootProject.file("app/src/androidTest/assets/scene_capture_rotated_sdr.PROVENANCE.md")
 val nativeLibraryMetadataDirectory = rootProject.file("aboutlibraries/config/libraries")
 val nativeNoticeLicense = rootProject.file("aboutlibraries/config/licenses/chimahon-native-notices.json")
+val applicationSourceRepository = "https://github.com/bee-san/chimahon"
 val nativeArtifactCoordinates = setOf(
-    "com.github.jmir1:ffmpeg-kit:1.17",
-    "com.github.aniyomiorg:aniyomi-mpv-lib:1.17.n",
+    "com.github.bee-san:ffmpeg-kit:1.18-chimahon.2",
+    "com.github.bee-san:aniyomi-mpv-lib:1.18.n-chimahon.4",
 )
 val nativeSourceRepositories = mapOf(
-    "com.github.jmir1:ffmpeg-kit:1.17" to "https://github.com/jmir1/ffmpeg-kit",
-    "com.github.aniyomiorg:aniyomi-mpv-lib:1.17.n" to "https://github.com/aniyomiorg/aniyomi-mpv-lib",
+    "com.github.bee-san:ffmpeg-kit:1.18-chimahon.2" to "https://github.com/bee-san/ffmpeg-kit",
+    "com.github.bee-san:aniyomi-mpv-lib:1.18.n-chimahon.4" to
+        "https://github.com/bee-san/aniyomi-mpv-lib",
 )
 val nativeLicenseIdentifiers = mapOf(
-    "com.github.jmir1:ffmpeg-kit:1.17" to setOf("LGPL-3.0-or-later", "GPL-3.0-or-later"),
-    "com.github.aniyomiorg:aniyomi-mpv-lib:1.17.n" to setOf("MIT", "GPL-3.0-or-later"),
+    "com.github.bee-san:ffmpeg-kit:1.18-chimahon.2" to
+        setOf("LGPL-3.0-or-later", "GPL-3.0-or-later"),
+    "com.github.bee-san:aniyomi-mpv-lib:1.18.n-chimahon.4" to
+        setOf("MIT", "GPL-3.0-or-later"),
 )
 val nativeAarConfigurations = nativeArtifactCoordinates.associateWith { coordinate ->
     val dependency = dependencies.create(coordinate)
@@ -108,6 +112,57 @@ fun requireHttpsUrl(value: String, context: String) {
     }
 }
 
+data class RemoteAnnotatedTag(
+    val objectId: String,
+    val commitId: String,
+)
+
+fun resolveRemoteAnnotatedTag(repository: String, tag: String, context: String): RemoteAnnotatedTag {
+    check(Regex("[A-Za-z0-9._-]+").matches(tag)) {
+        "$context tag contains unsupported characters."
+    }
+    val tagRef = "refs/tags/$tag"
+    val peeledTagRef = "$tagRef^{}"
+    val tagProcess = ProcessBuilder(
+        "git",
+        "ls-remote",
+        "$repository.git",
+        tagRef,
+        peeledTagRef,
+    )
+        .redirectErrorStream(true)
+        .start()
+    val tagOutput = tagProcess.inputStream.bufferedReader().use { it.readText() }
+    check(tagProcess.waitFor() == 0) {
+        "$context tag lookup failed: ${tagOutput.trim()}"
+    }
+    val remoteRefs = tagOutput.lineSequence()
+        .filter { it.isNotBlank() }
+        .associate { line ->
+            val parts = line.split('\t', limit = 2)
+            check(parts.size == 2) { "$context tag lookup returned malformed output." }
+            parts[1] to parts[0]
+        }
+    val objectId = remoteRefs[tagRef]
+    val commitId = remoteRefs[peeledTagRef]
+    check(objectId != null && commitId != null && objectId != commitId) {
+        "$context must identify an annotated remote tag."
+    }
+    return RemoteAnnotatedTag(objectId, commitId)
+}
+
+fun currentGitHead(): String {
+    val process = ProcessBuilder("git", "rev-parse", "HEAD")
+        .directory(rootProject.projectDir)
+        .redirectErrorStream(true)
+        .start()
+    val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+    check(process.waitFor() == 0 && Regex("[0-9a-f]{40}").matches(output)) {
+        "Could not resolve the checked-out Git HEAD: $output"
+    }
+    return output
+}
+
 fun java.io.File.sha256(): String {
     val digest = MessageDigest.getInstance("SHA-256")
     inputStream().buffered().use { input ->
@@ -135,8 +190,8 @@ val verifyNativeComplianceMetadata by tasks.registering {
 
     doLast {
         val manifest = JsonSlurper().parse(nativeSourceManifest).requiredObject("Native source manifest")
-        check(manifest["schemaVersion"] == 2) {
-            "Native source manifest schemaVersion must be 2."
+        check(manifest["schemaVersion"] == 3) {
+            "Native source manifest schemaVersion must be 3."
         }
         check(manifest["releaseGate"] in setOf("blocked", "verified")) {
             "Native source manifest releaseGate must be blocked or verified."
@@ -163,9 +218,6 @@ val verifyNativeComplianceMetadata by tasks.registering {
             val sourceCommit = entry.requiredString("sourceCommit", artifactContext)
             requireLowerHex(sourceCommit, 40, "$artifactContext.sourceCommit")
             val sourceTag = entry.requiredString("sourceTag", artifactContext)
-            check(Regex("[A-Za-z0-9._-]+").matches(sourceTag)) {
-                "$artifactContext.sourceTag contains unsupported characters."
-            }
             val sourceTagObject = entry.requiredString("sourceTagObject", artifactContext)
             requireLowerHex(sourceTagObject, 40, "$artifactContext.sourceTagObject")
             val sourceRevisionUrl = entry.requiredString("sourceRevisionUrl", artifactContext)
@@ -174,32 +226,11 @@ val verifyNativeComplianceMetadata by tasks.registering {
             check(sourceRevisionUrl == "$sourceRepository/tree/$sourceCommit") {
                 "$artifactContext.sourceRevisionUrl must identify sourceCommit in its expected repository."
             }
-            val tagRef = "refs/tags/$sourceTag"
-            val peeledTagRef = "$tagRef^{}"
-            val tagProcess = ProcessBuilder(
-                "git",
-                "ls-remote",
-                "$sourceRepository.git",
-                tagRef,
-                peeledTagRef,
-            )
-                .redirectErrorStream(true)
-                .start()
-            val tagOutput = tagProcess.inputStream.bufferedReader().use { it.readText() }
-            check(tagProcess.waitFor() == 0) {
-                "$artifactContext tag lookup failed: ${tagOutput.trim()}"
-            }
-            val remoteRefs = tagOutput.lineSequence()
-                .filter { it.isNotBlank() }
-                .associate { line ->
-                    val parts = line.split('\t', limit = 2)
-                    check(parts.size == 2) { "$artifactContext tag lookup returned malformed output." }
-                    parts[1] to parts[0]
-                }
-            check(remoteRefs[tagRef] == sourceTagObject) {
+            val remoteTag = resolveRemoteAnnotatedTag(sourceRepository, sourceTag, artifactContext)
+            check(remoteTag.objectId == sourceTagObject) {
                 "$artifactContext sourceTagObject does not match the remote annotated tag object."
             }
-            check(remoteRefs[peeledTagRef] == sourceCommit) {
+            check(remoteTag.commitId == sourceCommit) {
                 "$artifactContext sourceCommit is not the commit peeled from sourceTag."
             }
             val toolchain = entry["toolchain"].requiredObject("$artifactContext.toolchain")
@@ -234,8 +265,8 @@ val verifyNativeComplianceMetadata by tasks.registering {
             val artifactVersion = coordinate.substringAfterLast(':')
             val libraryFile = nativeLibraryMetadataDirectory.resolve(
                 when (libraryId) {
-                    "com.github.jmir1:ffmpeg-kit" -> "ffmpeg-kit.json"
-                    "com.github.aniyomiorg:aniyomi-mpv-lib" -> "aniyomi-mpv-lib.json"
+                    "com.github.bee-san:ffmpeg-kit" -> "ffmpeg-kit.json"
+                    "com.github.bee-san:aniyomi-mpv-lib" -> "aniyomi-mpv-lib.json"
                     else -> error("No native AboutLibraries metadata mapping for $libraryId")
                 },
             )
@@ -290,12 +321,35 @@ val verifyNativeSourceCompliance by tasks.registering {
             "Native Corresponding Source is not verified. See docs/native-distribution-compliance.md."
         }
 
-        val applicationSourceUrl = manifest.requiredString("applicationSourceUrl", "Native source manifest")
-        requireHttpsUrl(applicationSourceUrl, "Native source manifest.applicationSourceUrl")
-        val applicationSourceCommit = manifest.requiredString("applicationSourceCommit", "Native source manifest")
-        requireLowerHex(applicationSourceCommit, 40, "Native source manifest.applicationSourceCommit")
-        check(applicationSourceUrl.endsWith("/$applicationSourceCommit")) {
-            "applicationSourceUrl must identify applicationSourceCommit exactly."
+        val manifestContext = "Native source manifest"
+        val applicationSourceTag = manifest.requiredString("applicationSourceTag", manifestContext)
+        val applicationSourceRevisionUrl = manifest.requiredString(
+            "applicationSourceRevisionUrl",
+            manifestContext,
+        )
+        requireHttpsUrl(applicationSourceRevisionUrl, "$manifestContext.applicationSourceRevisionUrl")
+        check(applicationSourceRevisionUrl == "$applicationSourceRepository/tree/$applicationSourceTag") {
+            "applicationSourceRevisionUrl must identify applicationSourceTag exactly."
+        }
+        val applicationSourceArchiveUrl = manifest.requiredString(
+            "applicationSourceArchiveUrl",
+            manifestContext,
+        )
+        requireHttpsUrl(applicationSourceArchiveUrl, "$manifestContext.applicationSourceArchiveUrl")
+        check(
+            applicationSourceArchiveUrl ==
+                "$applicationSourceRepository/releases/download/$applicationSourceTag/" +
+                "chimahon-source-$applicationSourceTag.tar.gz",
+        ) {
+            "applicationSourceArchiveUrl must identify the tagged release source archive exactly."
+        }
+        val applicationTag = resolveRemoteAnnotatedTag(
+            applicationSourceRepository,
+            applicationSourceTag,
+            "Application source",
+        )
+        check(applicationTag.commitId == currentGitHead()) {
+            "Application source tag must peel to the checked-out Git HEAD."
         }
 
         val artifacts = (manifest["artifacts"] as List<*>).map {
@@ -317,8 +371,8 @@ val verifyNativeSourceCompliance by tasks.registering {
             val libraryId = coordinate.substringBeforeLast(':')
             val libraryFile = nativeLibraryMetadataDirectory.resolve(
                 when (libraryId) {
-                    "com.github.jmir1:ffmpeg-kit" -> "ffmpeg-kit.json"
-                    "com.github.aniyomiorg:aniyomi-mpv-lib" -> "aniyomi-mpv-lib.json"
+                    "com.github.bee-san:ffmpeg-kit" -> "ffmpeg-kit.json"
+                    "com.github.bee-san:aniyomi-mpv-lib" -> "aniyomi-mpv-lib.json"
                     else -> error("No native AboutLibraries metadata mapping for $libraryId")
                 },
             )
@@ -346,10 +400,10 @@ val verifyNativeSourceCompliance by tasks.registering {
         check(
             noticeFunding.count {
                 it["platform"] == "Application Corresponding Source" &&
-                    it["url"] == applicationSourceUrl
+                    it["url"] == applicationSourceArchiveUrl
             } == 1,
         ) {
-            "${noticeLibraryFile.name} must expose applicationSourceUrl as a structured Corresponding Source link."
+            "${noticeLibraryFile.name} must expose applicationSourceArchiveUrl as a structured Corresponding Source link."
         }
     }
 }
