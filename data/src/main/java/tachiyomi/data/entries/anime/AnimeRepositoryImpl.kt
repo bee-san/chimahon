@@ -24,6 +24,13 @@ class AnimeRepositoryImpl(
         return handler.awaitOne { animesQueries.getAnimeById(id, AnimeMapper::mapAnime) }
     }
 
+    override suspend fun getAnimeByIds(ids: List<Long>): List<Anime> {
+        if (ids.isEmpty()) return emptyList()
+        return handler.awaitList {
+            animesQueries.getAnimeByIds(ids.distinct(), AnimeMapper::mapAnime)
+        }
+    }
+
     override suspend fun getAnimeByIdAsFlow(id: Long): Flow<Anime> {
         return handler.subscribeToOne { animesQueries.getAnimeById(id, AnimeMapper::mapAnime) }
     }

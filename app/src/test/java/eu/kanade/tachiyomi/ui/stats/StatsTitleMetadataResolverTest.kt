@@ -96,6 +96,59 @@ class StatsTitleMetadataResolverTest {
             StatsTitleLinkState.UNAVAILABLE
     }
 
+    @Test
+    fun `local metadata requests are batched once per media database`() = runTest {
+        val mangaRequests = mutableListOf<Set<Long>>()
+        val novelRequests = mutableListOf<Set<String>>()
+        val videoRequests = mutableListOf<Set<Long>>()
+        val resolver = StatsTitleMetadataResolver(
+            mangaLookup = {
+                mangaRequests += it
+                emptyMap()
+            },
+            novelLookup = {
+                novelRequests += it
+                emptyMap()
+            },
+            videoLookup = {
+                videoRequests += it
+                emptyMap()
+            },
+        )
+
+        resolver.resolve(
+            listOf(
+                title(
+                    id = "00000000-0000-4000-8000-000000000011",
+                    mediaKind = MediaKind.MANGA,
+                    sourceKey = "manga:41",
+                    libraryId = 41,
+                ),
+                title(
+                    id = "00000000-0000-4000-8000-000000000012",
+                    mediaKind = MediaKind.MANGA,
+                    sourceKey = "manga:42",
+                    libraryId = 42,
+                ),
+                title(
+                    id = "00000000-0000-4000-8000-000000000013",
+                    mediaKind = MediaKind.NOVEL,
+                    sourceKey = "novel:book",
+                ),
+                title(
+                    id = "00000000-0000-4000-8000-000000000014",
+                    mediaKind = MediaKind.VIDEO,
+                    sourceKey = "video:43",
+                    libraryId = 43,
+                ),
+            ),
+        )
+
+        mangaRequests shouldBe listOf(setOf(41L, 42L))
+        novelRequests shouldBe listOf(setOf("book"))
+        videoRequests shouldBe listOf(setOf(43L))
+    }
+
     private fun resolver(
         manga: Map<Long, StatsTitleLocalRecord> = emptyMap(),
         novels: Map<String, StatsTitleLocalRecord> = emptyMap(),

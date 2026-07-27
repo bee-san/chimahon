@@ -139,6 +139,33 @@ class StatsGoalFactoryTest {
     }
 
     @Test
+    fun `restart history creates a new identity and keeps the original scope`() {
+        val existing = persistedGoal()
+        val replacement = restartStatsGoalHistory(
+            existing = existing,
+            replacementId = "replacement",
+            values = values(
+                kind = StatsGoalKind.DATE_BOUND_TOTAL,
+                target = 20_000.0,
+                startDate = date("2026-07-01"),
+                endDate = date("2026-09-01"),
+                editMode = StatsGoalEditMode.RESTART_HISTORY,
+            ),
+            restartDate = date("2026-07-26"),
+            nowEpochMillis = 2_000,
+        )
+
+        replacement?.id shouldBe "replacement"
+        replacement?.createdAtEpochMillis shouldBe 2_000
+        replacement?.updatedAtEpochMillis shouldBe 2_000
+        replacement?.startDate shouldBe date("2026-07-26")
+        replacement?.titleId shouldBe existing.titleId
+        replacement?.mediaKind shouldBe existing.mediaKind
+        replacement?.profileId shouldBe existing.profileId
+        replacement?.languageTag shouldBe existing.languageTag
+    }
+
+    @Test
     fun `all-rest and incomplete weekday schedules are invalid`() {
         val allRest = DayOfWeek.entries.associateWith { 0.0 }
         createGoal(values = values(multipliers = allRest)).shouldBeNull()
@@ -184,6 +211,7 @@ class StatsGoalFactoryTest {
         startDate: ImmersionLocalDate = date("2026-07-26"),
         endDate: ImmersionLocalDate? = date("2026-08-31"),
         multipliers: Map<DayOfWeek, Double> = defaultStatsGoalWeekdayMultipliers(),
+        editMode: StatsGoalEditMode = StatsGoalEditMode.PROSPECTIVE,
     ) = StatsGoalEditorValues(
         kind = kind,
         metric = metric,
@@ -191,6 +219,7 @@ class StatsGoalFactoryTest {
         startDate = startDate,
         endDate = endDate,
         weekdayMultipliers = multipliers,
+        editMode = editMode,
     )
 
     private fun scope(titleId: TitleId? = TITLE) = StatsGoalScope(

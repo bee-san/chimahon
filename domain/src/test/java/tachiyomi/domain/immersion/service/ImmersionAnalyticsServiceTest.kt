@@ -746,6 +746,8 @@ class ImmersionAnalyticsServiceTest {
         progress.currentStreakDays shouldBe 2
         progress.longestStreakDays shouldBe 2
         progress.isRestDay shouldBe true
+        progress.todayAchieved shouldBe 0.0
+        progress.todayTarget shouldBe 0.0
     }
 
     @Test
@@ -777,6 +779,8 @@ class ImmersionAnalyticsServiceTest {
 
         progress.achieved shouldBe 5.0
         progress.targetToDate shouldBe 10.0
+        progress.todayAchieved shouldBe 5.0
+        progress.todayTarget shouldBe 10.0
     }
 
     @Test

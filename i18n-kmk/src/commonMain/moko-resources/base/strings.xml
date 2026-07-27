@@ -388,8 +388,12 @@
     <string name="stats_legacy_session_detail">Imported legacy aggregates preserve totals only. Original session timelines, source-unit provenance, word occurrences, and character occurrences were not recorded and are unavailable.</string>
     <string name="stats_no_data">No statistics match these filters.</string>
     <string name="stats_section_failed">This section could not be loaded. Other statistics are still available.</string>
+    <!-- Button that retries only the failed dashboard section, not the whole screen. -->
+    <string name="stats_retry_section">Retry section</string>
     <string name="stats_loading_section">Loading statistics…</string>
     <string name="stats_widget_unavailable">Today\'s statistics could not be loaded. Tap to open Chimahon.</string>
+    <!-- Compact home-screen widget label for progress toward one active goal today. -->
+    <string name="stats_widget_goal_today">Today\'s goal</string>
     <string name="stats_recent_sessions">Recent sessions</string>
     <string name="stats_view_all">View all</string>
     <string name="stats_activity_chart">Activity chart</string>
@@ -623,6 +627,11 @@
     <string name="stats_goal_rest">Rest</string>
     <string name="stats_goal_timezone_policy">Timezone: activity stays on the local date recorded when it happened; today and future boundaries use the device’s current timezone.</string>
     <string name="stats_goal_edit_prospective">Edits apply from today forward. Existing check-ins and earned milestones are kept.</string>
+    <!-- Goal edit history: "restart" archives the old goal and creates a new identity; it does not erase prior history. -->
+    <string name="stats_goal_edit_mode">History behavior</string>
+    <string name="stats_goal_edit_mode_prospective">Continue this goal</string>
+    <string name="stats_goal_edit_mode_restart">Restart from today</string>
+    <string name="stats_goal_edit_restart_summary">The current goal is archived with its check-ins and milestones. A new goal starts today under a new identity.</string>
     <string name="stats_goal_title_required">Select a title filter before creating a finish-title goal.</string>
     <string name="stats_goal_required_pace">Required pace: %1$s per full-target active day across %2$d remaining active days</string>
     <string name="stats_goal_rolling_seven">Rolling 7-day pace: %1$s</string>
@@ -630,7 +639,12 @@
     <string name="stats_goal_forecast_assumptions">Projection uses a %1$d-day pace from %2$d qualifying active days, caps extreme high-volume days, and applies configured weekday and rest-day targets.</string>
     <string name="stats_goal_streaks">Current streak: %1$d · Longest: %2$d</string>
     <string name="stats_goal_rest_day">Today is a configured rest day and does not break the streak.</string>
+    <string name="stats_goal_today">Today’s goals</string>
+    <!-- Manual habit check-in. The optional note is private free text, and the count is typed text length. -->
     <string name="stats_goal_check_in">Check in</string>
+    <string name="stats_goal_check_in_note">Private note (optional)</string>
+    <string name="stats_goal_check_in_note_count">%1$d of %2$d characters</string>
+    <string name="stats_goal_check_in_privacy">The note stays in local statistics. It is included in a statistics archive only when private raw text is explicitly included.</string>
     <string name="stats_goal_archive">Archive</string>
     <string name="stats_sort_frequency">Frequency rank</string>
     <string name="stats_sort_priority">Learning priority</string>
@@ -696,9 +710,19 @@
     <string name="stats_raw_text_disclosure_title">Choose source-text privacy</string>
     <string name="stats_raw_text_disclosure_message">Chimahon can keep passages, OCR, subtitles, and lookup text on this device to build vocabulary, character, and source drill-down stats. Nothing is retained until you choose. You can change this later, including 30-day and one-year options, in Stats data and privacy.</string>
     <string name="stats_raw_text_storage_value">%1$s source units · %2$s</string>
+    <!-- "Recent apps" is Android's system overview of open apps, not a list inside Chimahon. -->
+    <string name="stats_recents_privacy">Recent apps privacy</string>
+    <string name="stats_recents_privacy_summary">Stats screens are hidden in the recent-apps preview. While they are visible, screenshot access follows the global secure-screen setting.</string>
     <string name="stats_integrity">Integrity</string>
     <string name="stats_integrity_healthy">All checked invariants pass.</string>
     <string name="stats_integrity_needs_repair">One or more invariants need repair.</string>
+    <!-- Maintenance timestamps. "Index" is the derived word/character search index; "rollup" is derived aggregate statistics. -->
+    <string name="stats_maintenance_history">Maintenance history</string>
+    <string name="stats_last_stats_backup">Last backup containing immersion statistics</string>
+    <string name="stats_last_repair">Last session repair</string>
+    <string name="stats_last_index">Last successful index run</string>
+    <string name="stats_last_rollup">Last successful aggregate rebuild</string>
+    <string name="stats_last_raw_text_cleanup">Last private-text cleanup</string>
     <string name="stats_rollout_controls">Preview and rollback controls</string>
     <string name="stats_rollout_legacy_writes_active">Legacy rollback writes remain active while the event-backed system is in shadow rollout.</string>
     <string name="stats_rollout_legacy_writes_inactive">Legacy rollback writes are inactive.</string>
@@ -710,6 +734,11 @@
     <string name="stats_indexing_enabled_summary">Build vocabulary, character, and source-search data from retained text.</string>
     <string name="stats_goals_enabled">Statistics goals</string>
     <string name="stats_goals_enabled_summary">Show and evaluate goals in the immersion statistics preview.</string>
+    <!-- Opt-in generic evening notification. It deliberately omits titles and retained source text. -->
+    <string name="stats_goal_reminders_enabled">Daily goal reminder</string>
+    <string name="stats_goal_reminders_enabled_summary">Notify once each evening when at least one active goal still has progress due. Notifications never include title or source text.</string>
+    <string name="stats_goal_reminder_channel">Immersion goal reminders</string>
+    <string name="stats_goal_reminder_title">Today’s immersion goals</string>
     <string name="stats_loading">Loading…</string>
     <string name="stats_open">Open</string>
     <string name="stats_confirm">Confirm</string>
@@ -835,6 +864,8 @@
     <string name="stats_title_mutation_rolled_back">Rolled back %1$s</string>
     <string name="stats_title_operation_rename">Rename</string>
     <string name="stats_title_operation_merge">Merge</string>
+    <!-- Auditable correction that moves one completed session to another compatible statistics title. -->
+    <string name="stats_title_operation_relink">Correct session title</string>
     <string name="stats_title_operation_split">Split</string>
     <string name="stats_title_mutation_events">Events</string>
     <string name="stats_title_mutation_anki_operations">Anki operations</string>
@@ -852,4 +883,7 @@
     <string name="stats_title_block_alias">An active merge already involves one of these titles. Roll it back first.</string>
     <string name="stats_title_block_active_session">Finish the active reader or player session before changing title assignments.</string>
     <string name="stats_title_block_empty_selection">No sessions fall within the split date range.</string>
+    <string name="stats_title_block_session_missing">The session no longer belongs to the source title. Refresh and preview the correction again.</string>
+    <string name="stats_session_correct_title">Correct title link</string>
+    <string name="stats_session_correct_title_summary">Move this session and its exclusive source history to another compatible title. Shared source history and active sessions cannot be moved.</string>
 </resources>

@@ -678,6 +678,16 @@ class ImmersionAnalyticsService(
         goalRepository.upsertGoal(goal)
     }
 
+    suspend fun restartGoal(
+        expectedGoal: ImmersionGoal,
+        replacementGoal: ImmersionGoal,
+        restartedAtEpochMillis: Long,
+    ): Boolean = goalRepository.restartGoal(
+        expectedGoal = expectedGoal,
+        replacementGoal = replacementGoal,
+        restartedAtEpochMillis = restartedAtEpochMillis,
+    )
+
     suspend fun checkIn(goalId: String, date: ImmersionLocalDate, completed: Boolean, note: String?) {
         goalRepository.upsertCheckIn(
             ImmersionGoalCheckIn(
@@ -1210,6 +1220,16 @@ private fun ImmersionGoal.progress(
     } else {
         0 to 0
     }
+    val todayAchieved = if (dailyGoal) {
+        achievedByDate[effectiveEnd] ?: 0.0
+    } else {
+        achieved
+    }.coerceAtLeast(0.0)
+    val todayTarget = if (dailyGoal) {
+        target * multipliers.multiplier(effectiveEnd)
+    } else {
+        targetToDate
+    }
     return AnalyticsGoalProgress(
         goal = this,
         achieved = achieved,
@@ -1231,6 +1251,8 @@ private fun ImmersionGoal.progress(
         remainingActiveDays = remainingActiveDates?.size,
         forecastSampleDays = sampleDays,
         forecastWindowDays = GOAL_FORECAST_WINDOW_DAYS,
+        todayAchieved = todayAchieved,
+        todayTarget = todayTarget,
     )
 }
 

@@ -400,6 +400,12 @@ interface ImmersionMaintenanceRepository {
 interface ImmersionGoalRepository {
     suspend fun upsertGoal(goal: ImmersionGoal)
 
+    suspend fun restartGoal(
+        expectedGoal: ImmersionGoal,
+        replacementGoal: ImmersionGoal,
+        restartedAtEpochMillis: Long,
+    ): Boolean
+
     suspend fun getGoals(): List<ImmersionGoal>
 
     suspend fun upsertCheckIn(checkIn: ImmersionGoalCheckIn)
@@ -438,6 +444,14 @@ interface ImmersionAnkiRepository {
         profileId: String,
         codePoint: UnicodeCodePoint,
     ): List<ImmersionAnkiItem>
+
+    suspend fun findCharacterItems(
+        profileIds: Collection<String>,
+        codePoint: UnicodeCodePoint,
+    ): List<ImmersionAnkiItem> = profileIds
+        .filter(String::isNotBlank)
+        .distinct()
+        .flatMap { profileId -> findCharacterItems(profileId, codePoint) }
 
     suspend fun getWordCoverage(
         profileId: String,

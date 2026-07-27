@@ -4,6 +4,7 @@ package tachiyomi.data.immersion
 
 import app.cash.sqldelight.db.QueryResult
 import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
+import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.collections.shouldNotBeEmpty
 import io.kotest.matchers.shouldBe
@@ -411,6 +412,164 @@ class SqlDelightImmersionRepositoryTest {
                 migrationDriver,
                 "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'immersion_title_mutation'",
             ) shouldBe 1
+        } finally {
+            migrationDriver.close()
+        }
+    }
+
+    @Test
+    fun `migration 62 admits relinks and preserves mutation journals`() {
+        val migrationDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        try {
+            Database.Schema.migrate(
+                driver = migrationDriver,
+                oldVersion = 47,
+                newVersion = 62,
+            ).value
+            migrationDriver.execute(
+                null,
+                """
+                INSERT INTO immersion_title(
+                    id,
+                    media_kind,
+                    source_key,
+                    display_title,
+                    created_at,
+                    updated_at
+                )
+                VALUES
+                    ('source-title', 'NOVEL', 'novel:source', 'Source', 1, 1),
+                    ('target-title', 'NOVEL', 'novel:target', 'Target', 1, 1)
+                """.trimIndent(),
+                0,
+            ).value
+            migrationDriver.execute(
+                null,
+                """
+                INSERT INTO immersion_session(
+                    id,
+                    device_id,
+                    title_id,
+                    media_kind,
+                    started_at,
+                    ended_at,
+                    start_zone_id,
+                    start_offset_seconds,
+                    status,
+                    capture_version,
+                    schema_version
+                )
+                VALUES (
+                    'session',
+                    'device',
+                    'source-title',
+                    'NOVEL',
+                    1,
+                    2,
+                    'UTC',
+                    0,
+                    'COMPLETED',
+                    1,
+                    1
+                )
+                """.trimIndent(),
+                0,
+            ).value
+            migrationDriver.execute(
+                null,
+                """
+                INSERT INTO immersion_title_mutation(
+                    id,
+                    type,
+                    source_title_id,
+                    display_title,
+                    selection_digest,
+                    sessions,
+                    source_units,
+                    goals,
+                    applied_at,
+                    status
+                )
+                VALUES ('rename', 'RENAME', 'source-title', 'Renamed', 'digest', 1, 0, 0, 2, 'APPLIED')
+                """.trimIndent(),
+                0,
+            ).value
+            migrationDriver.execute(
+                null,
+                """
+                INSERT INTO immersion_title_mutation_session(
+                    operation_id,
+                    session_id,
+                    previous_title_id
+                )
+                VALUES ('rename', 'session', 'source-title')
+                """.trimIndent(),
+                0,
+            ).value
+
+            migrationDriver.execute(null, "PRAGMA foreign_keys = ON", 0).value
+            queryLong(migrationDriver, "PRAGMA foreign_keys") shouldBe 1
+            Database.Schema.migrate(
+                driver = migrationDriver,
+                oldVersion = 62,
+                newVersion = Database.Schema.version,
+            ).value
+
+            queryStrings(
+                migrationDriver,
+                "SELECT type FROM immersion_title_mutation WHERE id = 'rename'",
+            ) shouldContainExactly listOf("RENAME")
+            queryStrings(
+                migrationDriver,
+                "SELECT operation_id FROM immersion_title_mutation_session",
+            ) shouldContainExactly listOf("rename")
+            migrationDriver.execute(
+                null,
+                """
+                INSERT INTO immersion_title_mutation(
+                    id,
+                    type,
+                    source_title_id,
+                    target_title_id,
+                    selection_digest,
+                    sessions,
+                    source_units,
+                    goals,
+                    applied_at,
+                    status
+                )
+                VALUES (
+                    'relink',
+                    'RELINK',
+                    'source-title',
+                    'target-title',
+                    'digest-2',
+                    1,
+                    0,
+                    0,
+                    3,
+                    'APPLIED'
+                )
+                """.trimIndent(),
+                0,
+            ).value
+            migrationDriver.execute(
+                null,
+                """
+                INSERT INTO immersion_title_mutation_session(
+                    operation_id,
+                    session_id,
+                    previous_title_id
+                )
+                VALUES ('relink', 'session', 'source-title')
+                """.trimIndent(),
+                0,
+            ).value
+            queryStrings(
+                migrationDriver,
+                "SELECT operation_id FROM immersion_title_mutation_session ORDER BY operation_id",
+            ) shouldContainExactly listOf("relink", "rename")
+            queryLong(migrationDriver, "SELECT count(*) FROM pragma_foreign_key_check") shouldBe 0
         } finally {
             migrationDriver.close()
         }
@@ -1239,6 +1398,221 @@ class SqlDelightImmersionRepositoryTest {
         preview.canApply shouldBe false
         preview.conflictingSourceUnits shouldBe 1
         preview.blockers shouldBe setOf(ImmersionTitleMutationBlocker.SHARED_SOURCE_UNITS)
+    }
+
+    @Test
+    fun `session relink moves only exact exclusive history and rollback keeps both titles`() = runTest {
+        val targetTitleId = TitleId("00000000-0000-0000-0000-000000000802")
+        val selectedSessionId = sessionId(800)
+        val retainedSessionId = sessionId(801)
+        val selectedSourceId = SourceUnitId("00000000-0000-0000-0000-000000000800")
+        val retainedSourceId = SourceUnitId("00000000-0000-0000-0000-000000000801")
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        repository.upsertTitle(
+            title().copy(
+                id = targetTitleId,
+                sourceKey = "novel:target",
+                displayTitle = "Target",
+            ),
+        ) shouldBe PersistenceResult.Applied
+        listOf(
+            Triple(selectedSessionId, selectedSourceId, 1_000L),
+            Triple(retainedSessionId, retainedSourceId, 3_000L),
+        ).forEachIndexed { index, (sessionId, sourceId, startedAt) ->
+            repository.createSession(sessionStart(sessionId, startedAt)) shouldBe
+                PersistenceResult.Applied
+            repository.appendExposure(
+                exposure(sequence = 1, eventNumber = 800 + index).copy(
+                    sessionId = sessionId,
+                    occurredAtEpochMillis = startedAt + 100,
+                    source = source(startedAt + 100).copy(
+                        id = sourceId,
+                        canonicalLocator = "relink:$index",
+                        normalizedTextHash = "sha256:relink:$index",
+                        firstExposedAtEpochMillis = startedAt + 100,
+                    ),
+                ),
+            ) shouldBe PersistenceResult.Applied
+            repository.finalizeSession(
+                sessionId = sessionId,
+                status = SessionStatus.COMPLETED,
+                endedAtEpochMillis = startedAt + 1_000,
+                elapsedDuration = MillisecondDuration(1_000),
+            ) shouldBe PersistenceResult.Applied
+        }
+        val request = ImmersionTitleMutationRequest.RelinkSession(
+            sourceTitleId = TITLE_ID,
+            targetTitleId = targetTitleId,
+            sessionId = selectedSessionId,
+        )
+        val stalePreview = repository.previewTitleMutation(request)
+        repository.upsertTitle(
+            title().copy(
+                id = targetTitleId,
+                sourceKey = "novel:target",
+                displayTitle = "Updated target",
+                updatedAtEpochMillis = 5_000,
+            ),
+        ) shouldBe PersistenceResult.Applied
+        runCatching {
+            repository.applyTitleMutation(stalePreview, 6_000)
+        }.exceptionOrNull() shouldNotBe null
+
+        val preview = repository.previewTitleMutation(request)
+        preview.canApply shouldBe true
+        preview.sessions shouldBe 1
+        preview.events shouldBe 1
+        preview.sourceUnits shouldBe 1
+        val operation = repository.applyTitleMutation(preview, 6_000)
+        operation.type.name shouldBe "RELINK"
+        queryStrings(
+            "SELECT title_id FROM immersion_session WHERE id = '${selectedSessionId.value}'",
+        ).single() shouldBe targetTitleId.value
+        queryStrings(
+            "SELECT title_id FROM immersion_session WHERE id = '${retainedSessionId.value}'",
+        ).single() shouldBe TITLE_ID.value
+        queryStrings(
+            "SELECT title_id FROM immersion_source_unit WHERE id = '${selectedSourceId.value}'",
+        ).single() shouldBe targetTitleId.value
+        queryStrings(
+            "SELECT title_id FROM immersion_source_unit WHERE id = '${retainedSourceId.value}'",
+        ).single() shouldBe TITLE_ID.value
+        queryLong("SELECT count(*) FROM immersion_title_alias") shouldBe 0
+        queryLong("SELECT count(*) FROM immersion_title") shouldBe 2
+
+        repository.rollbackTitleMutation(operation.id, 7_000)
+        queryStrings("SELECT title_id FROM immersion_session ORDER BY id") shouldContainExactly
+            listOf(TITLE_ID.value, TITLE_ID.value)
+        queryStrings("SELECT title_id FROM immersion_source_unit ORDER BY id") shouldContainExactly
+            listOf(TITLE_ID.value, TITLE_ID.value)
+        queryLong("SELECT count(*) FROM immersion_title_alias") shouldBe 0
+        queryLong("SELECT count(*) FROM immersion_title") shouldBe 2
+    }
+
+    @Test
+    fun `session relink blocks active sessions and shared source provenance`() = runTest {
+        val targetTitleId = TitleId("00000000-0000-0000-0000-000000000812")
+        val firstSessionId = sessionId(810)
+        val secondSessionId = sessionId(811)
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        repository.upsertTitle(
+            title().copy(
+                id = targetTitleId,
+                sourceKey = "novel:target",
+                displayTitle = "Target",
+            ),
+        ) shouldBe PersistenceResult.Applied
+        repository.createSession(sessionStart(firstSessionId, 1_000)) shouldBe
+            PersistenceResult.Applied
+        repository.previewTitleMutation(
+            ImmersionTitleMutationRequest.RelinkSession(
+                sourceTitleId = TITLE_ID,
+                targetTitleId = targetTitleId,
+                sessionId = firstSessionId,
+            ),
+        ).blockers shouldBe setOf(ImmersionTitleMutationBlocker.ACTIVE_SESSION)
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = 810).copy(sessionId = firstSessionId),
+        ) shouldBe PersistenceResult.Applied
+        repository.finalizeSession(
+            firstSessionId,
+            SessionStatus.COMPLETED,
+            2_000,
+            MillisecondDuration(1_000),
+        ) shouldBe PersistenceResult.Applied
+        repository.createSession(sessionStart(secondSessionId, 3_000)) shouldBe
+            PersistenceResult.Applied
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = 811).copy(
+                sessionId = secondSessionId,
+                occurredAtEpochMillis = 3_100,
+                source = source(3_100),
+            ),
+        ) shouldBe PersistenceResult.Applied
+        repository.finalizeSession(
+            secondSessionId,
+            SessionStatus.COMPLETED,
+            4_000,
+            MillisecondDuration(1_000),
+        ) shouldBe PersistenceResult.Applied
+
+        val sharedPreview = repository.previewTitleMutation(
+            ImmersionTitleMutationRequest.RelinkSession(
+                sourceTitleId = TITLE_ID,
+                targetTitleId = targetTitleId,
+                sessionId = firstSessionId,
+            ),
+        )
+        sharedPreview.conflictingSourceUnits shouldBe 1
+        sharedPreview.blockers shouldBe setOf(ImmersionTitleMutationBlocker.SHARED_SOURCE_UNITS)
+    }
+
+    @Test
+    fun `session relink blocks incompatible targets and titles in an active alias`() = runTest {
+        val sessionId = sessionId(820)
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        repository.createSession(sessionStart(sessionId, 1_000)) shouldBe PersistenceResult.Applied
+        repository.finalizeSession(
+            sessionId,
+            SessionStatus.COMPLETED,
+            2_000,
+            MillisecondDuration(1_000),
+        ) shouldBe PersistenceResult.Applied
+        val incompatibleTargets = listOf(
+            title().copy(
+                id = TitleId("00000000-0000-0000-0000-000000000821"),
+                mediaKind = MediaKind.MANGA,
+                sourceKey = "manga:target",
+                displayTitle = "Media target",
+            ) to ImmersionTitleMutationBlocker.INCOMPATIBLE_MEDIA,
+            title().copy(
+                id = TitleId("00000000-0000-0000-0000-000000000822"),
+                sourceKey = "novel:profile-target",
+                profileId = "other",
+                displayTitle = "Profile target",
+            ) to ImmersionTitleMutationBlocker.INCOMPATIBLE_PROFILE,
+            title().copy(
+                id = TitleId("00000000-0000-0000-0000-000000000823"),
+                sourceKey = "novel:language-target",
+                languageTag = LanguageTag("ko"),
+                displayTitle = "Language target",
+            ) to ImmersionTitleMutationBlocker.INCOMPATIBLE_LANGUAGE,
+        )
+        incompatibleTargets.forEach { (target, expectedBlocker) ->
+            repository.upsertTitle(target) shouldBe PersistenceResult.Applied
+            repository.previewTitleMutation(
+                ImmersionTitleMutationRequest.RelinkSession(
+                    sourceTitleId = TITLE_ID,
+                    targetTitleId = target.id,
+                    sessionId = sessionId,
+                ),
+            ).blockers shouldContain expectedBlocker
+        }
+
+        val aliasTarget = title().copy(
+            id = TitleId("00000000-0000-0000-0000-000000000824"),
+            sourceKey = "novel:alias-target",
+            displayTitle = "Alias target",
+        )
+        val correctionTarget = title().copy(
+            id = TitleId("00000000-0000-0000-0000-000000000825"),
+            sourceKey = "novel:correction-target",
+            displayTitle = "Correction target",
+        )
+        repository.upsertTitle(aliasTarget) shouldBe PersistenceResult.Applied
+        repository.upsertTitle(correctionTarget) shouldBe PersistenceResult.Applied
+        val merge = repository.previewTitleMutation(
+            ImmersionTitleMutationRequest.Merge(TITLE_ID, aliasTarget.id),
+        )
+        repository.applyTitleMutation(merge, 5_000)
+
+        repository.previewTitleMutation(
+            ImmersionTitleMutationRequest.RelinkSession(
+                sourceTitleId = aliasTarget.id,
+                targetTitleId = correctionTarget.id,
+                sessionId = sessionId,
+            ),
+        ).blockers shouldContain ImmersionTitleMutationBlocker.ACTIVE_ALIAS
     }
 
     @Test
@@ -2745,6 +3119,11 @@ class SqlDelightImmersionRepositoryTest {
         )
         repository.getCurrentSnapshot("profile")?.id shouldBe "snapshot-1"
         repository.getCurrentItems("profile").single().characters shouldBe
+            setOf(UnicodeCodePoint('猫'.code), UnicodeCodePoint('語'.code))
+        repository.findCharacterItems(
+            profileIds = listOf("profile", "missing"),
+            codePoint = UnicodeCodePoint('猫'.code),
+        ).single().characters shouldBe
             setOf(UnicodeCodePoint('猫'.code), UnicodeCodePoint('語'.code))
         repository.getWordCoverage("profile", LanguageTag("ja")).let {
             it.encountered shouldBe 1
@@ -4641,6 +5020,63 @@ class SqlDelightImmersionRepositoryTest {
         )
         repository.getCheckIns(original.id) shouldContainExactly listOf(checkIn)
         repository.getAchievements(original.id) shouldContainExactly listOf(achievement)
+    }
+
+    @Test
+    fun `goal history restart atomically archives the old identity and preserves its history`() = runTest {
+        val original = goal(id = "restart-source").copy(
+            createdAtEpochMillis = 1_000,
+            updatedAtEpochMillis = 1_000,
+        )
+        val checkIn = ImmersionGoalCheckIn(
+            goalId = original.id,
+            localDate = ImmersionLocalDate.parse("2026-07-26"),
+            status = "COMPLETED",
+            note = "preserved",
+            occurredAtEpochMillis = 1_500,
+        )
+        val achievement = ImmersionGoalAchievement(
+            id = "restart-source-25",
+            goalId = original.id,
+            milestoneKey = "25",
+            earnedAtEpochMillis = 1_600,
+            targetSnapshot = original.target,
+        )
+        repository.upsertGoal(original)
+        repository.upsertCheckIn(checkIn)
+        repository.recordAchievement(achievement)
+        val replacement = original.copy(
+            id = "restart-replacement",
+            target = 2_000.0,
+            startDate = ImmersionLocalDate.parse("2026-07-27"),
+            createdAtEpochMillis = 2_000,
+            updatedAtEpochMillis = 2_000,
+        )
+
+        repository.restartGoal(
+            expectedGoal = original,
+            replacementGoal = replacement,
+            restartedAtEpochMillis = 2_000,
+        ) shouldBe true
+
+        repository.getGoals().associateBy(ImmersionGoal::id) shouldBe mapOf(
+            original.id to original.copy(
+                state = "ARCHIVED",
+                updatedAtEpochMillis = 2_000,
+            ),
+            replacement.id to replacement,
+        )
+        repository.getCheckIns(original.id) shouldContainExactly listOf(checkIn)
+        repository.getAchievements(original.id) shouldContainExactly listOf(achievement)
+        repository.getCheckIns(replacement.id) shouldBe emptyList()
+        repository.getAchievements(replacement.id) shouldBe emptyList()
+
+        repository.restartGoal(
+            expectedGoal = original,
+            replacementGoal = replacement.copy(id = "stale-replacement"),
+            restartedAtEpochMillis = 2_000,
+        ) shouldBe false
+        repository.getGoals().size shouldBe 2
     }
 
     @Test

@@ -75,6 +75,11 @@ SELECT *
 FROM animes
 WHERE _id = :id;
 
+getAnimeByIds:
+SELECT *
+FROM animes
+WHERE _id IN :ids;
+
 getAnimeByUrlAndSource:
 SELECT *
 FROM animes

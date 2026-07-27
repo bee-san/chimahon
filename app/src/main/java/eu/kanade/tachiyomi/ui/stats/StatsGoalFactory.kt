@@ -34,6 +34,11 @@ enum class StatsGoalKind {
     MANUAL,
 }
 
+enum class StatsGoalEditMode {
+    PROSPECTIVE,
+    RESTART_HISTORY,
+}
+
 /**
  * Historical activity remains assigned to the local date recorded with each event. "Today" and
  * future goal boundaries follow the device's current timezone when the goal is evaluated.
@@ -59,6 +64,7 @@ data class StatsGoalEditorValues(
     val startDate: ImmersionLocalDate,
     val endDate: ImmersionLocalDate?,
     val weekdayMultipliers: Map<DayOfWeek, Double>,
+    val editMode: StatsGoalEditMode = StatsGoalEditMode.PROSPECTIVE,
 )
 
 internal enum class StatsGoalDisplayKind {
@@ -131,6 +137,31 @@ internal fun editStatsGoalProspectively(
         state = existing.state,
         createdAtEpochMillis = existing.createdAtEpochMillis,
         updatedAtEpochMillis = nowEpochMillis,
+    )
+}
+
+/**
+ * Starts a new goal identity while leaving the previous goal and its child rows available as
+ * archived history.
+ */
+internal fun restartStatsGoalHistory(
+    existing: ImmersionGoal,
+    replacementId: String,
+    values: StatsGoalEditorValues,
+    restartDate: ImmersionLocalDate,
+    nowEpochMillis: Long,
+): ImmersionGoal? {
+    if (replacementId == existing.id || nowEpochMillis < existing.updatedAtEpochMillis) return null
+    return createStatsGoal(
+        id = replacementId,
+        values = values.copy(startDate = maxOf(values.startDate, restartDate)),
+        scope = StatsGoalScope(
+            mediaKind = existing.mediaKind,
+            profileId = existing.profileId,
+            languageTag = existing.languageTag,
+            titleId = existing.titleId,
+        ),
+        nowEpochMillis = nowEpochMillis,
     )
 }
 

@@ -39,11 +39,13 @@ import cafe.adriel.voyager.navigator.currentOrThrow
 import eu.kanade.presentation.components.AppBar
 import eu.kanade.presentation.more.settings.widget.SwitchPreferenceWidget
 import eu.kanade.presentation.util.Screen
+import eu.kanade.presentation.util.relativeTimeSpanString
 import eu.kanade.tachiyomi.util.storage.getUriCompat
 import eu.kanade.tachiyomi.util.system.toShareIntent
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import mihon.feature.stats.anki.AnkiInventorySyncJob
+import mihon.feature.stats.goals.ImmersionGoalReminderJob
 import mihon.feature.stats.indexing.ImmersionIndexJob
 import tachiyomi.domain.immersion.model.ImmersionStatsDeletionScope
 import tachiyomi.domain.immersion.model.MediaKind
@@ -63,6 +65,7 @@ class StatsMaintenanceScreen(
 
     @Composable
     override fun Content() {
+        StatsRecentsPrivacy()
         val context = LocalContext.current
         val navigator = LocalNavigator.currentOrThrow
         val parsedTitleId = remember(initialTitleId) {
@@ -139,7 +142,14 @@ class StatsMaintenanceScreen(
                     screenModel.setAnkiSyncEnabled(it)
                     AnkiInventorySyncJob.setEnabled(context, it)
                 },
-                onGoalsEnabledChange = screenModel::setGoalsEnabled,
+                onGoalsEnabledChange = {
+                    screenModel.setGoalsEnabled(it)
+                    if (!it) ImmersionGoalReminderJob.setEnabled(context, false)
+                },
+                onGoalRemindersEnabledChange = {
+                    screenModel.setGoalRemindersEnabled(it)
+                    ImmersionGoalReminderJob.setEnabled(context, it)
+                },
                 onRebuildRollups = screenModel::rebuildRollups,
                 onRebuildIndex = screenModel::rebuildIndex,
                 onResolveConflicts = screenModel::resolveMergeConflicts,
@@ -271,6 +281,7 @@ private fun StatsMaintenanceContent(
     onUiEnabledChange: (Boolean) -> Unit,
     onAnkiSyncEnabledChange: (Boolean) -> Unit,
     onGoalsEnabledChange: (Boolean) -> Unit,
+    onGoalRemindersEnabledChange: (Boolean) -> Unit,
     onRebuildRollups: () -> Unit,
     onRebuildIndex: () -> Unit,
     onResolveConflicts: () -> Unit,
@@ -330,6 +341,14 @@ private fun StatsMaintenanceContent(
         }
         item {
             ListItem(
+                headlineContent = { Text(stringResource(KMR.strings.stats_recents_privacy)) },
+                supportingContent = {
+                    Text(stringResource(KMR.strings.stats_recents_privacy_summary))
+                },
+            )
+        }
+        item {
+            ListItem(
                 headlineContent = { Text(stringResource(KMR.strings.stats_integrity)) },
                 supportingContent = {
                     Text(
@@ -340,6 +359,42 @@ private fun StatsMaintenanceContent(
                         },
                     )
                 },
+            )
+        }
+        item {
+            Text(
+                text = stringResource(KMR.strings.stats_maintenance_history),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+        }
+        item {
+            MaintenanceTimestamp(
+                title = stringResource(KMR.strings.stats_last_stats_backup),
+                epochMillis = state.timestamps.lastBackupAtEpochMillis,
+            )
+        }
+        item {
+            MaintenanceTimestamp(
+                title = stringResource(KMR.strings.stats_last_repair),
+                epochMillis = state.timestamps.lastRepairAtEpochMillis,
+            )
+        }
+        item {
+            MaintenanceTimestamp(
+                title = stringResource(KMR.strings.stats_last_index),
+                epochMillis = state.timestamps.lastIndexAtEpochMillis,
+            )
+        }
+        item {
+            MaintenanceTimestamp(
+                title = stringResource(KMR.strings.stats_last_rollup),
+                epochMillis = state.timestamps.lastRollupAtEpochMillis,
+            )
+        }
+        item {
+            MaintenanceTimestamp(
+                title = stringResource(KMR.strings.stats_last_raw_text_cleanup),
+                epochMillis = state.timestamps.lastCleanupAtEpochMillis,
             )
         }
         item { HorizontalDivider() }
@@ -409,6 +464,16 @@ private fun StatsMaintenanceContent(
                 checked = state.goalsEnabled,
                 onCheckedChanged = onGoalsEnabledChange,
             )
+        }
+        if (state.goalsEnabled) {
+            item {
+                SwitchPreferenceWidget(
+                    title = stringResource(KMR.strings.stats_goal_reminders_enabled),
+                    subtitle = stringResource(KMR.strings.stats_goal_reminders_enabled_summary),
+                    checked = state.goalRemindersEnabled,
+                    onCheckedChanged = onGoalRemindersEnabledChange,
+                )
+            }
         }
         state.summary?.quarantinedConflicts?.takeIf { it > 0 }?.let { conflicts ->
             item {
@@ -525,6 +590,25 @@ private fun StatsMaintenanceContent(
             }
         }
     }
+}
+
+@Composable
+private fun MaintenanceTimestamp(
+    title: String,
+    epochMillis: Long?,
+) {
+    ListItem(
+        headlineContent = { Text(title) },
+        supportingContent = {
+            Text(
+                if (epochMillis != null) {
+                    relativeTimeSpanString(epochMillis)
+                } else {
+                    stringResource(KMR.strings.stats_unavailable)
+                },
+            )
+        },
+    )
 }
 
 @Composable

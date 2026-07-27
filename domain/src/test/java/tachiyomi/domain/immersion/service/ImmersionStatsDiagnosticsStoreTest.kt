@@ -20,6 +20,8 @@ class ImmersionStatsDiagnosticsStoreTest {
         store.recordDroppedCommand()
         store.recordAbandonedRecovery(2)
         store.setRollupLag(8)
+        store.recordIndexSuccess(1_100)
+        store.recordRollupSuccess(1_200)
         store.recordRepair(1234)
 
         store.state.value shouldBe ImmersionStatsDiagnostics(
@@ -27,8 +29,8 @@ class ImmersionStatsDiagnosticsStoreTest {
             maximumQueueDepth = 4,
             lastWriteLatencyMillis = 27,
             lastWriteError = ImmersionDiagnosticErrorCode.DATABASE_BUSY,
-            lastIndexError = ImmersionDiagnosticErrorCode.UNSUPPORTED_LANGUAGE,
-            lastRollupError = ImmersionDiagnosticErrorCode.ROLLUP_FAILED,
+            lastIndexAtEpochMillis = 1_100,
+            lastRollupAtEpochMillis = 1_200,
             lastRepairAtEpochMillis = 1234,
             droppedCommandCount = NonNegativeCounter(1),
             abandonedRecoveryCount = NonNegativeCounter(2),
@@ -38,6 +40,8 @@ class ImmersionStatsDiagnosticsStoreTest {
         shouldThrow<IllegalArgumentException> { store.recordWriteLatency(-1) }
         shouldThrow<IllegalArgumentException> { store.recordAbandonedRecovery(-1) }
         shouldThrow<IllegalArgumentException> { store.setRollupLag(-1) }
+        shouldThrow<IllegalArgumentException> { store.recordIndexSuccess(-1) }
+        shouldThrow<IllegalArgumentException> { store.recordRollupSuccess(-1) }
         shouldThrow<IllegalArgumentException> { store.recordRepair(-1) }
     }
 
@@ -68,6 +72,8 @@ class ImmersionStatsDiagnosticsStoreTest {
         )
         store.recordDroppedCommand()
         store.recordAbandonedRecovery(3)
+        store.recordIndexSuccess(4_000)
+        store.recordRollupSuccess(4_500)
         store.recordRepair(5_000)
 
         val restored = ImmersionStatsDiagnosticsStore(persistence).state.value
@@ -86,7 +92,9 @@ class ImmersionStatsDiagnosticsStoreTest {
         restored.queueDepth shouldBe 0
         restored.maximumQueueDepth shouldBe 6
         restored.lastWriteLatencyMillis shouldBe 19
-        restored.lastRollupError shouldBe ImmersionDiagnosticErrorCode.ROLLUP_FAILED
+        restored.lastIndexAtEpochMillis shouldBe 4_000
+        restored.lastRollupAtEpochMillis shouldBe 4_500
+        restored.lastRollupError shouldBe null
         restored.droppedCommandCount shouldBe NonNegativeCounter(1)
         restored.abandonedRecoveryCount shouldBe NonNegativeCounter(3)
         restored.lastRepairAtEpochMillis shouldBe 5_000

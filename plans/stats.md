@@ -1976,8 +1976,13 @@ Phases 3–15.
 - [x] Implement delete preview with affected sessions/time/characters/words/characters/goals.
 - [x] On delete, write tombstones, remove private source data, mark dirty rollups, rebuild, and present progress.
 - [x] Add "delete raw text only" separately.
-- [ ] Add session correction tools only for safe fields such as title link; do not permit arbitrary counter edits without an auditable adjustment event.
+- [x] Add session correction tools only for safe fields such as title link; do not permit arbitrary counter edits without an auditable adjustment event.
 - [x] Add local diagnostic export with user-controlled inclusion of titles/text.
+
+Session correction is limited to completed, non-legacy sessions. It uses an
+exact preview and journaled title relink that moves only exclusive source
+history, blocks incompatible/shared/active state, rebuilds rollups, and
+supports guarded rollback. Counters cannot be edited directly.
 
 ### Tests and verification
 
@@ -2047,12 +2052,16 @@ Phases 10–13. Character/vocabulary goals may additionally depend on Phases 14�
 - [x] Show confidence/unavailable rather than a false precise completion date.
 - [x] For title completion, prefer known unit progress; use character estimates only when trustworthy.
 - [x] Store immutable achievement events.
-- [ ] Allow goal edits to apply prospectively or restart history; do not silently rewrite earned milestones.
-- [ ] Add reminder hooks only if there is an existing notification preference pattern and the user opts in.
-- [ ] Add compact Today goal cards to Overview/widget where space permits.
+- [x] Allow goal edits to apply prospectively or restart history; do not silently rewrite earned milestones.
+- [x] Add reminder hooks only if there is an existing notification preference pattern and the user opts in.
+- [x] Add compact Today goal cards to Overview/widget where space permits.
 - [x] Add progress explanations: actual, target to date, needed per remaining active day, and projection assumptions.
-- [ ] Add manual check-in with optional local note under privacy controls.
+- [x] Add manual check-in with optional local note under privacy controls.
 - [x] Add goal export/backup.
+
+Restart-history edits atomically archive the old goal identity while retaining
+its check-ins and achievements. Daily reminders are opt-in, generic, and omit
+titles/source text. Optional check-in notes follow private-text archive scope.
 
 ### Tests and verification
 
@@ -2230,7 +2239,7 @@ Model after an event-identity approach:
 - [x] Add export schema version and metric definitions.
 - [x] Ensure exports escape spreadsheet-formula injection.
 - [x] Ensure no secret Anki/provider tokens or private external identifiers are exported unnecessarily.
-- [ ] Add local maintenance UI:
+- [x] Add local maintenance UI:
   - database size by category.
   - last backup/repair/index/rollup.
   - integrity status.
@@ -2274,7 +2283,7 @@ Phases 1–19.
 - [ ] Add macro/microbenchmarks for capture enqueue, batch writes, indexing, rollups, Overview, Trends, title detail, vocabulary, character grid, sessions, and search.
 - [ ] Profile 1 week, 1 year, and multi-year/100k+ source-unit datasets.
 - [x] Validate indexes with query plans.
-- [ ] Remove N+1 cover/metadata/Anki queries.
+- [x] Remove N+1 cover/metadata/Anki queries.
 - [x] Bound Compose series and use paging/virtualization.
 - [x] Coalesce invalidations and filter changes.
 - [x] Run indexing/repair/retention under appropriate dispatcher/work constraints.
@@ -2301,19 +2310,27 @@ Phases 1–19.
 - [x] Use locale-aware number/date/duration/percentage formatting.
 - [x] Avoid concatenated/transposed English fragments.
 - [x] Do not edit non-base locale XML.
-- [ ] Add translator comments/context where the resource system supports it.
+- [x] Add translator comments/context where the resource system supports it.
 
 ### Reliability and polish
 
-- [ ] Audit every loading/empty/partial/error/stale/rebuilding state.
-- [ ] Make section retries independent.
+- [x] Audit every loading/empty/partial/error/stale/rebuilding state.
+- [x] Make section retries independent.
 - [x] Add data-quality glossary and privacy/retention onboarding.
 - [x] Add metric help and versioned export documentation.
 - [x] Add developer integrity/benchmark documentation.
-- [ ] Review titles/source excerpts for privacy in Android recents/screenshots where applicable.
+- [x] Review titles/source excerpts for privacy in Android recents/screenshots where applicable.
 - [ ] Add screenshot tests for light/dark/dynamic color, phone/tablet, and large font if supported.
 - [x] Ensure navigation/filter state survives process recreation.
 - [x] Review all analytics for misleading labels, axes, truncated ranges, and denominator omissions.
+
+The local state audit distinguishes initial loading, empty, content,
+refreshing content, initial failure, and stale content with failure. Each
+top-level section retries independently and keeps last-known successful data.
+Stats screens disable Android 13+ recents screenshots while active; older
+versions secure the window during pause and restore the global secure-screen
+policy on resume. Hardware screenshot, TalkBack, large-font, and reduced-motion
+validation remain part of the open verification gate.
 
 ### Verification gate
 

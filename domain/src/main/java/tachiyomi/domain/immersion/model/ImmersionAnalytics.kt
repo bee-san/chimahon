@@ -874,11 +874,15 @@ data class AnalyticsGoalProgress(
     val remainingActiveDays: Int? = null,
     val forecastSampleDays: Int = 0,
     val forecastWindowDays: Int = 30,
+    val todayAchieved: Double = 0.0,
+    val todayTarget: Double = 0.0,
 ) {
     init {
         require(remainingActiveDays == null || remainingActiveDays >= 0)
         require(forecastSampleDays >= 0)
         require(forecastWindowDays > 0)
+        require(todayAchieved.isFinite() && todayAchieved >= 0.0)
+        require(todayTarget.isFinite() && todayTarget >= 0.0)
     }
 }
 

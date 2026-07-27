@@ -49,7 +49,7 @@ CREATE TABLE immersion_title_mutation(
     applied_at INTEGER NOT NULL,
     rolled_back_at INTEGER,
     status TEXT NOT NULL,
-    CHECK(type IN ('RENAME', 'MERGE', 'SPLIT')),
+    CHECK(type IN ('RENAME', 'MERGE', 'RELINK', 'SPLIT')),
     CHECK(status IN ('APPLIED', 'ROLLED_BACK')),
     CHECK(sessions >= 0),
     CHECK(source_units >= 0),
@@ -1126,6 +1126,13 @@ FROM immersion_session
 WHERE title_id = :titleId
 ORDER BY id;
 
+selectImmersionSessionForTitleRelink:
+SELECT id, title_id, status
+FROM immersion_session
+WHERE
+    id = :sessionId
+    AND title_id = :sourceTitleId;
+
 selectImmersionSessionsForTitleSplit:
 SELECT id, title_id, status
 FROM immersion_session
@@ -1501,6 +1508,17 @@ JOIN immersion_source_unit AS target
     AND target.canonical_locator = source.canonical_locator
     AND target.normalized_text_hash = source.normalized_text_hash
 WHERE source.title_id = :sourceTitleId
+ORDER BY source.id;
+
+selectImmersionRelinkSourceConflicts:
+SELECT source.id
+FROM immersion_source_unit AS source
+JOIN immersion_source_unit AS target
+    ON target.title_id = :targetTitleId
+    AND target.source_kind = source.source_kind
+    AND target.canonical_locator = source.canonical_locator
+    AND target.normalized_text_hash = source.normalized_text_hash
+WHERE source.id IN :sourceUnitIds
 ORDER BY source.id;
 
 selectImmersionSourcesByOriginAndTitle:
@@ -5504,6 +5522,11 @@ SELECT *
 FROM immersion_goal
 ORDER BY updated_at DESC, id DESC;
 
+selectImmersionGoalById:
+SELECT *
+FROM immersion_goal
+WHERE id = :id;
+
 selectImmersionGoalsForTitleMutation:
 SELECT id, title_id
 FROM immersion_goal
@@ -5773,7 +5796,7 @@ WHERE snapshot.profile_id = :profileId
   )
 ORDER BY item.note_id, item.card_id;
 
-selectImmersionAnkiCharacterItems:
+selectImmersionAnkiCharacterItemsForProfiles:
 SELECT item.*
 FROM immersion_anki_item AS item
 JOIN immersion_anki_snapshot AS snapshot
@@ -5781,17 +5804,17 @@ JOIN immersion_anki_snapshot AS snapshot
 JOIN immersion_anki_character AS character
   ON character.snapshot_id = item.snapshot_id
  AND character.card_id = item.card_id
-WHERE snapshot.profile_id = :profileId
+WHERE snapshot.profile_id IN :profileIds
   AND snapshot.is_current = 1
   AND character.code_point = :codePoint
-ORDER BY item.note_id, item.card_id;
+ORDER BY snapshot.profile_id, item.note_id, item.card_id;
 
-selectImmersionAnkiCharactersForCard:
-SELECT code_point
+selectImmersionAnkiCharactersForCards:
+SELECT snapshot_id, card_id, code_point
 FROM immersion_anki_character
-WHERE snapshot_id = :snapshotId
-  AND card_id = :cardId
-ORDER BY code_point;
+WHERE snapshot_id IN :snapshotIds
+  AND card_id IN :cardIds
+ORDER BY snapshot_id, card_id, code_point;
 
 selectImmersionAnkiWordCoverage:
 WITH encountered AS (

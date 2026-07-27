@@ -89,6 +89,7 @@ import logcat.LogcatLogger
 import mihon.core.migration.Migrator
 import mihon.core.migration.migrations.migrations
 import mihon.feature.stats.anki.AnkiInventorySyncJob
+import mihon.feature.stats.goals.ImmersionGoalReminderJob
 import mihon.feature.stats.recorder.ImmersionRecorderLifecycleCoordinator
 import mihon.feature.stats.rollup.ImmersionRollupJob
 import mihon.telemetry.TelemetryConfig
@@ -266,6 +267,11 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
         } else {
             AnkiInventorySyncJob.cancelAll(this)
         }
+        ImmersionGoalReminderJob.setEnabled(
+            this,
+            immersionStatsPreferences.goalsEnabled().get() &&
+                immersionStatsPreferences.goalRemindersEnabled().get(),
+        )
         ImmersionRollupJob.setupTask(this)
         ImmersionRollupJob.start(this)
         mihon.feature.stats.retention.ImmersionRetentionJob.setupTask(this)

@@ -52,11 +52,12 @@ internal suspend fun loadCharacterAnkiItems(
     repository: ImmersionAnkiRepository,
     profileIds: Collection<String>,
     codePoint: UnicodeCodePoint,
-): List<ImmersionAnkiItem> = profileIds
-    .filter(String::isNotBlank)
-    .distinct()
-    .flatMap { profileId -> repository.findCharacterItems(profileId, codePoint) }
-    .distinctBy { it.snapshotId to it.cardId }
+): List<ImmersionAnkiItem> = repository.findCharacterItems(
+    profileIds = profileIds
+        .filter(String::isNotBlank)
+        .distinct(),
+    codePoint = codePoint,
+).distinctBy { it.snapshotId to it.cardId }
 
 internal data class CharacterCoverageTarget(
     val targetCharacters: Long,
