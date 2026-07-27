@@ -307,6 +307,11 @@ interface ImmersionMaintenanceRepository {
 
     suspend fun maintenanceSummary(): ImmersionMaintenanceSummary
 
+    suspend fun compactFinalizedHeartbeats(
+        limit: Int,
+        compactedAtEpochMillis: Long,
+    ): Long
+
     suspend fun rollupBacklogCount(): Long
 
     suspend fun rollupBacklogEventCount(expectedRollupVersion: Int): Long

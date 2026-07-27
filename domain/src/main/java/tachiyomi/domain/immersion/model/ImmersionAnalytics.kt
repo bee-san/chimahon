@@ -823,6 +823,7 @@ data class AnalyticsTimelineBucket(
     val cardsCreated: Long,
     val cardsUpdated: Long,
     val eventTypes: Set<EventType>,
+    val knownness: AnalyticsTimelineKnownness? = null,
 ) {
     init {
         require(startEpochMillis >= 0)
@@ -835,6 +836,35 @@ data class AnalyticsTimelineBucket(
         require(cardsCreated >= 0)
         require(cardsUpdated >= 0)
     }
+}
+
+@Serializable
+data class AnalyticsTimelineKnownness(
+    val sourceExposures: Long,
+    val indexedSourceExposures: Long,
+    val ankiReadySourceExposures: Long,
+    val unknownWords: Long,
+    val newWords: Long,
+    val learningWords: Long,
+    val youngWords: Long,
+    val matureWords: Long,
+) {
+    init {
+        require(sourceExposures >= 0)
+        require(indexedSourceExposures in 0..sourceExposures)
+        require(ankiReadySourceExposures in 0..indexedSourceExposures)
+        require(unknownWords >= 0)
+        require(newWords >= 0)
+        require(learningWords >= 0)
+        require(youngWords >= 0)
+        require(matureWords >= 0)
+    }
+
+    val totalWords: Long
+        get() = unknownWords + newWords + learningWords + youngWords + matureWords
+
+    val knownWords: Long
+        get() = totalWords - unknownWords
 }
 
 @Serializable

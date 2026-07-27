@@ -159,6 +159,7 @@ import tachiyomi.domain.immersion.model.AnalyticsSessionDetail
 import tachiyomi.domain.immersion.model.AnalyticsSort
 import tachiyomi.domain.immersion.model.AnalyticsSourceOccurrence
 import tachiyomi.domain.immersion.model.AnalyticsTemporalActivity
+import tachiyomi.domain.immersion.model.AnalyticsTimelineKnownness
 import tachiyomi.domain.immersion.model.AnalyticsTitleAcquisitionBucketSize
 import tachiyomi.domain.immersion.model.AnalyticsTitleCompletedUnit
 import tachiyomi.domain.immersion.model.AnalyticsTitleCoverageFilter
@@ -4647,6 +4648,34 @@ private fun TimelineSummary(detail: AnalyticsSessionDetail) {
         ),
     )
     val color = MaterialTheme.colorScheme.primary
+    val knownness = detail.timeline
+        .mapNotNull { it.knownness }
+        .fold<AnalyticsTimelineKnownness, AnalyticsTimelineKnownness?>(null) { total, value ->
+            total?.plus(value) ?: value
+        }
+    val knownnessSummary = knownness?.let { value ->
+        when {
+            value.ankiReadySourceExposures == 0L ->
+                stringResource(KMR.strings.stats_timeline_knownness_unavailable)
+            value.totalWords == 0L ->
+                stringResource(KMR.strings.stats_timeline_knownness_empty)
+            else -> stringResource(
+                KMR.strings.stats_timeline_knownness_summary,
+                formatCount(value.indexedSourceExposures),
+                formatCount(value.sourceExposures),
+                formatCount(value.knownWords),
+                formatCount(value.totalWords),
+                formatCount(value.matureWords),
+            )
+        }
+    }
+    val knownnessColors = listOf(
+        MaterialTheme.colorScheme.outline,
+        MaterialTheme.colorScheme.tertiary,
+        MaterialTheme.colorScheme.error,
+        MaterialTheme.colorScheme.secondary,
+        MaterialTheme.colorScheme.primary,
+    )
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(summary, style = MaterialTheme.typography.bodySmall)
         Text(
@@ -4670,6 +4699,75 @@ private fun TimelineSummary(detail: AnalyticsSessionDetail) {
                     topLeft = Offset(index * width, size.height - height),
                     size = Size((width - 1.dp.toPx()).coerceAtLeast(1f), height),
                 )
+            }
+        }
+        knownnessSummary?.let {
+            Text(
+                text = stringResource(KMR.strings.stats_timeline_knownness),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (knownness?.totalWords != 0L) {
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .semantics { contentDescription = it },
+                ) {
+                    if (detail.timeline.isEmpty()) return@Canvas
+                    val width = size.width / detail.timeline.size
+                    detail.timeline.forEachIndexed timeline@{ index, bucket ->
+                        val distribution = bucket.knownness ?: return@timeline
+                        val totalWords = distribution.totalWords
+                        if (totalWords == 0L) return@timeline
+                        val counts = listOf(
+                            distribution.unknownWords,
+                            distribution.newWords,
+                            distribution.learningWords,
+                            distribution.youngWords,
+                            distribution.matureWords,
+                        )
+                        var bottom = size.height
+                        counts.forEachIndexed maturity@{ maturityIndex, count ->
+                            if (count == 0L) return@maturity
+                            val height = size.height * count.toFloat() / totalWords.toFloat()
+                            bottom -= height
+                            drawRect(
+                                color = knownnessColors[maturityIndex],
+                                topLeft = Offset(index * width, bottom),
+                                size = Size((width - 1.dp.toPx()).coerceAtLeast(1f), height),
+                            )
+                        }
+                    }
+                }
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    listOf(
+                        KMR.strings.stats_maturity_unknown,
+                        KMR.strings.stats_maturity_new,
+                        KMR.strings.stats_maturity_learning,
+                        KMR.strings.stats_maturity_young,
+                        KMR.strings.stats_maturity_mature,
+                    ).forEachIndexed { index, label ->
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .background(knownnessColors[index], RoundedCornerShape(2.dp)),
+                            )
+                            Text(stringResource(label), style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
             }
         }
     }
@@ -4749,6 +4847,26 @@ private fun SourceOccurrenceContent(
         }
     }
 }
+
+private fun AnalyticsTimelineKnownness.plus(
+    other: AnalyticsTimelineKnownness,
+): AnalyticsTimelineKnownness =
+    AnalyticsTimelineKnownness(
+        sourceExposures = Math.addExact(sourceExposures, other.sourceExposures),
+        indexedSourceExposures = Math.addExact(
+            indexedSourceExposures,
+            other.indexedSourceExposures,
+        ),
+        ankiReadySourceExposures = Math.addExact(
+            ankiReadySourceExposures,
+            other.ankiReadySourceExposures,
+        ),
+        unknownWords = Math.addExact(unknownWords, other.unknownWords),
+        newWords = Math.addExact(newWords, other.newWords),
+        learningWords = Math.addExact(learningWords, other.learningWords),
+        youngWords = Math.addExact(youngWords, other.youngWords),
+        matureWords = Math.addExact(matureWords, other.matureWords),
+    )
 
 @Composable
 private fun GoalCard(

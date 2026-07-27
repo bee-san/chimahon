@@ -52,6 +52,11 @@ source rows and totals.
 `ImmersionRetentionJob` runs with WorkManager constraints and is safe to retry
 after interruption. Its dry-run path uses the same title/time predicate as
 deletion. Policies are never, 30 days, one year, and until manually deleted.
+The same worker compacts finalized heartbeat groups in bounded session batches.
+It leaves one- and two-heartbeat windows untouched, combines only raw events
+within a five-minute local-time window, preserves active-duration totals,
+tombstones replaced identities for sync, and dirties rollups for deterministic
+rebuild. Generated compacted events are excluded from subsequent passes.
 
 Session deletion:
 
