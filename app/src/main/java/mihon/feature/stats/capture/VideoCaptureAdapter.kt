@@ -22,6 +22,7 @@ import tachiyomi.domain.immersion.model.EventType
 import tachiyomi.domain.immersion.model.ImmersionSession
 import tachiyomi.domain.immersion.model.ImmersionSourceUnit
 import tachiyomi.domain.immersion.model.ImmersionTitle
+import tachiyomi.domain.immersion.model.ImmersionTitleIdentityAdapter
 import tachiyomi.domain.immersion.model.LanguageTag
 import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.NetCharacterProgress
@@ -61,10 +62,14 @@ data class VideoCaptureTitle(
     val profileId: String,
     val languageTag: LanguageTag?,
     val createdAtEpochMillis: Long,
+    val status: String? = null,
+    val totalUnits: Long? = null,
 ) {
     init {
         require(animeId >= 0) { "Anime ID cannot be negative" }
         require(displayTitle.isNotBlank()) { "Video title cannot be blank" }
+        require(status == null || status.isNotBlank()) { "Video status cannot be blank" }
+        require(totalUnits == null || totalUnits >= 0) { "Video total units cannot be negative" }
         require(createdAtEpochMillis >= 0) { "Video creation time cannot be negative" }
     }
 }
@@ -313,17 +318,23 @@ class VideoCaptureAdapter(
     workerScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     diagnostics: ImmersionStatsDiagnosticsStore? = null,
 ) {
-    private val sourceKey = "video:${captureTitle.animeId}"
-    private val titleId = TitleId(stableUuid(TITLE_NAMESPACE, "$sourceKey|${captureTitle.profileId}"))
+    private val titleIdentity = ImmersionTitleIdentityAdapter.video(
+        animeId = captureTitle.animeId,
+        profileId = captureTitle.profileId,
+    )
+    private val sourceKey = titleIdentity.sourceKey
+    private val titleId = titleIdentity.id
     private val title = ImmersionTitle(
         id = titleId,
-        mediaKind = MediaKind.VIDEO,
+        mediaKind = titleIdentity.mediaKind,
         sourceKey = sourceKey,
-        profileId = captureTitle.profileId,
+        profileId = titleIdentity.profileId,
         languageTag = captureTitle.languageTag,
         displayTitle = captureTitle.displayTitle,
-        libraryId = captureTitle.animeId,
-        mediaId = captureTitle.animeId.toString(),
+        libraryId = titleIdentity.libraryId,
+        mediaId = titleIdentity.mediaId,
+        status = captureTitle.status,
+        totalUnits = captureTitle.totalUnits,
         createdAtEpochMillis = captureTitle.createdAtEpochMillis,
         updatedAtEpochMillis = maxOf(captureTitle.createdAtEpochMillis, clock()),
     )
@@ -801,7 +812,13 @@ class VideoCaptureAdapter(
         val handle = state.handle ?: return
         if (!state.episodeCompleted) {
             state.episodeCompleted = true
-            recorder.record(handle, CaptureCommand.Activity(EventType.UNIT_COMPLETED))
+            recorder.record(
+                handle,
+                CaptureCommand.Activity(
+                    eventType = EventType.UNIT_COMPLETED,
+                    completionUnitId = episode.episodeId.toString(),
+                ),
+            )
         }
         if (titleCompleted && !state.titleCompleted) {
             state.titleCompleted = true
@@ -1097,7 +1114,6 @@ class VideoCaptureAdapter(
         const val VIDEO_OCR_TRACK_ID = "video-ocr"
         const val SUBTITLE_EXPOSURE_POLICY = "video-subtitle-active-cue-reentry-1s-v1"
         const val OCR_EXPOSURE_POLICY = "video-ocr-visible-adjacent-2s-v1"
-        const val TITLE_NAMESPACE = "immersion-title-video"
         const val SOURCE_NAMESPACE = "immersion-source-video"
     }
 }

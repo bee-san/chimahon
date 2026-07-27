@@ -231,7 +231,12 @@ class DefaultImmersionRecorder(
             when (command) {
                 is CaptureCommand.Activity -> {
                     if (command.eventType != EventType.PROGRESS) {
-                        drafts += EventDraft.Session(command.eventType, now, 0)
+                        drafts += EventDraft.Session(
+                            eventType = command.eventType,
+                            time = now,
+                            activeDurationMillis = 0,
+                            completionUnitId = command.completionUnitId,
+                        )
                     }
                 }
                 is CaptureCommand.Progress -> {
@@ -607,6 +612,7 @@ class DefaultImmersionRecorder(
                     type = draft.eventType,
                     activeDuration = MillisecondDuration(draft.activeDurationMillis),
                     netCharacters = draft.netCharacters,
+                    completionUnitId = draft.completionUnitId,
                 )
                 is EventDraft.Exposure -> ExposureEvent(
                     id = EventId(UUID.randomUUID().toString()),
@@ -902,6 +908,7 @@ class DefaultImmersionRecorder(
             val activeDurationMillis: Long,
             val timezoneOffsetSeconds: Int? = null,
             val netCharacters: NetCharacterProgress = NetCharacterProgress.ZERO,
+            val completionUnitId: String? = null,
         ) : EventDraft
 
         data class Exposure(

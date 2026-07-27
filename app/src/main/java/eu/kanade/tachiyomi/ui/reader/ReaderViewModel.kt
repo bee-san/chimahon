@@ -38,6 +38,7 @@ import eu.kanade.tachiyomi.data.saver.Location
 import eu.kanade.tachiyomi.data.sync.SyncDataJob
 import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.model.Page
+import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.source.online.MetadataSource
 import eu.kanade.tachiyomi.source.online.all.MergedSource
@@ -843,6 +844,12 @@ class ReaderViewModel @JvmOverloads constructor(
                 profileId = profile.id,
                 languageTag = languageTag,
                 createdAtEpochMillis = manga.dateAdded.coerceAtLeast(0),
+                status = if (manga.status == SManga.COMPLETED.toLong()) {
+                    "COMPLETED"
+                } else {
+                    "IN_PROGRESS"
+                },
+                totalUnits = unfilteredChapterList.size.toLong(),
             ),
             recorder = immersionRecorder,
             rawTextRetention = immersionStatsPreferences::effectiveRawTextRetention,

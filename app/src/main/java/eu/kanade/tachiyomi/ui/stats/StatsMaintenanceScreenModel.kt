@@ -23,6 +23,7 @@ import tachiyomi.domain.immersion.model.ImmersionReindexRequest
 import tachiyomi.domain.immersion.model.ImmersionStatsDeletionScope
 import tachiyomi.domain.immersion.model.RawTextRetention
 import tachiyomi.domain.immersion.model.StatsFilter
+import tachiyomi.domain.immersion.model.TitleId
 import tachiyomi.domain.immersion.repository.ImmersionAnkiRepository
 import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
 import tachiyomi.domain.immersion.service.ImmersionAnalyticsService
@@ -36,6 +37,7 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 
 class StatsMaintenanceScreenModel(
+    private val initialTitleId: TitleId? = null,
     private val maintenance: ImmersionMaintenanceRepository = Injekt.get(),
     private val analytics: ImmersionAnalyticsService = Injekt.get(),
     private val exports: ImmersionExportService = Injekt.get(),
@@ -137,7 +139,10 @@ class StatsMaintenanceScreenModel(
 
     fun deleteRawText() {
         launchTask {
-            val deleted = maintenance.deleteRawText(updatedAtEpochMillis = System.currentTimeMillis())
+            val deleted = maintenance.deleteRawText(
+                titleId = initialTitleId,
+                updatedAtEpochMillis = System.currentTimeMillis(),
+            )
             mutableState.update {
                 it.copy(
                     rawTextDeletionPreview = 0,
@@ -277,7 +282,7 @@ class StatsMaintenanceScreenModel(
     private suspend fun refreshSnapshot() {
         val summary = maintenance.maintenanceSummary()
         val integrity = maintenance.validateInvariants(ImmersionStatsVersions.ROLLUP)
-        val rawTextPreview = maintenance.previewRawTextDeletion()
+        val rawTextPreview = maintenance.previewRawTextDeletion(titleId = initialTitleId)
         val deletionPreview = maintenance.previewAllStatsDeletion()
         mutableState.update {
             it.copy(

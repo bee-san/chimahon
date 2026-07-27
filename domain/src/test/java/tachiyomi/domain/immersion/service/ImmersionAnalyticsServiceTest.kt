@@ -11,18 +11,36 @@ import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import tachiyomi.domain.immersion.model.AnalyticsActivityTotals
+import tachiyomi.domain.immersion.model.AnalyticsAnkiCapabilityReason
+import tachiyomi.domain.immersion.model.AnalyticsAnkiReport
 import tachiyomi.domain.immersion.model.AnalyticsAnkiSummary
+import tachiyomi.domain.immersion.model.AnalyticsAnkiWeeklyImpact
 import tachiyomi.domain.immersion.model.AnalyticsBucketInventory
 import tachiyomi.domain.immersion.model.AnalyticsBucketScale
+import tachiyomi.domain.immersion.model.AnalyticsCharacterFilter
 import tachiyomi.domain.immersion.model.AnalyticsCharacterRow
 import tachiyomi.domain.immersion.model.AnalyticsDataQuality
+import tachiyomi.domain.immersion.model.AnalyticsEstimateUnit
 import tachiyomi.domain.immersion.model.AnalyticsHourActivity
 import tachiyomi.domain.immersion.model.AnalyticsInventoryMetrics
 import tachiyomi.domain.immersion.model.AnalyticsPage
 import tachiyomi.domain.immersion.model.AnalyticsSort
+import tachiyomi.domain.immersion.model.AnalyticsSourceOccurrence
 import tachiyomi.domain.immersion.model.AnalyticsTemporalActivity
+import tachiyomi.domain.immersion.model.AnalyticsTitleAcquisitionBucketSize
+import tachiyomi.domain.immersion.model.AnalyticsTitleCompletedUnit
+import tachiyomi.domain.immersion.model.AnalyticsTitleCoverage
+import tachiyomi.domain.immersion.model.AnalyticsTitleCoverageFilter
+import tachiyomi.domain.immersion.model.AnalyticsTitleFilter
+import tachiyomi.domain.immersion.model.AnalyticsTitleMetadata
 import tachiyomi.domain.immersion.model.AnalyticsTitleSeriesSelection
+import tachiyomi.domain.immersion.model.AnalyticsTitleSort
+import tachiyomi.domain.immersion.model.AnalyticsTitleStateFilter
 import tachiyomi.domain.immersion.model.AnalyticsTitleTrendDailyPoint
+import tachiyomi.domain.immersion.model.AnalyticsTitleUnitCompletionDay
+import tachiyomi.domain.immersion.model.AnalyticsTitleUnitProgress
+import tachiyomi.domain.immersion.model.AnalyticsTitleWordAcquisition
+import tachiyomi.domain.immersion.model.AnalyticsTitleWordAcquisitionBucket
 import tachiyomi.domain.immersion.model.AnalyticsVocabularyFirstSeenDay
 import tachiyomi.domain.immersion.model.AnalyticsWeekdayActivity
 import tachiyomi.domain.immersion.model.AnalyticsWordRow
@@ -44,6 +62,9 @@ import tachiyomi.domain.immersion.model.NetCharacterProgress
 import tachiyomi.domain.immersion.model.NonNegativeCounter
 import tachiyomi.domain.immersion.model.ProvenanceState
 import tachiyomi.domain.immersion.model.ReadingMetrics
+import tachiyomi.domain.immersion.model.SessionId
+import tachiyomi.domain.immersion.model.SourceKind
+import tachiyomi.domain.immersion.model.SourceUnitId
 import tachiyomi.domain.immersion.model.StatsFilter
 import tachiyomi.domain.immersion.model.TitleId
 import tachiyomi.domain.immersion.model.UnicodeCodePoint
@@ -169,6 +190,300 @@ class ImmersionAnalyticsServiceTest {
         result.value.points.map { it.newWords } shouldBe listOf(2, 0, 3)
         result.value.points.map { it.cumulativeNewWords } shouldBe listOf(2, 2, 5)
         result.diagnostics.rowCount shouldBe 2
+    }
+
+    @Test
+    fun `title estimate requires known total and stable qualifying pace`() = runTest {
+        val rows = listOf(rollup("2026-06-30", 100_000)) +
+            (1..5).map { day ->
+                rollup("2026-07-0$day", 60_000)
+            }
+        stub(rows)
+        coEvery { repository.titleMetadata(setOf(TITLE)) } returns listOf(
+            titleMetadata(totalCharacterEstimate = 600_000),
+        )
+
+        val row = ImmersionAnalyticsService(repository, goalRepository)
+            .titlePage(
+                filter = StatsFilter(
+                    dateRange = LocalDateRange(date("2026-07-01"), date("2026-07-05")),
+                ),
+                titleFilter = AnalyticsTitleFilter(),
+                sort = AnalyticsTitleSort.PROGRESS,
+                offset = 0,
+                limit = 20,
+            )
+            .value
+            .items
+            .single()
+
+        row.progress shouldBe (400_000.0 / 600_000.0)
+        row.estimate?.remainingAmount shouldBe 200_000
+        row.estimate?.estimatedActiveTimeMillis shouldBe 2_000_000
+        row.estimate?.qualifyingDayCount shouldBe 5
+        row.estimate?.confidence shouldBe
+            tachiyomi.domain.immersion.model.AnalyticsEstimateConfidence.MEDIUM
+        row.activeDays shouldBe 5
+        row.calendarSpanDays shouldBe 5
+    }
+
+    @Test
+    fun `title unit progress uses stable completion identities instead of source exposure`() = runTest {
+        val rows = (1..5).map { day ->
+            rollup("2026-07-0$day", 60_000, sourceUnits = 100)
+        }
+        stub(rows)
+        coEvery { repository.titleMetadata(setOf(TITLE)) } returns listOf(
+            titleMetadata(totalUnits = 10),
+        )
+        coEvery { repository.titleUnitProgress(any()) } returns mapOf(
+            TITLE to AnalyticsTitleUnitProgress(
+                identityAvailable = true,
+                completedUnits = 5,
+                identifiedCompletionEvents = 5,
+                firstCompletionsByDay = (1..5).map { day ->
+                    AnalyticsTitleUnitCompletionDay(date("2026-07-0$day"), 1)
+                },
+            ),
+        )
+
+        val row = ImmersionAnalyticsService(repository, goalRepository)
+            .titlePage(
+                filter = StatsFilter(
+                    dateRange = LocalDateRange(date("2026-07-01"), date("2026-07-05")),
+                ),
+                titleFilter = AnalyticsTitleFilter(),
+                sort = AnalyticsTitleSort.PROGRESS,
+                offset = 0,
+                limit = 20,
+            )
+            .value
+            .items
+            .single()
+
+        row.unitProgress.completedUnits shouldBe 5
+        row.progress shouldBe 0.5
+        row.estimate?.unit shouldBe AnalyticsEstimateUnit.MEDIA_UNITS
+        row.estimate?.remainingAmount shouldBe 5
+        row.estimate?.estimatedActiveTimeMillis shouldBe 3_000_000
+        row.metrics.sourceUnits.value shouldBe 500
+    }
+
+    @Test
+    fun `title estimate stays unavailable for unknown total or unstable pace`() = runTest {
+        val rows = listOf(
+            rollup("2026-07-01", 60_000),
+            rollup("2026-07-02", 1_000),
+            rollup("2026-07-03", 120_000),
+        )
+        stub(rows)
+        coEvery { repository.titleMetadata(setOf(TITLE)) } returns listOf(
+            titleMetadata(totalUnits = 12, totalCharacterEstimate = null),
+        )
+
+        val unknown = ImmersionAnalyticsService(repository, goalRepository)
+            .titlePage(
+                StatsFilter(dateRange = LocalDateRange(date("2026-07-01"), date("2026-07-03"))),
+                AnalyticsTitleFilter(),
+                AnalyticsTitleSort.PROGRESS,
+                0,
+                20,
+            )
+            .value
+            .items
+            .single()
+
+        unknown.progress shouldBe null
+        unknown.estimate shouldBe null
+
+        coEvery { repository.titleMetadata(setOf(TITLE)) } returns listOf(
+            titleMetadata(totalCharacterEstimate = 500_000),
+        )
+        val unstable = ImmersionAnalyticsService(repository, goalRepository)
+            .titlePage(
+                StatsFilter(dateRange = LocalDateRange(date("2026-07-01"), date("2026-07-03"))),
+                AnalyticsTitleFilter(),
+                AnalyticsTitleSort.PROGRESS,
+                0,
+                20,
+            )
+            .value
+            .items
+            .single()
+
+        unstable.estimate shouldBe null
+    }
+
+    @Test
+    fun `speed ranking places tiny outlier below qualifying title`() = runTest {
+        val qualifying = rollup("2026-07-01", 60_000, titleId = TITLE)
+        val tiny = rollup("2026-07-01", 900, titleId = TITLE_TWO).copy(
+            metrics = metrics(900).copy(activeTime = MillisecondDuration(1_000)),
+        )
+        stub(listOf(qualifying, tiny))
+        coEvery { repository.titleMetadata(setOf(TITLE, TITLE_TWO)) } returns listOf(
+            titleMetadata(id = TITLE, displayTitle = "Qualifying"),
+            titleMetadata(id = TITLE_TWO, displayTitle = "Tiny outlier"),
+        )
+
+        val rows = ImmersionAnalyticsService(repository, goalRepository)
+            .titlePage(
+                StatsFilter(dateRange = LocalDateRange(date("2026-07-01"), date("2026-07-01"))),
+                AnalyticsTitleFilter(),
+                AnalyticsTitleSort.READING_SPEED,
+                0,
+                20,
+            )
+            .value
+            .items
+
+        rows.map { it.titleId } shouldBe listOf(TITLE, TITLE_TWO)
+        rows.map { it.speedRankingEligible } shouldBe listOf(true, false)
+    }
+
+    @Test
+    fun `title state coverage search and paging are stable`() = runTest {
+        val third = TitleId("00000000-0000-0000-0000-000000000003")
+        val rows = listOf(
+            rollup("2026-07-01", 100, titleId = TITLE),
+            rollup("2026-07-01", 100, titleId = TITLE_TWO),
+            rollup("2026-07-01", 100, titleId = third),
+        )
+        stub(rows)
+        coEvery { repository.titleMetadata(setOf(TITLE, TITLE_TWO, third)) } returns listOf(
+            titleMetadata(id = TITLE, displayTitle = "Alpha", completed = true),
+            titleMetadata(id = TITLE_TWO, displayTitle = "Beta", completed = false),
+            titleMetadata(id = third, displayTitle = "Gamma", completed = null),
+        )
+        coEvery { repository.titleCoverage(any()) } returns mapOf(
+            TITLE to AnalyticsTitleCoverage(
+                eventBackedSessionCount = 1,
+                sourceUnitCount = 2,
+                indexedSourceUnitCount = 2,
+            ),
+            TITLE_TWO to AnalyticsTitleCoverage(
+                eventBackedSessionCount = 1,
+                sourceUnitCount = 2,
+                indexedSourceUnitCount = 1,
+            ),
+            third to AnalyticsTitleCoverage(eventBackedSessionCount = 1),
+        )
+        val service = ImmersionAnalyticsService(repository, goalRepository)
+        val filter = StatsFilter(
+            dateRange = LocalDateRange(date("2026-07-01"), date("2026-07-01")),
+        )
+
+        val partial = service.titlePage(
+            filter,
+            AnalyticsTitleFilter(
+                searchQuery = "be",
+                state = AnalyticsTitleStateFilter.IN_PROGRESS,
+                coverage = AnalyticsTitleCoverageFilter.PARTIAL,
+            ),
+            AnalyticsTitleSort.ALPHABETICAL,
+            0,
+            1,
+        ).value
+
+        partial.items.map { it.titleId } shouldBe listOf(TITLE_TWO)
+        partial.nextOffset shouldBe null
+
+        val firstPage = service.titlePage(
+            filter,
+            AnalyticsTitleFilter(),
+            AnalyticsTitleSort.ALPHABETICAL,
+            0,
+            2,
+        ).value
+        val secondPage = service.titlePage(
+            filter,
+            AnalyticsTitleFilter(),
+            AnalyticsTitleSort.ALPHABETICAL,
+            checkNotNull(firstPage.nextOffset),
+            2,
+        ).value
+
+        firstPage.items.map { it.displayTitle } shouldBe listOf("Alpha", "Beta")
+        secondPage.items.map { it.displayTitle } shouldBe listOf("Gamma")
+        secondPage.nextOffset shouldBe null
+    }
+
+    @Test
+    fun `title detail queries replace an existing title scope and retain stable paging`() = runTest {
+        val range = LocalDateRange(date("2026-07-01"), date("2026-07-02"))
+        val filter = StatsFilter(
+            dateRange = range,
+            titleIds = setOf(TITLE_TWO),
+            comparisonRange = LocalDateRange(date("2026-06-01"), date("2026-06-02")),
+        )
+        val scoped = filter.copy(titleIds = setOf(TITLE), comparisonRange = null)
+        val acquisition = AnalyticsTitleWordAcquisition(
+            titleId = TITLE,
+            bucketSize = AnalyticsTitleAcquisitionBucketSize.TEN_THOUSAND,
+            totalGrossCharacters = 100,
+            buckets = listOf(
+                AnalyticsTitleWordAcquisitionBucket(
+                    index = 0,
+                    startCharacter = 0,
+                    endCharacterInclusive = 99,
+                    newWords = 2,
+                    cumulativeNewWords = 2,
+                ),
+            ),
+        )
+        val completedUnit = AnalyticsTitleCompletedUnit(
+            titleId = TITLE,
+            completionUnitId = "section-1",
+            firstCompletedAtEpochMillis = 1_000,
+            lastCompletedAtEpochMillis = 2_000,
+            firstCompletedDate = date("2026-07-01"),
+            completionEventCount = 2,
+        )
+        val occurrence = AnalyticsSourceOccurrence(
+            sourceUnitId = SourceUnitId("00000000-0000-0000-0000-000000000101"),
+            titleId = TITLE,
+            displayTitle = "Title",
+            sessionId = SessionId("00000000-0000-0000-0000-000000000201"),
+            mediaKind = MediaKind.NOVEL,
+            sourceKind = SourceKind.NOVEL_RANGE,
+            canonicalLocator = "section-1:0-100",
+            occurredAtEpochMillis = 1_000,
+            excerpt = "source",
+            rawTextAvailable = true,
+        )
+        stub(listOf(rollup("2026-07-01", 100)))
+        coEvery {
+            repository.titleWordAcquisition(
+                scoped,
+                AnalyticsTitleAcquisitionBucketSize.TEN_THOUSAND,
+            )
+        } returns mapOf(TITLE to acquisition)
+        coEvery { repository.titleCompletedUnits(scoped, 0, 10) } returns
+            AnalyticsPage(listOf(completedUnit), 1)
+        coEvery { repository.sourceOccurrences(scoped, 0, 10) } returns
+            AnalyticsPage(listOf(occurrence), null)
+        val service = serviceAt("2026-07-02T12:00:00Z")
+
+        service.titleWordAcquisition(
+            filter,
+            TITLE,
+            AnalyticsTitleAcquisitionBucketSize.TEN_THOUSAND,
+        ).value shouldBe acquisition
+        service.titleCompletedUnits(filter, TITLE, 0, 10).value.let {
+            it.items shouldBe listOf(completedUnit)
+            it.nextOffset shouldBe 1
+        }
+        service.titleSourceOccurrences(filter, TITLE, 0, 10).value.items shouldBe
+            listOf(occurrence)
+
+        coVerify(exactly = 1) {
+            repository.titleWordAcquisition(
+                scoped,
+                AnalyticsTitleAcquisitionBucketSize.TEN_THOUSAND,
+            )
+            repository.titleCompletedUnits(scoped, 0, 10)
+            repository.sourceOccurrences(scoped, 0, 10)
+        }
     }
 
     @Test
@@ -698,7 +1013,7 @@ class ImmersionAnalyticsServiceTest {
             repository.vocabularyPage(any(), any(), any(), any(), any())
         }
         coVerify(exactly = 0) {
-            repository.characterPage(any(), any(), any(), any(), any())
+            repository.characterPage(any(), any(), any(), any(), any(), any())
         }
     }
 
@@ -734,14 +1049,20 @@ class ImmersionAnalyticsServiceTest {
             codePoint = UnicodeCodePoint('猫'.code),
             rendered = "猫",
             unicodeName = "CJK UNIFIED IDEOGRAPH-732B",
+            unicodeCategory = "OTHER_LETTER",
             unicodeScript = "HAN",
+            japaneseReadings = null,
             occurrenceCount = 4,
+            sourceUnitCount = 1,
             wordCount = 1,
             titleCount = 1,
             firstSeenAtEpochMillis = 1,
             lastSeenAtEpochMillis = 2,
             frequencyRank = 10,
+            jlptLevel = null,
+            gradeLevel = null,
             maturity = MaturityTier.UNKNOWN,
+            priorityScore = 100_000.0,
         )
         stub(
             listOf(
@@ -767,6 +1088,7 @@ class ImmersionAnalyticsServiceTest {
                 0,
                 20,
                 null,
+                AnalyticsCharacterFilter(),
             )
         } returns AnalyticsPage(listOf(character), null)
 
@@ -790,7 +1112,70 @@ class ImmersionAnalyticsServiceTest {
                 0,
                 20,
                 null,
+                AnalyticsCharacterFilter(),
             )
+        }
+    }
+
+    @Test
+    fun `Anki impact exposes capability freshness and partial ISO weeks without causal claims`() = runTest {
+        val range = LocalDateRange(date("2026-07-01"), date("2026-07-02"))
+        val filter = StatsFilter(
+            dateRange = range,
+            profileIds = setOf("profile"),
+            languageTags = setOf(LanguageTag("ja")),
+        )
+        val repositorySummary = ankiSummary(
+            snapshot = ankiSnapshot(CapabilityState.AVAILABLE, isStale = true),
+        ).copy(
+            linkedOperationCount = 2,
+            unattributedOperationCount = 1,
+            meanReadingToCardLagMillis = 3_600_000,
+            weeklyImpact = listOf(
+                AnalyticsAnkiWeeklyImpact(
+                    weekStart = date("2026-06-29"),
+                    weekEndInclusive = date("2026-07-05"),
+                    partial = false,
+                    activeDurationMillis = 60_000,
+                    grossCharacters = 1_000,
+                    cardsCreated = 2,
+                    cardsUpdated = 0,
+                    linkedOperations = 2,
+                    unattributedOperations = 1,
+                    sameWeekReadingToCardOperations = 1,
+                    maturedOperations = 0,
+                    meanReadingToCardLagMillis = 3_600_000,
+                    meanCardToMaturityLagMillis = null,
+                ),
+            ),
+        )
+        stub(emptyList())
+        coEvery { repository.ankiSummary(filter) } returns repositorySummary
+        coEvery {
+            repository.vocabularyPage(any(), any(), any(), any(), any())
+        } returns AnalyticsPage(emptyList(), null)
+        coEvery {
+            repository.characterPage(any(), any(), any(), any(), any(), any())
+        } returns AnalyticsPage(emptyList(), null)
+
+        val result = serviceAt("2026-07-02T12:00:00Z").anki(filter).value
+
+        result.weeklyImpact.single().partial shouldBe true
+        result.generatedAtEpochMillis shouldBe Instant.parse("2026-07-02T12:00:00Z").toEpochMilli()
+        result.minimumComparisonSampleSize shouldBe 20
+        result.capabilities.associateBy { it.report }.let { capabilities ->
+            capabilities.getValue(AnalyticsAnkiReport.INVENTORY).let {
+                it.state shouldBe CapabilityState.STALE
+                it.reason shouldBe AnalyticsAnkiCapabilityReason.STALE_INVENTORY
+            }
+            capabilities.getValue(AnalyticsAnkiReport.SOURCE_ATTRIBUTION).state shouldBe
+                CapabilityState.PARTIAL
+            capabilities.getValue(AnalyticsAnkiReport.READING_TO_CARD_LAG).state shouldBe
+                CapabilityState.AVAILABLE
+            capabilities.getValue(AnalyticsAnkiReport.CARD_TO_MATURITY_LAG).reason shouldBe
+                AnalyticsAnkiCapabilityReason.INSUFFICIENT_SAMPLE
+            capabilities.getValue(AnalyticsAnkiReport.RETENTION).reason shouldBe
+                AnalyticsAnkiCapabilityReason.PROVIDER_UNSUPPORTED
         }
     }
 
@@ -806,10 +1191,23 @@ class ImmersionAnalyticsServiceTest {
             }
         }
         coEvery { repository.titleInventoryMetrics(any()) } returns emptyMap()
-        coEvery { repository.availableDateRange(any()) } returns LocalDateRange(
-            rows.minOf { it.date },
-            rows.maxOf { it.date },
-        )
+        coEvery { repository.titleCoverage(any()) } returns emptyMap()
+        coEvery { repository.titleUnitProgress(any()) } returns emptyMap()
+        coEvery { repository.titleNetProgress(any()) } returns rows
+            .groupBy(ImmersionDailyRollup::titleId)
+            .mapValues { (_, titleRows) ->
+                NetCharacterProgress(
+                    titleRows.sumOf { it.metrics.characters.netProgress.value },
+                )
+            }
+        coEvery { repository.availableDateRange(any()) } returns rows
+            .takeIf { it.isNotEmpty() }
+            ?.let {
+                LocalDateRange(
+                    it.minOf(ImmersionDailyRollup::date),
+                    it.maxOf(ImmersionDailyRollup::date),
+                )
+            }
         coEvery { repository.dailyRollups(any()) } answers {
             val range = firstArg<LocalDateRange>()
             rows.filter { it.date in range }
@@ -895,6 +1293,29 @@ class ImmersionAnalyticsServiceTest {
         isPartial = false,
         isCurrent = true,
         isStale = isStale,
+    )
+
+    private fun titleMetadata(
+        id: TitleId = TITLE,
+        displayTitle: String = "Title",
+        totalUnits: Long? = null,
+        totalCharacterEstimate: Long? = null,
+        completed: Boolean? = null,
+    ) = AnalyticsTitleMetadata(
+        titleId = id,
+        displayTitle = displayTitle,
+        mediaKind = MediaKind.NOVEL,
+        sourceKey = "novel:${id.value}",
+        profileId = "default",
+        languageTag = LanguageTag("ja"),
+        libraryId = null,
+        trackerId = null,
+        mediaId = id.value,
+        status = null,
+        totalUnits = totalUnits,
+        totalCharacterEstimate = totalCharacterEstimate,
+        completed = completed,
+        deletedAtEpochMillis = null,
     )
 
     private fun metrics(characters: Long) = ReadingMetrics(

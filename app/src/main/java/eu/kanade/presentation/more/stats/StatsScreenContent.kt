@@ -1,6 +1,8 @@
 package eu.kanade.presentation.more.stats
 
 import android.content.Intent
+import android.graphics.Paint
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -33,17 +35,22 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.automirrored.outlined.Undo
+import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.LocalFireDepartment
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Remove
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Search
@@ -66,6 +73,10 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryScrollableTabRow
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
@@ -79,11 +90,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -91,6 +105,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil3.compose.AsyncImage
 import eu.kanade.tachiyomi.ui.dictionary.ProcessTextLookupActivity
 import eu.kanade.tachiyomi.ui.stats.ACTIVE_TIME_GOAL_METRIC
 import eu.kanade.tachiyomi.ui.stats.SOURCE_UNITS_GOAL_METRIC
@@ -100,8 +115,13 @@ import eu.kanade.tachiyomi.ui.stats.StatsGoalEditorValues
 import eu.kanade.tachiyomi.ui.stats.StatsGoalForecastPresentation
 import eu.kanade.tachiyomi.ui.stats.StatsGoalKind
 import eu.kanade.tachiyomi.ui.stats.StatsSourceNavigator
+import eu.kanade.tachiyomi.ui.stats.StatsTitleLinkState
+import eu.kanade.tachiyomi.ui.stats.StatsTitlePresentationMetadata
 import eu.kanade.tachiyomi.ui.stats.activeTimeComparison
 import eu.kanade.tachiyomi.ui.stats.ankiPresentationCapabilityState
+import eu.kanade.tachiyomi.ui.stats.characterCoverageTarget
+import eu.kanade.tachiyomi.ui.stats.characterDisplayText
+import eu.kanade.tachiyomi.ui.stats.characterFrequencyLevel
 import eu.kanade.tachiyomi.ui.stats.durationMillis
 import eu.kanade.tachiyomi.ui.stats.enabledStatsTabs
 import eu.kanade.tachiyomi.ui.stats.overviewIndexedGrowthMetricValue
@@ -114,20 +134,39 @@ import eu.kanade.tachiyomi.ui.stats.toStatsGoalEditorValues
 import eu.kanade.tachiyomi.util.system.toast
 import kotlinx.coroutines.launch
 import tachiyomi.domain.immersion.model.AnalyticsActivityTotals
+import tachiyomi.domain.immersion.model.AnalyticsAnkiCapabilityReason
+import tachiyomi.domain.immersion.model.AnalyticsAnkiReport
 import tachiyomi.domain.immersion.model.AnalyticsBucketScale
+import tachiyomi.domain.immersion.model.AnalyticsCharacterFilter
+import tachiyomi.domain.immersion.model.AnalyticsCharacterPriorityFormula
+import tachiyomi.domain.immersion.model.AnalyticsCharacterPriorityMode
+import tachiyomi.domain.immersion.model.AnalyticsCharacterRange
 import tachiyomi.domain.immersion.model.AnalyticsCharacterRow
+import tachiyomi.domain.immersion.model.AnalyticsCharacterScript
+import tachiyomi.domain.immersion.model.AnalyticsCharacterSummary
 import tachiyomi.domain.immersion.model.AnalyticsDataQuality
+import tachiyomi.domain.immersion.model.AnalyticsEstimateConfidence
+import tachiyomi.domain.immersion.model.AnalyticsEstimateUnit
 import tachiyomi.domain.immersion.model.AnalyticsGoalProgress
 import tachiyomi.domain.immersion.model.AnalyticsOverview
+import tachiyomi.domain.immersion.model.AnalyticsPage
 import tachiyomi.domain.immersion.model.AnalyticsResult
 import tachiyomi.domain.immersion.model.AnalyticsSessionDetail
 import tachiyomi.domain.immersion.model.AnalyticsSort
 import tachiyomi.domain.immersion.model.AnalyticsSourceOccurrence
 import tachiyomi.domain.immersion.model.AnalyticsTemporalActivity
+import tachiyomi.domain.immersion.model.AnalyticsTitleAcquisitionBucketSize
+import tachiyomi.domain.immersion.model.AnalyticsTitleCompletedUnit
+import tachiyomi.domain.immersion.model.AnalyticsTitleCoverageFilter
+import tachiyomi.domain.immersion.model.AnalyticsTitleEstimate
+import tachiyomi.domain.immersion.model.AnalyticsTitleFilter
 import tachiyomi.domain.immersion.model.AnalyticsTitleRow
 import tachiyomi.domain.immersion.model.AnalyticsTitleSeriesSelection
+import tachiyomi.domain.immersion.model.AnalyticsTitleSort
+import tachiyomi.domain.immersion.model.AnalyticsTitleStateFilter
 import tachiyomi.domain.immersion.model.AnalyticsTitleTrendSeries
 import tachiyomi.domain.immersion.model.AnalyticsTitleTrends
+import tachiyomi.domain.immersion.model.AnalyticsTitleWordAcquisition
 import tachiyomi.domain.immersion.model.AnalyticsTrendPoint
 import tachiyomi.domain.immersion.model.AnalyticsTrends
 import tachiyomi.domain.immersion.model.AnalyticsVocabularyFirstSeen
@@ -136,6 +175,7 @@ import tachiyomi.domain.immersion.model.AnkiMatchConfidence
 import tachiyomi.domain.immersion.model.CapabilityState
 import tachiyomi.domain.immersion.model.CharacterMetric
 import tachiyomi.domain.immersion.model.EventType
+import tachiyomi.domain.immersion.model.ImmersionAnkiItem
 import tachiyomi.domain.immersion.model.ImmersionGoal
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
 import tachiyomi.domain.immersion.model.ImmersionSession
@@ -143,6 +183,7 @@ import tachiyomi.domain.immersion.model.MaturityTier
 import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.ProvenanceState
 import tachiyomi.domain.immersion.model.ReadingMetrics
+import tachiyomi.domain.immersion.model.SessionPage
 import tachiyomi.domain.immersion.model.SessionStatus
 import tachiyomi.domain.immersion.model.SourceKind
 import tachiyomi.domain.immersion.model.VocabularyCategory
@@ -186,7 +227,8 @@ fun StatsScreenContent(
     onTrendScaleSelect: (AnalyticsBucketScale) -> Unit,
     onTrendMetricSelect: (StatsTrendMetric) -> Unit,
     onTitleTrendSelectionSelect: (AnalyticsTitleSeriesSelection) -> Unit,
-    onTitleSortSelect: (AnalyticsSort) -> Unit,
+    onTitleSortSelect: (AnalyticsTitleSort) -> Unit,
+    onTitleFilterChange: (AnalyticsTitleFilter) -> Unit,
     onVocabularySortSelect: (AnalyticsSort) -> Unit,
     onVocabularyFilterChange: (VocabularyFilter) -> Unit,
     onVocabularyWordSelectionChange: (String, Boolean) -> Unit,
@@ -194,17 +236,34 @@ fun StatsScreenContent(
     onVocabularyExclusionChange: (Boolean) -> Unit,
     onVocabularyExport: () -> Unit,
     onCharacterSortSelect: (AnalyticsSort) -> Unit,
+    onCharacterFilterChange: (AnalyticsCharacterFilter) -> Unit,
+    onCharacterGridModeSelect: (StatsCharacterGridMode) -> Unit,
+    onCharacterLayoutSelect: (StatsCharacterLayout) -> Unit,
+    onCharacterCoverageTargetChange: (Int) -> Unit,
+    onCharacterSelectionChange: (Int, Boolean) -> Unit,
+    onCharacterSelectionClear: () -> Unit,
+    onCharacterExport: () -> Unit,
     onTitleSearch: (String) -> Unit,
     onVocabularySearch: (String) -> Unit,
     onCharacterSearch: (String) -> Unit,
     onSourceSearch: (String) -> Unit,
     onTitleSelect: (AnalyticsTitleRow?) -> Unit,
+    onTitleOpen: (AnalyticsTitleRow) -> Unit,
+    onTitleManage: (AnalyticsTitleRow) -> Unit,
+    onTitleUnlink: () -> Unit,
+    onTitleDeleteStats: (AnalyticsTitleRow) -> Unit,
+    onTitleDeleteRawText: (AnalyticsTitleRow) -> Unit,
     onTitleCaptureExclusionChange: (Boolean) -> Unit,
+    onTitleAcquisitionBucketSizeSelect: (AnalyticsTitleAcquisitionBucketSize) -> Unit,
     onWordSelect: (AnalyticsWordRow?) -> Unit,
     onCharacterSelect: (AnalyticsCharacterRow?) -> Unit,
     onSessionSelect: (ImmersionSession?) -> Unit,
     onSessionDelete: (ImmersionSession) -> Unit,
     onLoadMoreVocabulary: () -> Unit,
+    onLoadMoreTitles: () -> Unit,
+    onLoadMoreTitleSessions: () -> Unit,
+    onLoadMoreTitleCompletedUnits: () -> Unit,
+    onLoadMoreTitleSources: () -> Unit,
     onLoadMoreWordOccurrences: () -> Unit,
     onLoadMoreCharacters: () -> Unit,
     onLoadMoreCharacterOccurrences: () -> Unit,
@@ -214,6 +273,10 @@ fun StatsScreenContent(
     onSaveGoal: (StatsGoalEditorValues, ImmersionGoal?) -> Boolean,
     onArchiveGoal: (ImmersionGoal) -> Unit,
     onCheckInGoal: (String) -> Unit,
+    onAnkiRefresh: () -> Unit,
+    onAnkiWordCoverageTargetChange: (Int) -> Unit,
+    onOpenMissingAnkiWords: () -> Unit,
+    onOpenMissingAnkiCharacters: () -> Unit,
 ) {
     var filtersExpanded by remember { mutableStateOf(false) }
     var showDefinitions by remember { mutableStateOf(false) }
@@ -268,8 +331,23 @@ fun StatsScreenContent(
                 state,
                 onTitleSortSelect,
                 onTitleSearch,
+                onTitleFilterChange,
                 onTitleSelect,
+                onTitleOpen,
+                onTitleManage,
+                onTitleUnlink,
+                onTitleDeleteStats,
+                onTitleDeleteRawText,
                 onTitleCaptureExclusionChange,
+                onTitleAcquisitionBucketSizeSelect,
+                onSessionOpen = { session ->
+                    onTabSelect(StatsTab.SESSIONS)
+                    onSessionSelect(session)
+                },
+                onLoadMoreTitles,
+                onLoadMoreTitleSessions,
+                onLoadMoreTitleCompletedUnits,
+                onLoadMoreTitleSources,
             )
             StatsTab.VOCABULARY -> VocabularyTab(
                 state,
@@ -287,8 +365,15 @@ fun StatsScreenContent(
             StatsTab.CHARACTERS -> CharactersTab(
                 state,
                 onCharacterSortSelect,
+                onCharacterFilterChange,
+                onCharacterGridModeSelect,
+                onCharacterLayoutSelect,
+                onCharacterCoverageTargetChange,
                 onCharacterSearch,
                 onCharacterSelect,
+                onCharacterSelectionChange,
+                onCharacterSelectionClear,
+                onCharacterExport,
                 onLoadMoreCharacters,
                 onLoadMoreCharacterOccurrences,
                 onLoadMoreCharacterContainingWords,
@@ -311,7 +396,13 @@ fun StatsScreenContent(
                 onArchiveGoal,
                 onCheckInGoal,
             )
-            StatsTab.ANKI -> AnkiTab(state)
+            StatsTab.ANKI -> AnkiTab(
+                state = state,
+                onRefresh = onAnkiRefresh,
+                onWordCoverageTargetChange = onAnkiWordCoverageTargetChange,
+                onOpenMissingWords = onOpenMissingAnkiWords,
+                onOpenMissingCharacters = onOpenMissingAnkiCharacters,
+            )
         }
     }
 
@@ -1436,14 +1527,27 @@ private fun VocabularyGrowthContent(growth: AnalyticsVocabularyFirstSeen) {
 @Composable
 private fun TitlesTab(
     state: StatsScreenState.Success,
-    onSortSelect: (AnalyticsSort) -> Unit,
+    onSortSelect: (AnalyticsTitleSort) -> Unit,
     onSearch: (String) -> Unit,
+    onFilterChange: (AnalyticsTitleFilter) -> Unit,
     onSelect: (AnalyticsTitleRow?) -> Unit,
+    onOpen: (AnalyticsTitleRow) -> Unit,
+    onManage: (AnalyticsTitleRow) -> Unit,
+    onUnlink: () -> Unit,
+    onDeleteStats: (AnalyticsTitleRow) -> Unit,
+    onDeleteRawText: (AnalyticsTitleRow) -> Unit,
     onCaptureExclusionChange: (Boolean) -> Unit,
+    onAcquisitionBucketSizeSelect: (AnalyticsTitleAcquisitionBucketSize) -> Unit,
+    onSessionOpen: (ImmersionSession) -> Unit,
+    onLoadMore: () -> Unit,
+    onLoadMoreSessions: () -> Unit,
+    onLoadMoreCompletedUnits: () -> Unit,
+    onLoadMoreSources: () -> Unit,
 ) {
     val selected = state.selection.title
-    val rows = state.sections.titles.value?.value.orEmpty()
-        .filter { it.displayTitle.contains(state.titleSearch, ignoreCase = true) }
+    var showUnlinkConfirmation by remember(selected?.titleId) { mutableStateOf(false) }
+    val result = state.sections.titles.value
+    val rows = result?.value?.items.orEmpty()
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -1457,20 +1561,69 @@ private fun TitlesTab(
                 selectedSort = state.titleSort,
                 onSortSelect = onSortSelect,
                 allowedSorts = listOf(
-                    AnalyticsSort.MOST_RECENT,
-                    AnalyticsSort.MOST_TIME,
-                    AnalyticsSort.MOST_CHARACTERS,
-                    AnalyticsSort.ALPHABETICAL,
+                    AnalyticsTitleSort.MOST_RECENT,
+                    AnalyticsTitleSort.ALPHABETICAL,
+                    AnalyticsTitleSort.MOST_TIME,
+                    AnalyticsTitleSort.MOST_CHARACTERS,
+                    AnalyticsTitleSort.READING_SPEED,
+                    AnalyticsTitleSort.NOVELTY,
+                    AnalyticsTitleSort.MINING_RATE,
+                    AnalyticsTitleSort.PROGRESS,
                 ),
+                optionLabel = { titleSortLabel(it) },
             )
+        }
+        item {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterMenuChip(
+                    label = stringResource(
+                        KMR.strings.stats_title_state_filter,
+                        titleStateFilterLabel(state.titleFilter.state),
+                    ),
+                    options = AnalyticsTitleStateFilter.entries,
+                    optionLabel = { titleStateFilterLabel(it) },
+                    onSelect = { onFilterChange(state.titleFilter.copy(state = it)) },
+                )
+                FilterMenuChip(
+                    label = stringResource(
+                        KMR.strings.stats_title_coverage_filter,
+                        titleCoverageFilterLabel(state.titleFilter.coverage),
+                    ),
+                    options = AnalyticsTitleCoverageFilter.entries,
+                    optionLabel = { titleCoverageFilterLabel(it) },
+                    onSelect = { onFilterChange(state.titleFilter.copy(coverage = it)) },
+                )
+            }
+            if (state.titleSort == AnalyticsTitleSort.READING_SPEED) {
+                Text(
+                    stringResource(KMR.strings.stats_minimum_threshold),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         if (selected != null) {
             item {
                 TitleDetail(
                     title = selected,
+                    metadata = state.titleMetadata[selected.titleId],
                     metric = state.filter.characterMetric,
+                    details = state.details,
+                    acquisitionBucketSize = state.titleAcquisitionBucketSize,
                     captureExcluded = state.details.titleCaptureExcluded,
+                    mutationInProgress = state.details.titleMutationInProgress,
+                    mutationError = state.details.titleMutationError,
+                    onOpen = { onOpen(selected) },
+                    onManage = { onManage(selected) },
+                    onUnlink = { showUnlinkConfirmation = true },
+                    onDeleteStats = { onDeleteStats(selected) },
+                    onDeleteRawText = { onDeleteRawText(selected) },
                     onCaptureExclusionChange = onCaptureExclusionChange,
+                    onAcquisitionBucketSizeSelect = onAcquisitionBucketSizeSelect,
+                    onSessionOpen = onSessionOpen,
+                    onLoadMoreSessions = onLoadMoreSessions,
+                    onLoadMoreCompletedUnits = onLoadMoreCompletedUnits,
+                    onLoadMoreSources = onLoadMoreSources,
                     onClose = { onSelect(null) },
                 )
             }
@@ -1481,9 +1634,40 @@ private fun TitlesTab(
             item { EmptyState() }
         } else {
             items(rows, key = { it.titleId.value }) { title ->
-                TitleRow(title, state.filter.characterMetric) { onSelect(title) }
+                TitleRow(
+                    title = title,
+                    metadata = state.titleMetadata[title.titleId],
+                    metric = state.filter.characterMetric,
+                    onClick = { onSelect(title) },
+                )
+            }
+            if (result?.value?.nextOffset != null) {
+                item { LoadMoreButton(onLoadMore) }
             }
         }
+    }
+    if (showUnlinkConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showUnlinkConfirmation = false },
+            title = { Text(stringResource(KMR.strings.stats_title_unlink)) },
+            text = { Text(stringResource(KMR.strings.stats_title_unlink_warning)) },
+            confirmButton = {
+                TextButton(
+                    enabled = !state.details.titleMutationInProgress,
+                    onClick = {
+                        showUnlinkConfirmation = false
+                        onUnlink()
+                    },
+                ) {
+                    Text(stringResource(KMR.strings.stats_title_unlink))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUnlinkConfirmation = false }) {
+                    Text(stringResource(KMR.strings.stats_close))
+                }
+            },
+        )
     }
 }
 
@@ -1524,6 +1708,7 @@ private fun VocabularyTab(
                     AnalyticsSort.FIRST_SEEN,
                     AnalyticsSort.ALPHABETICAL,
                 ),
+                optionLabel = { sortLabel(it) },
             )
         }
         item {
@@ -1917,8 +2102,15 @@ private fun VocabularyBulkActionDialog(
 private fun CharactersTab(
     state: StatsScreenState.Success,
     onSortSelect: (AnalyticsSort) -> Unit,
+    onFilterChange: (AnalyticsCharacterFilter) -> Unit,
+    onGridModeSelect: (StatsCharacterGridMode) -> Unit,
+    onLayoutSelect: (StatsCharacterLayout) -> Unit,
+    onCoverageTargetChange: (Int) -> Unit,
     onSearch: (String) -> Unit,
     onSelect: (AnalyticsCharacterRow?) -> Unit,
+    onSelectionChange: (Int, Boolean) -> Unit,
+    onSelectionClear: () -> Unit,
+    onExport: () -> Unit,
     onLoadMore: () -> Unit,
     onLoadMoreOccurrences: () -> Unit,
     onLoadMoreContainingWords: () -> Unit,
@@ -1926,13 +2118,30 @@ private fun CharactersTab(
 ) {
     val result = state.sections.characters.value
     val rows = result?.value?.items.orEmpty()
+    val summary = state.sections.characterSummary.value?.value
+    val selectedCodePoints = state.selectedCharacterCodePoints
+    val selectedIndex = rows.indexOfFirst {
+        it.codePoint == state.selection.character?.codePoint
+    }
+    val previous = rows.getOrNull(selectedIndex - 1)
+    val next = rows.getOrNull(selectedIndex + 1)
     LazyVerticalGrid(
-        columns = GridCells.Adaptive(72.dp),
+        columns = when (state.characterLayout) {
+            StatsCharacterLayout.GRID -> GridCells.Adaptive(72.dp)
+            StatsCharacterLayout.LIST -> GridCells.Fixed(1)
+        },
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            CharacterOverview(
+                state = state,
+                summary = summary,
+                onCoverageTargetChange = onCoverageTargetChange,
+            )
+        }
         item(span = { GridItemSpan(maxLineSpan) }) {
             SearchAndSort(
                 query = state.characterSearch,
@@ -1945,16 +2154,59 @@ private fun CharactersTab(
                     AnalyticsSort.MOST_RECENT,
                     AnalyticsSort.FIRST_SEEN,
                     AnalyticsSort.ALPHABETICAL,
+                    AnalyticsSort.FREQUENCY_RANK,
+                    AnalyticsSort.PRIORITY,
                 ),
+                optionLabel = { sortLabel(it) },
             )
+        }
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            CharacterWorkbenchControls(
+                filter = state.characterFilter,
+                gridMode = state.characterGridMode,
+                layout = state.characterLayout,
+                onFilterChange = onFilterChange,
+                onGridModeSelect = onGridModeSelect,
+                onLayoutSelect = onLayoutSelect,
+            )
+        }
+        if (selectedCodePoints.isNotEmpty()) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        stringResource(
+                            KMR.strings.stats_character_selection_count,
+                            selectedCodePoints.size,
+                        ),
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = onSelectionClear) {
+                        Text(stringResource(KMR.strings.stats_clear_selection))
+                    }
+                    Button(onClick = onExport) {
+                        Icon(Icons.Outlined.Download, contentDescription = null)
+                        Spacer(Modifier.width(4.dp))
+                        Text(stringResource(KMR.strings.stats_export))
+                    }
+                }
+            }
         }
         state.selection.character?.let { character ->
             item(span = { GridItemSpan(maxLineSpan) }) {
                 CharacterDetail(
                     character = character,
+                    priorityMode = state.characterFilter.priorityMode,
                     occurrences = state.details.characterOccurrences,
                     containingWords = state.details.characterContainingWords,
+                    ankiItems = state.details.characterAnkiItems,
+                    previous = previous,
+                    next = next,
                     onClose = { onSelect(null) },
+                    onSelect = onSelect,
                     onContainingWordSelect = onContainingWordSelect,
                     onLoadMoreOccurrences = onLoadMoreOccurrences,
                     onLoadMoreContainingWords = onLoadMoreContainingWords,
@@ -1967,11 +2219,226 @@ private fun CharactersTab(
             item(span = { GridItemSpan(maxLineSpan) }) { EmptyState() }
         } else {
             items(rows, key = { it.codePoint.value }) { character ->
-                CharacterCell(character) { onSelect(character) }
+                CharacterCell(
+                    character = character,
+                    mode = state.characterGridMode,
+                    layout = state.characterLayout,
+                    maximumOccurrenceCount = summary?.maximumOccurrenceCount ?: 0,
+                    selected = character.codePoint.value in selectedCodePoints,
+                    onSelectedChange = {
+                        onSelectionChange(character.codePoint.value, it)
+                    },
+                    onClick = { onSelect(character) },
+                )
             }
             if (result?.value?.nextOffset != null) {
                 item(span = { GridItemSpan(maxLineSpan) }) { LoadMoreButton(onLoadMore) }
             }
+        }
+    }
+}
+
+@Composable
+private fun CharacterOverview(
+    state: StatsScreenState.Success,
+    summary: AnalyticsCharacterSummary?,
+    onCoverageTargetChange: (Int) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SectionTitle(stringResource(KMR.strings.stats_character_overview))
+        SectionFrame(state.sections.characterSummary) { result ->
+            val value = result.value
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                MetricLine(
+                    stringResource(KMR.strings.stats_distinct_characters),
+                    formatCount(value.distinctCharacters),
+                )
+                MetricLine(
+                    stringResource(KMR.strings.stats_new_characters),
+                    formatCount(value.firstSeenInRange),
+                )
+                MetricLine(
+                    stringResource(KMR.strings.stats_character_gross_exposure),
+                    formatCount(value.grossOccurrenceExposure),
+                )
+                value.scripts.forEach { script ->
+                    MetricLine(
+                        characterScriptLabel(script.script),
+                        formatCount(script.distinctCharacters),
+                    )
+                }
+                val characterMappingConfigured = state.profiles
+                    .filter { state.filter.profileId == null || it.id == state.filter.profileId }
+                    .any { it.ankiStatsCharacterField.isNotBlank() }
+                val snapshotState = state.sections.anki.value?.value?.snapshot?.capabilityState
+                val coverageAvailable =
+                    characterMappingConfigured &&
+                        snapshotState in setOf(
+                            CapabilityState.AVAILABLE,
+                            CapabilityState.PARTIAL,
+                            CapabilityState.STALE,
+                        )
+                if (coverageAvailable) {
+                    CoverageLine(
+                        stringResource(KMR.strings.stats_character_anki_coverage),
+                        value.representedInAnki,
+                        value.distinctCharacters,
+                    )
+                    CoverageLine(
+                        stringResource(KMR.strings.stats_character_mature_coverage),
+                        value.matureInAnki,
+                        value.distinctCharacters,
+                    )
+                    val target = characterCoverageTarget(
+                        value,
+                        state.characterCoverageTargetPercent,
+                    )
+                    Text(
+                        stringResource(
+                            KMR.strings.stats_character_coverage_target,
+                            state.characterCoverageTargetPercent,
+                            formatCount(target.targetCharacters),
+                        ),
+                    )
+                    Slider(
+                        value = state.characterCoverageTargetPercent.toFloat(),
+                        onValueChange = { onCoverageTargetChange(it.roundToInt()) },
+                        valueRange = 50f..100f,
+                        steps = 9,
+                    )
+                    Text(
+                        stringResource(
+                            KMR.strings.stats_character_daily_suggestion,
+                            formatCount(target.dailyPlanningSuggestion),
+                            formatCount(target.remainingCharacters),
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    NoticeCard(stringResource(KMR.strings.stats_character_anki_unavailable))
+                }
+            }
+        }
+        SectionFrame(state.sections.trends) { result ->
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                SectionTitle(stringResource(KMR.strings.stats_character_growth))
+                TrendsContent(
+                    trends = result.value,
+                    metric = state.filter.characterMetric,
+                    trendMetric = StatsTrendMetric.NEW_CHARACTERS,
+                )
+            }
+        }
+        val introducingTitles = state.titleOptions
+            .asSequence()
+            .filter { it.metrics.newCharacters.value > 0 }
+            .sortedByDescending { it.metrics.newCharacters.value }
+            .take(5)
+            .toList()
+        if (introducingTitles.isNotEmpty()) {
+            SectionTitle(stringResource(KMR.strings.stats_character_top_titles))
+            introducingTitles.forEach { title ->
+                MetricLine(title.displayTitle, formatCount(title.metrics.newCharacters.value))
+            }
+        }
+    }
+}
+
+@Composable
+private fun CharacterWorkbenchControls(
+    filter: AnalyticsCharacterFilter,
+    gridMode: StatsCharacterGridMode,
+    layout: StatsCharacterLayout,
+    onFilterChange: (AnalyticsCharacterFilter) -> Unit,
+    onGridModeSelect: (StatsCharacterGridMode) -> Unit,
+    onLayoutSelect: (StatsCharacterLayout) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = filter.scripts.isEmpty(),
+                onClick = { onFilterChange(filter.copy(scripts = emptySet())) },
+                label = { Text(stringResource(KMR.strings.stats_all)) },
+            )
+            AnalyticsCharacterScript.entries.forEach { script ->
+                FilterChip(
+                    selected = script in filter.scripts,
+                    onClick = {
+                        val scripts = filter.scripts.toMutableSet().apply {
+                            if (!add(script)) remove(script)
+                        }
+                        onFilterChange(filter.copy(scripts = scripts))
+                    },
+                    label = { Text(characterScriptLabel(script)) },
+                )
+            }
+        }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterMenuChip(
+                label = characterRangeLabel(filter.range),
+                options = AnalyticsCharacterRange.entries,
+                optionLabel = { characterRangeLabel(it) },
+                onSelect = { onFilterChange(filter.copy(range = it)) },
+            )
+            FilterMenuChip(
+                label = characterPriorityModeLabel(filter.priorityMode),
+                options = AnalyticsCharacterPriorityMode.entries,
+                optionLabel = { characterPriorityModeLabel(it) },
+                onSelect = { onFilterChange(filter.copy(priorityMode = it)) },
+            )
+        }
+        Text(
+            stringResource(KMR.strings.stats_character_priority_formula),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            StatsCharacterLayout.entries.forEachIndexed { index, option ->
+                SegmentedButton(
+                    selected = layout == option,
+                    onClick = { onLayoutSelect(option) },
+                    shape = SegmentedButtonDefaults.itemShape(
+                        index,
+                        StatsCharacterLayout.entries.size,
+                    ),
+                    icon = {
+                        Icon(
+                            if (option == StatsCharacterLayout.GRID) {
+                                Icons.Outlined.GridView
+                            } else {
+                                Icons.AutoMirrored.Outlined.ViewList
+                            },
+                            contentDescription = null,
+                        )
+                    },
+                    label = { Text(characterLayoutLabel(option)) },
+                )
+            }
+        }
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+        ) {
+            SingleChoiceSegmentedButtonRow {
+                StatsCharacterGridMode.entries.forEachIndexed { index, option ->
+                    SegmentedButton(
+                        selected = gridMode == option,
+                        onClick = { onGridModeSelect(option) },
+                        shape = SegmentedButtonDefaults.itemShape(
+                            index,
+                            StatsCharacterGridMode.entries.size,
+                        ),
+                        label = { Text(characterGridModeLabel(option)) },
+                    )
+                }
+            }
+        }
+        if (gridMode == StatsCharacterGridMode.FREQUENCY) {
+            Text(
+                stringResource(KMR.strings.stats_character_frequency_legend),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -2110,7 +2577,16 @@ private fun GoalsTab(
 }
 
 @Composable
-private fun AnkiTab(state: StatsScreenState.Success) {
+private fun AnkiTab(
+    state: StatsScreenState.Success,
+    onRefresh: () -> Unit,
+    onWordCoverageTargetChange: (Int) -> Unit,
+    onOpenMissingWords: () -> Unit,
+    onOpenMissingCharacters: () -> Unit,
+) {
+    var refreshRequested by remember(
+        state.sections.anki.value?.value?.snapshot?.id,
+    ) { mutableStateOf(false) }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -2137,6 +2613,16 @@ private fun AnkiTab(state: StatsScreenState.Success) {
                         if (snapshot.isStale) {
                             NoticeCard(stringResource(KMR.strings.stats_anki_snapshot_stale))
                         }
+                        snapshot.completedAtEpochMillis?.let {
+                            Text(
+                                stringResource(
+                                    KMR.strings.stats_anki_snapshot_completed,
+                                    formatInstant(it),
+                                ),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         Text(
                             stringResource(
                                 KMR.strings.stats_anki_items,
@@ -2144,6 +2630,54 @@ private fun AnkiTab(state: StatsScreenState.Success) {
                                 formatCount(snapshot.noteCount.toLong()),
                             ),
                         )
+                        MetricLine(
+                            stringResource(KMR.strings.stats_anki_maturity_threshold),
+                            stringResource(
+                                KMR.strings.stats_anki_mature_interval_days,
+                                snapshot.matureIntervalDays,
+                            ),
+                        )
+                    }
+                    summary.generatedAtEpochMillis?.let {
+                        SectionTitle(stringResource(KMR.strings.stats_anki_freshness))
+                        Text(
+                            stringResource(
+                                KMR.strings.stats_anki_report_generated,
+                                formatInstant(it),
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Button(
+                        onClick = {
+                            onRefresh()
+                            refreshRequested = true
+                        },
+                    ) {
+                        Icon(Icons.Outlined.Refresh, contentDescription = null)
+                        Spacer(Modifier.width(4.dp))
+                        Text(stringResource(KMR.strings.stats_anki_refresh_inventory))
+                    }
+                    if (refreshRequested) {
+                        Text(
+                            stringResource(KMR.strings.stats_anki_refresh_requested),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (summary.capabilities.isNotEmpty()) {
+                        SectionTitle(stringResource(KMR.strings.stats_anki_capabilities))
+                        summary.capabilities.forEach { capability ->
+                            MetricLine(
+                                ankiReportLabel(capability.report),
+                                stringResource(
+                                    KMR.strings.stats_anki_capability_value,
+                                    capabilityLabel(capability.state),
+                                    ankiCapabilityReasonLabel(capability.reason),
+                                ),
+                            )
+                        }
                     }
                     CoverageLine(
                         stringResource(KMR.strings.stats_word_coverage),
@@ -2154,6 +2688,24 @@ private fun AnkiTab(state: StatsScreenState.Success) {
                         stringResource(KMR.strings.stats_character_coverage),
                         summary.characterCoverageKnown,
                         summary.characterCoverageEncountered,
+                    )
+                    Text(
+                        stringResource(
+                            KMR.strings.stats_anki_word_coverage_target,
+                            state.ankiWordCoverageTargetPercent,
+                        ),
+                    )
+                    Slider(
+                        value = state.ankiWordCoverageTargetPercent.toFloat(),
+                        onValueChange = { onWordCoverageTargetChange(it.roundToInt()) },
+                        valueRange = 50f..100f,
+                        steps = 9,
+                    )
+                    Text(
+                        stringResource(
+                            KMR.strings.stats_anki_character_coverage_target,
+                            state.characterCoverageTargetPercent,
+                        ),
                     )
                     MetricLine(
                         stringResource(KMR.strings.stats_cards_created),
@@ -2177,6 +2729,98 @@ private fun AnkiTab(state: StatsScreenState.Success) {
                             formatDuration(it),
                         )
                     }
+                    if (summary.weeklyImpact.isNotEmpty()) {
+                        SectionTitle(stringResource(KMR.strings.stats_anki_weekly_impact))
+                        summary.weeklyImpact.asReversed().take(12).forEach { week ->
+                            Text(
+                                stringResource(
+                                    KMR.strings.stats_anki_week_heading,
+                                    formatDateRange(week.weekStart, week.weekEndInclusive),
+                                    stringResource(
+                                        if (week.partial) {
+                                            KMR.strings.stats_anki_week_partial
+                                        } else {
+                                            KMR.strings.stats_anki_week_complete
+                                        },
+                                    ),
+                                ),
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                stringResource(
+                                    KMR.strings.stats_anki_week_volume,
+                                    formatCount(week.grossCharacters),
+                                    formatDuration(week.activeDurationMillis),
+                                ),
+                            )
+                            Text(
+                                stringResource(
+                                    KMR.strings.stats_anki_week_cards,
+                                    formatCount(week.cardsCreated),
+                                    formatCount(week.cardsUpdated),
+                                ),
+                            )
+                            MetricLine(
+                                stringResource(KMR.strings.stats_anki_linked_operations),
+                                formatCount(week.linkedOperations),
+                            )
+                            MetricLine(
+                                stringResource(KMR.strings.stats_anki_unattributed_operations),
+                                formatCount(week.unattributedOperations),
+                            )
+                            MetricLine(
+                                stringResource(KMR.strings.stats_anki_same_week_flow),
+                                formatCount(week.sameWeekReadingToCardOperations),
+                            )
+                            week.meanReadingToCardLagMillis?.let {
+                                MetricLine(
+                                    stringResource(KMR.strings.stats_anki_reading_to_card_lag),
+                                    formatDuration(it),
+                                )
+                            }
+                            if (week.maturedOperations > 0) {
+                                MetricLine(
+                                    stringResource(KMR.strings.stats_anki_matured_links),
+                                    formatCount(week.maturedOperations),
+                                )
+                            }
+                            week.meanCardToMaturityLagMillis?.let {
+                                MetricLine(
+                                    stringResource(KMR.strings.stats_anki_card_to_maturity_lag),
+                                    formatDuration(it),
+                                )
+                            }
+                            HorizontalDivider()
+                        }
+                    }
+                    if (summary.titleImpact.isNotEmpty()) {
+                        SectionTitle(stringResource(KMR.strings.stats_anki_title_impact))
+                        summary.titleImpact.take(10).forEach { title ->
+                            Text(
+                                title.displayTitle
+                                    ?: stringResource(KMR.strings.stats_anki_unattributed),
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            MetricLine(
+                                if (title.titleId == null) {
+                                    stringResource(KMR.strings.stats_anki_unattributed_operations)
+                                } else {
+                                    stringResource(KMR.strings.stats_anki_linked_operations)
+                                },
+                                formatCount(title.operationCount),
+                            )
+                            title.cardsPerTenThousandGrossCharacters()?.let {
+                                Text(
+                                    stringResource(
+                                        KMR.strings.stats_cards_per_ten_thousand,
+                                        formatDecimal(it),
+                                    ),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
                     if (summary.maturityDistribution.isNotEmpty()) {
                         SectionTitle(stringResource(KMR.strings.stats_anki_maturity_distribution))
                         summary.maturityDistribution.forEach { (tier, count) ->
@@ -2189,6 +2833,9 @@ private fun AnkiTab(state: StatsScreenState.Success) {
                             MetricLine(word.headword, word.frequencyRank?.let(::formatCount) ?: "—")
                         }
                     }
+                    Button(onClick = onOpenMissingWords) {
+                        Text(stringResource(KMR.strings.stats_anki_open_word_workbench))
+                    }
                     if (summary.missingHighFrequencyCharacters.isNotEmpty()) {
                         SectionTitle(stringResource(KMR.strings.stats_anki_missing_characters))
                         summary.missingHighFrequencyCharacters.take(10).forEach { character ->
@@ -2198,6 +2845,15 @@ private fun AnkiTab(state: StatsScreenState.Success) {
                             )
                         }
                     }
+                    Button(onClick = onOpenMissingCharacters) {
+                        Text(stringResource(KMR.strings.stats_anki_open_character_workbench))
+                    }
+                    NoticeCard(
+                        stringResource(
+                            KMR.strings.stats_anki_sample_limit,
+                            summary.minimumComparisonSampleSize,
+                        ),
+                    )
                     NoticeCard(stringResource(KMR.strings.stats_anki_observational))
                     if (!summary.reviewHistoryAvailable) {
                         NoticeCard(stringResource(KMR.strings.stats_review_history_unavailable))
@@ -2256,32 +2912,85 @@ private fun DataQualityCard(quality: AnalyticsDataQuality) {
 @Composable
 private fun TitleRow(
     title: AnalyticsTitleRow,
+    metadata: StatsTitlePresentationMetadata?,
     metric: CharacterMetric,
     onClick: () -> Unit,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(8.dp),
         color = MaterialTheme.colorScheme.surfaceVariant,
     ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(title.displayTitle, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Text(
-                stringResource(
-                    KMR.strings.stats_media_and_language,
-                    mediaLabel(title.mediaKind),
-                    title.languageTag?.value ?: stringResource(KMR.strings.stats_unknown),
-                ),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+        Row(
+            modifier = Modifier.padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TitleCover(
+                title = metadata?.localDisplayTitle ?: title.displayTitle,
+                coverLocation = metadata?.coverLocation,
             )
-            MetricLine(stringResource(KMR.strings.stats_active_time), formatDuration(title.metrics.activeTime.value))
-            MetricLine(characterMetricLabel(metric), formatCount(title.metrics.characterValue(metric)))
-            MetricLine(stringResource(KMR.strings.stats_sessions), formatCount(title.metrics.sessions.value))
-            Text(
-                stringResource(KMR.strings.stats_last_active, formatLocalDate(title.lastActiveDate)),
-                style = MaterialTheme.typography.bodySmall,
-            )
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    metadata?.localDisplayTitle ?: title.displayTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                metadata?.author?.let {
+                    Text(
+                        stringResource(KMR.strings.stats_title_author, it),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Text(
+                    stringResource(
+                        KMR.strings.stats_media_and_language,
+                        mediaLabel(title.mediaKind),
+                        title.languageTag?.value ?: stringResource(KMR.strings.stats_unknown),
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                MetricLine(
+                    stringResource(KMR.strings.stats_active_time),
+                    formatDuration(title.metrics.activeTime.value),
+                )
+                MetricLine(characterMetricLabel(metric), formatCount(title.metrics.characterValue(metric)))
+                MetricLine(
+                    stringResource(KMR.strings.stats_reading_speed),
+                    title.metrics.readingSpeedPerHour(metric)?.let(::formatRate)
+                        ?: stringResource(KMR.strings.stats_unavailable),
+                )
+                MetricLine(stringResource(KMR.strings.stats_sessions), formatCount(title.metrics.sessions.value))
+                MetricLine(stringResource(KMR.strings.stats_new_words), formatCount(title.metrics.newWords.value))
+                MetricLine(
+                    stringResource(KMR.strings.stats_new_characters),
+                    formatCount(title.metrics.newCharacters.value),
+                )
+                MetricLine(
+                    stringResource(KMR.strings.stats_cards_created),
+                    formatCount(title.metrics.cardsCreated.value),
+                )
+                MetricLine(
+                    stringResource(KMR.strings.stats_progress),
+                    title.progress?.let(::formatPercent)
+                        ?: stringResource(KMR.strings.stats_unavailable),
+                )
+                MetricLine(
+                    stringResource(KMR.strings.stats_indexing_coverage),
+                    title.coverage.indexingCompletion?.let(::formatPercent)
+                        ?: stringResource(KMR.strings.stats_unavailable),
+                )
+                Text(
+                    stringResource(KMR.strings.stats_last_active, formatLocalDate(title.lastActiveDate)),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         }
     }
 }
@@ -2289,16 +2998,138 @@ private fun TitleRow(
 @Composable
 private fun TitleDetail(
     title: AnalyticsTitleRow,
+    metadata: StatsTitlePresentationMetadata?,
     metric: CharacterMetric,
+    details: StatsDetails,
+    acquisitionBucketSize: AnalyticsTitleAcquisitionBucketSize,
     captureExcluded: StatsLoadable<Boolean>,
+    mutationInProgress: Boolean,
+    mutationError: Boolean,
+    onOpen: () -> Unit,
+    onManage: () -> Unit,
+    onUnlink: () -> Unit,
+    onDeleteStats: () -> Unit,
+    onDeleteRawText: () -> Unit,
     onCaptureExclusionChange: (Boolean) -> Unit,
+    onAcquisitionBucketSizeSelect: (AnalyticsTitleAcquisitionBucketSize) -> Unit,
+    onSessionOpen: (ImmersionSession) -> Unit,
+    onLoadMoreSessions: () -> Unit,
+    onLoadMoreCompletedUnits: () -> Unit,
+    onLoadMoreSources: () -> Unit,
     onClose: () -> Unit,
 ) {
     DetailCard(
         title = stringResource(KMR.strings.stats_title_detail),
         onClose = onClose,
     ) {
-        Text(title.displayTitle, style = MaterialTheme.typography.headlineSmall)
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TitleCover(
+                title = metadata?.localDisplayTitle ?: title.displayTitle,
+                coverLocation = metadata?.coverLocation,
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    metadata?.localDisplayTitle ?: title.displayTitle,
+                    style = MaterialTheme.typography.titleLarge,
+                )
+                metadata?.author?.let {
+                    Text(
+                        stringResource(KMR.strings.stats_title_author, it),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+        MetricLine(
+            stringResource(KMR.strings.stats_title_link),
+            titleLinkLabel(metadata?.linkState),
+        )
+        MetricLine(
+            stringResource(KMR.strings.stats_title_identity),
+            title.sourceKey,
+        )
+        MetricLine(
+            stringResource(KMR.strings.stats_title_status),
+            titleStateLabel(title.completed),
+        )
+        title.totalUnits?.let { totalUnits ->
+            MetricLine(
+                stringResource(KMR.strings.stats_title_total_units),
+                titleUnitCount(title.mediaKind, totalUnits),
+            )
+        }
+        MetricLine(
+            stringResource(KMR.strings.stats_title_completed_units),
+            if (title.unitProgress.hasTrustworthyIdentity) {
+                titleUnitCount(title.mediaKind, title.unitProgress.completedUnits)
+            } else {
+                stringResource(KMR.strings.stats_unavailable)
+            },
+        )
+        if (!title.unitProgress.hasTrustworthyIdentity) {
+            Text(
+                stringResource(
+                    if (title.unitProgress.identityAvailable) {
+                        KMR.strings.stats_title_completed_units_incomplete
+                    } else {
+                        KMR.strings.stats_title_completed_units_unavailable
+                    },
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (title.profileId.isNotBlank()) {
+            Text(stringResource(KMR.strings.stats_profile, title.profileId))
+        }
+        if (metadata?.linkState == StatsTitleLinkState.AVAILABLE) {
+            Button(onClick = onOpen) {
+                Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(stringResource(KMR.strings.stats_title_open))
+            }
+            TextButton(
+                enabled = !mutationInProgress,
+                onClick = onUnlink,
+            ) {
+                Icon(Icons.Outlined.LinkOff, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(stringResource(KMR.strings.stats_title_unlink))
+            }
+        }
+        Button(
+            enabled = !mutationInProgress,
+            onClick = onManage,
+        ) {
+            Icon(Icons.Outlined.Tune, contentDescription = null)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(stringResource(KMR.strings.stats_title_manage))
+        }
+        TextButton(
+            enabled = !mutationInProgress,
+            onClick = onDeleteRawText,
+        ) {
+            Icon(Icons.Outlined.VisibilityOff, contentDescription = null)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(stringResource(KMR.strings.stats_title_delete_raw_text))
+        }
+        TextButton(
+            enabled = !mutationInProgress,
+            onClick = onDeleteStats,
+        ) {
+            Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(stringResource(KMR.strings.stats_title_delete_stats))
+        }
+        if (mutationInProgress) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+        if (mutationError) {
+            NoticeCard(stringResource(KMR.strings.stats_title_mutation_error))
+        }
         MetricLine(stringResource(KMR.strings.stats_active_time), formatDuration(title.metrics.activeTime.value))
         MetricLine(characterMetricLabel(metric), formatCount(title.metrics.characterValue(metric)))
         MetricLine(
@@ -2306,18 +3137,203 @@ private fun TitleDetail(
             title.metrics.readingSpeedPerHour(metric)?.let(::formatRate)
                 ?: stringResource(KMR.strings.stats_unavailable),
         )
+        MetricLine(
+            stringResource(KMR.strings.stats_source_units_exposed),
+            pluralStringResource(
+                KMR.plurals.stats_source_unit_count,
+                title.metrics.sourceUnits.value.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                formatCount(title.metrics.sourceUnits.value),
+            ),
+        )
         MetricLine(stringResource(KMR.strings.stats_sessions), formatCount(title.metrics.sessions.value))
         MetricLine(stringResource(KMR.strings.stats_lookups), formatCount(title.metrics.successfulLookups.value))
         MetricLine(stringResource(KMR.strings.stats_cards_created), formatCount(title.metrics.cardsCreated.value))
+        MetricLine(stringResource(KMR.strings.stats_cards_updated), formatCount(title.metrics.cardsUpdated.value))
         MetricLine(stringResource(KMR.strings.stats_unique_words), formatCount(title.metrics.uniqueWords.value))
         MetricLine(stringResource(KMR.strings.stats_new_words), formatCount(title.metrics.newWords.value))
+        MetricLine(
+            stringResource(KMR.strings.stats_novelty_rate),
+            title.metrics.noveltyRate()?.let(::formatPercent)
+                ?: stringResource(KMR.strings.stats_unavailable),
+        )
+        MetricLine(
+            stringResource(KMR.strings.stats_new_word_rate),
+            title.metrics.newWordsPerTenThousandGrossCharacters()?.let(::formatDecimal)
+                ?: stringResource(KMR.strings.stats_unavailable),
+        )
+        MetricLine(
+            stringResource(KMR.strings.stats_lookup_rate),
+            title.metrics.lookupRatePerTenThousandGrossCharacters()?.let(::formatDecimal)
+                ?: stringResource(KMR.strings.stats_unavailable),
+        )
+        MetricLine(
+            stringResource(KMR.strings.stats_mining_rate),
+            title.metrics.miningRatePerTenThousandGrossCharacters()?.let(::formatDecimal)
+                ?: stringResource(KMR.strings.stats_unavailable),
+        )
+        MetricLine(
+            stringResource(KMR.strings.stats_distinct_characters),
+            formatCount(title.metrics.distinctCharacters.value),
+        )
+        MetricLine(
+            stringResource(KMR.strings.stats_new_characters),
+            formatCount(title.metrics.newCharacters.value),
+        )
+        MetricLine(
+            stringResource(KMR.strings.stats_character_coverage),
+            title.metrics.characterCoverage.ratio()?.let(::formatPercent)
+                ?: stringResource(KMR.strings.stats_unavailable),
+        )
         Text(stringResource(KMR.strings.stats_first_active, formatLocalDate(title.firstActiveDate)))
         Text(stringResource(KMR.strings.stats_last_active, formatLocalDate(title.lastActiveDate)))
+        MetricLine(
+            stringResource(KMR.strings.stats_active_days),
+            pluralStringResource(
+                KMR.plurals.stats_active_day_count,
+                title.activeDays,
+                formatCount(title.activeDays.toLong()),
+            ),
+        )
+        MetricLine(
+            stringResource(KMR.strings.stats_calendar_span),
+            pluralStringResource(
+                KMR.plurals.stats_day_count,
+                title.calendarSpanDays,
+                formatCount(title.calendarSpanDays.toLong()),
+            ),
+        )
+        MetricLine(
+            stringResource(KMR.strings.stats_average_per_active_day),
+            stringResource(
+                KMR.strings.stats_day_value,
+                formatCount(title.averageCharactersPerActiveDay.roundToLong()),
+                formatDuration(title.averageActiveTimePerActiveDayMillis.roundToLong()),
+            ),
+        )
+        title.dayHighlights.characters?.let { highlight ->
+            MetricLine(
+                stringResource(KMR.strings.stats_best_characters_day),
+                stringResource(
+                    KMR.strings.stats_day_value,
+                    formatLocalDate(highlight.date),
+                    formatCount(highlight.value.roundToLong()),
+                ),
+            )
+        }
+        title.dayHighlights.activeTime?.let { highlight ->
+            MetricLine(
+                stringResource(KMR.strings.stats_best_time_day),
+                stringResource(
+                    KMR.strings.stats_day_value,
+                    formatLocalDate(highlight.date),
+                    formatDuration(highlight.value.roundToLong()),
+                ),
+            )
+        }
+        title.dayHighlights.speed?.let { highlight ->
+            MetricLine(
+                stringResource(KMR.strings.stats_best_speed_day),
+                stringResource(
+                    KMR.strings.stats_day_value,
+                    formatLocalDate(highlight.date),
+                    formatRate(highlight.value),
+                ),
+            )
+        }
         title.progress?.let {
             MetricLine(stringResource(KMR.strings.stats_progress), formatPercent(it))
         } ?: MetricLine(
             stringResource(KMR.strings.stats_progress),
             stringResource(KMR.strings.stats_unavailable),
+        )
+        title.estimate?.let { estimate ->
+            MetricLine(
+                stringResource(KMR.strings.stats_estimated_remaining),
+                formatDuration(estimate.estimatedActiveTimeMillis),
+            )
+            Text(
+                estimateRemainingAmount(title.mediaKind, estimate),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                stringResource(
+                    KMR.strings.stats_estimate_confidence,
+                    estimateConfidenceLabel(estimate.confidence),
+                    estimate.qualifyingDayCount,
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } ?: MetricLine(
+            stringResource(KMR.strings.stats_estimated_remaining),
+            stringResource(KMR.strings.stats_estimate_unavailable),
+        )
+        HorizontalDivider()
+        SectionTitle(stringResource(KMR.strings.stats_title_activity_history))
+        SectionFrame(details.titleTrends) { result ->
+            TrendsContent(
+                trends = result.value,
+                metric = metric,
+                trendMetric = StatsTrendMetric.CHARACTERS,
+            )
+        }
+        HorizontalDivider()
+        SectionTitle(stringResource(KMR.strings.stats_word_acquisition))
+        FilterMenuChip(
+            label = titleAcquisitionBucketLabel(acquisitionBucketSize),
+            options = AnalyticsTitleAcquisitionBucketSize.entries,
+            optionLabel = { titleAcquisitionBucketLabel(it) },
+            onSelect = onAcquisitionBucketSizeSelect,
+        )
+        SectionFrame(details.titleWordAcquisition) { result ->
+            TitleWordAcquisitionContent(result.value)
+        }
+        HorizontalDivider()
+        SectionTitle(stringResource(KMR.strings.stats_title_completed_unit_history))
+        SectionFrame(details.titleCompletedUnits) { result ->
+            TitleCompletedUnitsContent(
+                result = result,
+                onLoadMore = onLoadMoreCompletedUnits,
+            )
+        }
+        HorizontalDivider()
+        SectionTitle(stringResource(KMR.strings.stats_sessions))
+        SectionFrame(details.titleSessions) { result ->
+            TitleSessionsContent(
+                result = result,
+                onOpen = onSessionOpen,
+                onLoadMore = onLoadMoreSessions,
+            )
+        }
+        HorizontalDivider()
+        SectionTitle(stringResource(KMR.strings.stats_source_occurrences))
+        SectionFrame(details.titleSources) { result ->
+            TitleSourcesContent(
+                result = result,
+                onLoadMore = onLoadMoreSources,
+            )
+        }
+        HorizontalDivider()
+        Text(stringResource(KMR.strings.stats_data_quality), fontWeight = FontWeight.SemiBold)
+        MetricLine(
+            stringResource(KMR.strings.stats_indexing_coverage),
+            title.coverage.indexingCompletion?.let(::formatPercent)
+                ?: stringResource(KMR.strings.stats_unavailable),
+        )
+        MetricLine(
+            stringResource(KMR.strings.stats_text_coverage),
+            title.coverage.textCoverage?.let(::formatPercent)
+                ?: stringResource(KMR.strings.stats_unavailable),
+        )
+        MetricLine(
+            stringResource(KMR.strings.stats_ocr_coverage),
+            title.coverage.ocrTextCoverage?.let(::formatPercent)
+                ?: stringResource(KMR.strings.stats_unavailable),
+        )
+        MetricLine(
+            stringResource(KMR.strings.stats_provenance_state),
+            provenanceLabel(title.coverage.provenanceState),
         )
         captureExcluded.value?.let { excluded ->
             Row(
@@ -2352,6 +3368,261 @@ private fun TitleDetail(
         }
     }
 }
+
+@Composable
+private fun TitleWordAcquisitionContent(acquisition: AnalyticsTitleWordAcquisition) {
+    if (acquisition.buckets.isEmpty()) {
+        EmptyState()
+        return
+    }
+    val maximum = acquisition.buckets.maxOf { it.newWords }.coerceAtLeast(1)
+    val totalWords = acquisition.buckets.last().cumulativeNewWords
+    val summary = stringResource(
+        KMR.strings.stats_word_acquisition_summary,
+        pluralStringResource(
+            KMR.plurals.stats_character_count,
+            acquisition.totalGrossCharacters.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+            formatCount(acquisition.totalGrossCharacters),
+        ),
+        pluralStringResource(
+            KMR.plurals.stats_word_count,
+            totalWords.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+            formatCount(totalWords),
+        ),
+        acquisition.buckets.size,
+    )
+    val color = MaterialTheme.colorScheme.tertiary
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            summary,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(120.dp)
+                .semantics { contentDescription = summary },
+        ) {
+            val visible = acquisition.buckets.takeLast(TITLE_ACQUISITION_VISIBLE_BUCKETS)
+            if (visible.isEmpty()) return@Canvas
+            val spacing = size.width / visible.size
+            val width = (spacing * 0.62f).coerceAtLeast(1f)
+            visible.forEachIndexed { index, bucket ->
+                val height = size.height * bucket.newWords.toFloat() / maximum.toFloat()
+                drawRoundRect(
+                    color = color,
+                    topLeft = Offset(
+                        index * spacing + (spacing - width) / 2,
+                        size.height - height,
+                    ),
+                    size = Size(width, height.coerceAtLeast(1.dp.toPx())),
+                    cornerRadius = CornerRadius(3.dp.toPx()),
+                )
+            }
+        }
+        acquisition.buckets.takeLast(TITLE_ACQUISITION_VISIBLE_BUCKETS).forEach { bucket ->
+            val newWords = pluralStringResource(
+                KMR.plurals.stats_word_count,
+                bucket.newWords.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                formatCount(bucket.newWords),
+            )
+            val cumulative = pluralStringResource(
+                KMR.plurals.stats_word_count,
+                bucket.cumulativeNewWords.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                formatCount(bucket.cumulativeNewWords),
+            )
+            MetricLine(
+                stringResource(
+                    KMR.strings.stats_character_bucket_range,
+                    formatCount(bucket.startCharacter),
+                    formatCount(bucket.endCharacterInclusive),
+                ),
+                stringResource(
+                    KMR.strings.stats_word_acquisition_bucket_value,
+                    newWords,
+                    cumulative,
+                ),
+            )
+        }
+    }
+}
+
+@Composable
+private fun TitleCompletedUnitsContent(
+    result: AnalyticsResult<AnalyticsPage<AnalyticsTitleCompletedUnit>>,
+    onLoadMore: () -> Unit,
+) {
+    if (result.value.items.isEmpty()) {
+        EmptyState()
+        return
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        result.value.items.forEachIndexed { index, unit ->
+            Text(
+                unit.completionUnitId,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                stringResource(
+                    KMR.strings.stats_title_unit_completed_on,
+                    formatLocalDate(unit.firstCompletedDate),
+                    pluralStringResource(
+                        KMR.plurals.stats_completion_event_count,
+                        unit.completionEventCount.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                        formatCount(unit.completionEventCount),
+                    ),
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (index < result.value.items.lastIndex) HorizontalDivider()
+        }
+        if (result.value.nextOffset != null) LoadMoreButton(onLoadMore)
+    }
+}
+
+@Composable
+private fun TitleSessionsContent(
+    result: AnalyticsResult<SessionPage>,
+    onOpen: (ImmersionSession) -> Unit,
+    onLoadMore: () -> Unit,
+) {
+    if (result.value.items.isEmpty()) {
+        EmptyState()
+        return
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        result.value.items.forEachIndexed { index, session ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onOpen(session) }
+                    .padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Outlined.Schedule, contentDescription = null)
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(formatInstant(session.startedAtEpochMillis), fontWeight = FontWeight.SemiBold)
+                    Text(
+                        sessionStatusLabel(session.status),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(formatDuration(session.activeDuration.value))
+            }
+            if (index < result.value.items.lastIndex) HorizontalDivider()
+        }
+        if (result.value.nextCursor != null) LoadMoreButton(onLoadMore)
+    }
+}
+
+@Composable
+private fun TitleSourcesContent(
+    result: AnalyticsResult<AnalyticsPage<AnalyticsSourceOccurrence>>,
+    onLoadMore: () -> Unit,
+) {
+    if (result.value.items.isEmpty()) {
+        EmptyState()
+        return
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        result.value.items.forEachIndexed { index, occurrence ->
+            SourceOccurrenceContent(occurrence)
+            if (index < result.value.items.lastIndex) HorizontalDivider()
+        }
+        if (result.value.nextOffset != null) LoadMoreButton(onLoadMore)
+    }
+}
+
+@Composable
+private fun TitleCover(
+    title: String,
+    coverLocation: String?,
+) {
+    Surface(
+        modifier = Modifier
+            .width(56.dp)
+            .height(80.dp)
+            .clip(RoundedCornerShape(4.dp)),
+        color = MaterialTheme.colorScheme.surface,
+    ) {
+        if (coverLocation == null) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Outlined.Style,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        } else {
+            AsyncImage(
+                model = coverLocation,
+                contentDescription = title,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+        }
+    }
+}
+
+@Composable
+private fun titleLinkLabel(state: StatsTitleLinkState?): String = when (state) {
+    StatsTitleLinkState.AVAILABLE -> stringResource(KMR.strings.stats_title_link_available)
+    StatsTitleLinkState.LEGACY_ONLY -> stringResource(KMR.strings.stats_title_link_legacy_only)
+    StatsTitleLinkState.UNAVAILABLE, null ->
+        stringResource(KMR.strings.stats_title_link_unavailable)
+}
+
+@Composable
+private fun estimateRemainingAmount(
+    mediaKind: MediaKind,
+    estimate: AnalyticsTitleEstimate,
+): String {
+    val quantity = estimate.remainingAmount.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    return when (estimate.unit) {
+        AnalyticsEstimateUnit.CHARACTERS -> pluralStringResource(
+            KMR.plurals.stats_character_count,
+            quantity,
+            formatCount(estimate.remainingAmount),
+        )
+        AnalyticsEstimateUnit.MEDIA_UNITS -> titleUnitCount(mediaKind, estimate.remainingAmount)
+    }
+}
+
+@Composable
+private fun titleStateLabel(completed: Boolean?): String = when (completed) {
+    true -> stringResource(KMR.strings.stats_title_completed)
+    false -> stringResource(KMR.strings.stats_title_in_progress)
+    null -> stringResource(KMR.strings.stats_title_state_unknown)
+}
+
+@Composable
+private fun titleUnitCount(
+    mediaKind: MediaKind,
+    count: Long,
+): String {
+    val quantity = count.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    val formatted = formatCount(count)
+    return when (mediaKind) {
+        MediaKind.NOVEL -> pluralStringResource(KMR.plurals.stats_section_count, quantity, formatted)
+        MediaKind.MANGA -> pluralStringResource(KMR.plurals.stats_chapter_count, quantity, formatted)
+        MediaKind.VIDEO -> pluralStringResource(KMR.plurals.stats_episode_count, quantity, formatted)
+    }
+}
+
+@Composable
+private fun estimateConfidenceLabel(confidence: AnalyticsEstimateConfidence): String =
+    when (confidence) {
+        AnalyticsEstimateConfidence.LOW -> stringResource(KMR.strings.stats_confidence_low)
+        AnalyticsEstimateConfidence.MEDIUM -> stringResource(KMR.strings.stats_confidence_medium)
+        AnalyticsEstimateConfidence.HIGH -> stringResource(KMR.strings.stats_confidence_high)
+    }
 
 @Composable
 private fun WordRow(
@@ -2488,10 +3759,41 @@ private fun WordDetail(
 }
 
 @Composable
-private fun CharacterCell(character: AnalyticsCharacterRow, onClick: () -> Unit) {
+private fun CharacterCell(
+    character: AnalyticsCharacterRow,
+    mode: StatsCharacterGridMode,
+    layout: StatsCharacterLayout,
+    maximumOccurrenceCount: Long,
+    selected: Boolean,
+    onSelectedChange: (Boolean) -> Unit,
+    onClick: () -> Unit,
+) {
+    val hasGlyph = remember(character.rendered) {
+        Paint(Paint.ANTI_ALIAS_FLAG).hasGlyph(character.rendered)
+    }
+    val displayText = characterDisplayText(
+        rendered = character.rendered,
+        codePoint = character.codePoint,
+        hasGlyph = { hasGlyph },
+    )
+    val level = characterFrequencyLevel(
+        occurrenceCount = character.occurrenceCount,
+        maximumOccurrenceCount = maximumOccurrenceCount,
+    )
+    val modeValue = when (mode) {
+        StatsCharacterGridMode.FREQUENCY -> stringResource(
+            KMR.strings.stats_character_frequency_level,
+            level,
+            5,
+        )
+        StatsCharacterGridMode.FIRST_SEEN -> formatInstant(character.firstSeenAtEpochMillis)
+        StatsCharacterGridMode.MATURITY -> maturityLabel(character.maturity)
+        StatsCharacterGridMode.METADATA -> characterMetadataBand(character)
+        StatsCharacterGridMode.PRIORITY -> formatDecimal(character.priorityScore)
+    }
     val description = stringResource(
         KMR.strings.stats_character_cell_description,
-        character.rendered,
+        displayText,
         character.unicodeName
             ?: "U+%04X".format(Locale.ROOT, character.codePoint.value),
         pluralStringResource(
@@ -2499,22 +3801,89 @@ private fun CharacterCell(character: AnalyticsCharacterRow, onClick: () -> Unit)
             character.occurrenceCount.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
             formatCount(character.occurrenceCount),
         ),
+        maturityLabel(character.maturity),
+        modeValue,
     )
+    val surfaceColor = if (mode == StatsCharacterGridMode.FREQUENCY && level > 0) {
+        lerp(
+            MaterialTheme.colorScheme.surfaceVariant,
+            MaterialTheme.colorScheme.primaryContainer,
+            level / 5f,
+        )
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant
+    }
     Surface(
         modifier = Modifier
-            .height(84.dp)
+            .height(if (layout == StatsCharacterLayout.GRID) 112.dp else 76.dp)
             .semantics { contentDescription = description }
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(8.dp),
+        color = surfaceColor,
+        border = BorderStroke(
+            width = if (selected) 2.dp else 1.dp,
+            color = if (selected) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.outlineVariant
+            },
+        ),
     ) {
-        Column(
-            modifier = Modifier.padding(8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-        ) {
-            Text(character.rendered, style = MaterialTheme.typography.headlineMedium)
-            Text(formatCount(character.occurrenceCount), style = MaterialTheme.typography.labelSmall)
+        if (layout == StatsCharacterLayout.GRID) {
+            Column(
+                modifier = Modifier.padding(6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Checkbox(
+                    checked = selected,
+                    onCheckedChange = onSelectedChange,
+                )
+                Text(
+                    displayText,
+                    style = if (hasGlyph) {
+                        MaterialTheme.typography.headlineMedium
+                    } else {
+                        MaterialTheme.typography.labelMedium
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(modeValue, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+            }
+        } else {
+            Row(
+                modifier = Modifier.padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Checkbox(checked = selected, onCheckedChange = onSelectedChange)
+                Text(
+                    displayText,
+                    modifier = Modifier.width(56.dp),
+                    style = if (hasGlyph) {
+                        MaterialTheme.typography.headlineSmall
+                    } else {
+                        MaterialTheme.typography.labelMedium
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        character.unicodeName
+                            ?: "U+%04X".format(Locale.ROOT, character.codePoint.value),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        modeValue,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(formatCount(character.occurrenceCount), fontWeight = FontWeight.SemiBold)
+            }
         }
     }
 }
@@ -2522,15 +3891,48 @@ private fun CharacterCell(character: AnalyticsCharacterRow, onClick: () -> Unit)
 @Composable
 private fun CharacterDetail(
     character: AnalyticsCharacterRow,
+    priorityMode: AnalyticsCharacterPriorityMode,
     occurrences: StatsLoadable<AnalyticsResult<tachiyomi.domain.immersion.model.AnalyticsPage<AnalyticsSourceOccurrence>>>,
     containingWords: StatsLoadable<AnalyticsResult<tachiyomi.domain.immersion.model.AnalyticsPage<AnalyticsWordRow>>>,
+    ankiItems: StatsLoadable<List<ImmersionAnkiItem>>,
+    previous: AnalyticsCharacterRow?,
+    next: AnalyticsCharacterRow?,
     onClose: () -> Unit,
+    onSelect: (AnalyticsCharacterRow) -> Unit,
     onContainingWordSelect: (AnalyticsWordRow) -> Unit,
     onLoadMoreOccurrences: () -> Unit,
     onLoadMoreContainingWords: () -> Unit,
 ) {
+    val context = LocalContext.current
+    val hasGlyph = remember(character.rendered) {
+        Paint(Paint.ANTI_ALIAS_FLAG).hasGlyph(character.rendered)
+    }
+    val displayText = characterDisplayText(
+        rendered = character.rendered,
+        codePoint = character.codePoint,
+        hasGlyph = { hasGlyph },
+    )
     DetailCard(stringResource(KMR.strings.stats_character_detail), onClose) {
-        Text(character.rendered, style = MaterialTheme.typography.displayMedium)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = { previous?.let(onSelect) }, enabled = previous != null) {
+                Icon(Icons.Outlined.ChevronLeft, contentDescription = stringResource(KMR.strings.stats_previous))
+            }
+            Text(
+                displayText,
+                style = if (hasGlyph) {
+                    MaterialTheme.typography.displayMedium
+                } else {
+                    MaterialTheme.typography.titleLarge
+                },
+            )
+            IconButton(onClick = { next?.let(onSelect) }, enabled = next != null) {
+                Icon(Icons.Outlined.ChevronRight, contentDescription = stringResource(KMR.strings.stats_next))
+            }
+        }
         Text(
             stringResource(
                 KMR.strings.stats_unicode_code_point,
@@ -2539,12 +3941,100 @@ private fun CharacterDetail(
         )
         character.unicodeName?.let { Text(stringResource(KMR.strings.stats_unicode_name, it)) }
         Text(stringResource(KMR.strings.stats_unicode_script, character.unicodeScript))
-        MetricLine(stringResource(KMR.strings.stats_occurrence_label), formatCount(character.occurrenceCount))
+        Text(stringResource(KMR.strings.stats_unicode_category, character.unicodeCategory))
+        character.japaneseReadings?.let {
+            Text(stringResource(KMR.strings.stats_character_readings, it))
+        }
+        MetricLine(
+            stringResource(KMR.strings.stats_character_gross_exposure),
+            formatCount(character.occurrenceCount),
+        )
+        MetricLine(
+            stringResource(KMR.strings.stats_source_units),
+            formatCount(character.sourceUnitCount),
+        )
         MetricLine(stringResource(KMR.strings.stats_unique_words), formatCount(character.wordCount))
         MetricLine(stringResource(KMR.strings.stats_tab_titles), formatCount(character.titleCount))
         Text(stringResource(KMR.strings.stats_first_seen, formatInstant(character.firstSeenAtEpochMillis)))
         Text(stringResource(KMR.strings.stats_last_seen, formatInstant(character.lastSeenAtEpochMillis)))
         Text(stringResource(KMR.strings.stats_maturity, maturityLabel(character.maturity)))
+        MetricLine(
+            stringResource(KMR.strings.stats_frequency_rank),
+            character.frequencyRank?.let(::formatCount)
+                ?: stringResource(KMR.strings.stats_unavailable),
+        )
+        character.jlptLevel?.let {
+            MetricLine(stringResource(KMR.strings.stats_jlpt_level), "N$it")
+        }
+        character.gradeLevel?.let {
+            MetricLine(stringResource(KMR.strings.stats_grade_level), formatCount(it.toLong()))
+        }
+        MetricLine(
+            stringResource(KMR.strings.stats_character_priority_score),
+            formatDecimal(character.priorityScore),
+        )
+        val priorityComponents = AnalyticsCharacterPriorityFormula.components(
+            frequencyRank = character.frequencyRank,
+            jlptLevel = character.jlptLevel,
+            gradeLevel = character.gradeLevel,
+        )
+        Text(
+            stringResource(
+                KMR.strings.stats_character_priority_formula_version,
+                AnalyticsCharacterPriorityFormula.VERSION,
+            ),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        MetricLine(
+            stringResource(KMR.strings.stats_character_priority_frequency_component),
+            formatDecimal(priorityComponents.frequency),
+        )
+        MetricLine(
+            stringResource(KMR.strings.stats_character_priority_jlpt_component),
+            formatDecimal(priorityComponents.jlpt),
+        )
+        MetricLine(
+            stringResource(KMR.strings.stats_character_priority_grade_component),
+            formatDecimal(priorityComponents.grade),
+        )
+        MetricLine(
+            characterPriorityModeLabel(priorityMode),
+            formatDecimal(priorityComponents.score(priorityMode)),
+        )
+        TextButton(
+            onClick = {
+                context.startActivity(
+                    Intent(context, ProcessTextLookupActivity::class.java).apply {
+                        action = Intent.ACTION_PROCESS_TEXT
+                        putExtra(Intent.EXTRA_PROCESS_TEXT, character.rendered)
+                    },
+                )
+            },
+        ) {
+            Icon(Icons.Outlined.Search, contentDescription = null)
+            Spacer(Modifier.width(4.dp))
+            Text(stringResource(KMR.strings.stats_open_dictionary))
+        }
+        SectionTitle(stringResource(KMR.strings.stats_character_anki_matches))
+        SectionFrame(ankiItems) { items ->
+            if (items.isEmpty()) {
+                if (character.maturity == MaturityTier.UNAVAILABLE) {
+                    Text(stringResource(KMR.strings.stats_character_anki_unavailable))
+                } else {
+                    EmptyState()
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items.forEachIndexed { index, item ->
+                        CharacterAnkiItem(item)
+                        if (index < items.lastIndex) {
+                            HorizontalDivider()
+                        }
+                    }
+                }
+            }
+        }
         SectionTitle(stringResource(KMR.strings.stats_containing_words, character.rendered))
         SectionFrame(containingWords) { result ->
             if (result.value.items.isEmpty()) {
@@ -2573,6 +4063,26 @@ private fun CharacterDetail(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun CharacterAnkiItem(item: ImmersionAnkiItem) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(item.normalizedWord, fontWeight = FontWeight.SemiBold)
+        if (item.normalizedReading.isNotBlank()) {
+            Text(stringResource(KMR.strings.stats_reading, item.normalizedReading))
+        }
+        Text(stringResource(KMR.strings.stats_maturity, maturityLabel(item.maturityTier)))
+        Text(
+            stringResource(
+                KMR.strings.stats_match_confidence,
+                matchConfidenceLabel(item.matchConfidence),
+            ),
+        )
     }
 }
 
@@ -2731,62 +4241,73 @@ private fun TimelineSummary(detail: AnalyticsSessionDetail) {
 
 @Composable
 private fun SourceOccurrenceRow(occurrence: AnalyticsSourceOccurrence) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val unavailableMessage = stringResource(KMR.strings.stats_source_open_unavailable)
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surface,
     ) {
-        Column(
+        SourceOccurrenceContent(
+            occurrence = occurrence,
             modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Text(occurrence.displayTitle, fontWeight = FontWeight.SemiBold)
-            occurrence.excerpt?.let {
-                Text(it, maxLines = 3, overflow = TextOverflow.Ellipsis)
-            } ?: Text(
-                stringResource(KMR.strings.stats_source_text_unavailable),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                stringResource(
-                    KMR.strings.stats_source_meta,
-                    sourceKindLabel(occurrence.sourceKind),
-                    formatInstant(occurrence.occurredAtEpochMillis),
-                ),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        )
+    }
+}
+
+@Composable
+private fun SourceOccurrenceContent(
+    occurrence: AnalyticsSourceOccurrence,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val unavailableMessage = stringResource(KMR.strings.stats_source_open_unavailable)
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(occurrence.displayTitle, fontWeight = FontWeight.SemiBold)
+        occurrence.excerpt?.let {
+            Text(it, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        } ?: Text(
+            stringResource(KMR.strings.stats_source_text_unavailable),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            stringResource(
+                KMR.strings.stats_source_meta,
+                sourceKindLabel(occurrence.sourceKind),
+                formatInstant(occurrence.occurredAtEpochMillis),
+            ),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(
+                onClick = {
+                    scope.launch {
+                        if (!StatsSourceNavigator.open(context, occurrence)) {
+                            context.toast(unavailableMessage)
+                        }
+                    }
+                },
+            ) {
+                Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text(stringResource(KMR.strings.stats_open_source))
+            }
+            if (occurrence.rawTextAvailable && !occurrence.excerpt.isNullOrBlank()) {
                 TextButton(
                     onClick = {
-                        scope.launch {
-                            if (!StatsSourceNavigator.open(context, occurrence)) {
-                                context.toast(unavailableMessage)
-                            }
-                        }
+                        context.startActivity(
+                            Intent(context, ProcessTextLookupActivity::class.java).apply {
+                                action = Intent.ACTION_PROCESS_TEXT
+                                putExtra(Intent.EXTRA_PROCESS_TEXT, occurrence.excerpt)
+                            },
+                        )
                     },
                 ) {
-                    Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null)
+                    Icon(Icons.Outlined.Search, contentDescription = null)
                     Spacer(Modifier.width(4.dp))
-                    Text(stringResource(KMR.strings.stats_open_source))
-                }
-                if (occurrence.rawTextAvailable && !occurrence.excerpt.isNullOrBlank()) {
-                    TextButton(
-                        onClick = {
-                            context.startActivity(
-                                Intent(context, ProcessTextLookupActivity::class.java).apply {
-                                    action = Intent.ACTION_PROCESS_TEXT
-                                    putExtra(Intent.EXTRA_PROCESS_TEXT, occurrence.excerpt)
-                                },
-                            )
-                        },
-                    ) {
-                        Icon(Icons.Outlined.Search, contentDescription = null)
-                        Spacer(Modifier.width(4.dp))
-                        Text(stringResource(KMR.strings.stats_mine_again))
-                    }
+                    Text(stringResource(KMR.strings.stats_mine_again))
                 }
             }
         }
@@ -3140,13 +4661,14 @@ private fun GoalEditorDialog(
 }
 
 @Composable
-private fun SearchAndSort(
+private fun <T> SearchAndSort(
     query: String,
     onQueryChange: (String) -> Unit,
     placeholder: String,
-    selectedSort: AnalyticsSort,
-    onSortSelect: (AnalyticsSort) -> Unit,
-    allowedSorts: List<AnalyticsSort>,
+    selectedSort: T,
+    onSortSelect: (T) -> Unit,
+    allowedSorts: List<T>,
+    optionLabel: @Composable (T) -> String,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(
@@ -3158,9 +4680,9 @@ private fun SearchAndSort(
             placeholder = { Text(placeholder) },
         )
         FilterMenuChip(
-            label = sortLabel(selectedSort),
+            label = optionLabel(selectedSort),
             options = allowedSorts,
-            optionLabel = { sortLabel(it) },
+            optionLabel = optionLabel,
             onSelect = onSortSelect,
         )
     }
@@ -3561,6 +5083,14 @@ private fun bucketLabel(value: AnalyticsBucketScale): String = when (value) {
 }
 
 @Composable
+private fun titleAcquisitionBucketLabel(value: AnalyticsTitleAcquisitionBucketSize): String =
+    pluralStringResource(
+        KMR.plurals.stats_character_count,
+        value.characters.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+        formatCount(value.characters),
+    )
+
+@Composable
 private fun sortLabel(value: AnalyticsSort): String = when (value) {
     AnalyticsSort.MOST_RECENT -> stringResource(KMR.strings.stats_sort_recent)
     AnalyticsSort.MOST_TIME -> stringResource(KMR.strings.stats_sort_time)
@@ -3569,6 +5099,119 @@ private fun sortLabel(value: AnalyticsSort): String = when (value) {
     AnalyticsSort.FIRST_SEEN -> stringResource(KMR.strings.stats_sort_first_seen)
     AnalyticsSort.ALPHABETICAL -> stringResource(KMR.strings.stats_sort_alphabetical)
     AnalyticsSort.FREQUENCY_RANK -> stringResource(KMR.strings.stats_sort_frequency)
+    AnalyticsSort.PRIORITY -> stringResource(KMR.strings.stats_sort_priority)
+}
+
+@Composable
+private fun characterScriptLabel(value: AnalyticsCharacterScript): String = when (value) {
+    AnalyticsCharacterScript.HAN -> stringResource(KMR.strings.stats_character_script_han)
+    AnalyticsCharacterScript.HIRAGANA ->
+        stringResource(KMR.strings.stats_character_script_hiragana)
+    AnalyticsCharacterScript.KATAKANA ->
+        stringResource(KMR.strings.stats_character_script_katakana)
+    AnalyticsCharacterScript.HANGUL -> stringResource(KMR.strings.stats_character_script_hangul)
+    AnalyticsCharacterScript.LATIN -> stringResource(KMR.strings.stats_character_script_latin)
+    AnalyticsCharacterScript.OTHER -> stringResource(KMR.strings.stats_character_script_other)
+}
+
+@Composable
+private fun characterRangeLabel(value: AnalyticsCharacterRange): String = when (value) {
+    AnalyticsCharacterRange.ENCOUNTERED ->
+        stringResource(KMR.strings.stats_character_range_encountered)
+    AnalyticsCharacterRange.FIRST_SEEN_IN_RANGE ->
+        stringResource(KMR.strings.stats_character_range_new_in_range)
+    AnalyticsCharacterRange.UNKNOWN ->
+        stringResource(KMR.strings.stats_character_range_unknown)
+    AnalyticsCharacterRange.NEW -> stringResource(KMR.strings.stats_character_range_new)
+    AnalyticsCharacterRange.LEARNING ->
+        stringResource(KMR.strings.stats_character_range_learning)
+    AnalyticsCharacterRange.YOUNG -> stringResource(KMR.strings.stats_character_range_young)
+    AnalyticsCharacterRange.MATURE -> stringResource(KMR.strings.stats_character_range_mature)
+    AnalyticsCharacterRange.MISSING_HIGH_FREQUENCY ->
+        stringResource(KMR.strings.stats_character_range_missing)
+}
+
+@Composable
+private fun characterPriorityModeLabel(value: AnalyticsCharacterPriorityMode): String =
+    when (value) {
+        AnalyticsCharacterPriorityMode.FREQUENCY ->
+            stringResource(KMR.strings.stats_character_priority_frequency)
+        AnalyticsCharacterPriorityMode.JLPT ->
+            stringResource(KMR.strings.stats_character_priority_jlpt)
+        AnalyticsCharacterPriorityMode.GRADE ->
+            stringResource(KMR.strings.stats_character_priority_grade)
+        AnalyticsCharacterPriorityMode.MIXED ->
+            stringResource(KMR.strings.stats_character_priority_mixed)
+    }
+
+@Composable
+private fun characterGridModeLabel(value: StatsCharacterGridMode): String = when (value) {
+    StatsCharacterGridMode.FREQUENCY ->
+        stringResource(KMR.strings.stats_character_mode_frequency)
+    StatsCharacterGridMode.FIRST_SEEN ->
+        stringResource(KMR.strings.stats_character_mode_first_seen)
+    StatsCharacterGridMode.MATURITY ->
+        stringResource(KMR.strings.stats_character_mode_maturity)
+    StatsCharacterGridMode.METADATA ->
+        stringResource(KMR.strings.stats_character_mode_metadata)
+    StatsCharacterGridMode.PRIORITY ->
+        stringResource(KMR.strings.stats_character_mode_priority)
+}
+
+@Composable
+private fun characterLayoutLabel(value: StatsCharacterLayout): String = when (value) {
+    StatsCharacterLayout.GRID -> stringResource(KMR.strings.stats_character_layout_grid)
+    StatsCharacterLayout.LIST -> stringResource(KMR.strings.stats_character_layout_list)
+}
+
+@Composable
+private fun characterMetadataBand(character: AnalyticsCharacterRow): String {
+    val frequency = character.frequencyRank?.let(::formatCount)
+        ?: stringResource(KMR.strings.stats_unavailable)
+    val jlpt = character.jlptLevel?.let { "N$it" }
+        ?: stringResource(KMR.strings.stats_unavailable)
+    val grade = character.gradeLevel?.let { formatCount(it.toLong()) }
+        ?: stringResource(KMR.strings.stats_unavailable)
+    return if (
+        character.frequencyRank == null &&
+        character.jlptLevel == null &&
+        character.gradeLevel == null
+    ) {
+        stringResource(KMR.strings.stats_character_metadata_unavailable)
+    } else {
+        stringResource(KMR.strings.stats_character_metadata_band, frequency, jlpt, grade)
+    }
+}
+
+@Composable
+private fun titleSortLabel(value: AnalyticsTitleSort): String = when (value) {
+    AnalyticsTitleSort.MOST_RECENT -> stringResource(KMR.strings.stats_sort_recent)
+    AnalyticsTitleSort.ALPHABETICAL -> stringResource(KMR.strings.stats_sort_alphabetical)
+    AnalyticsTitleSort.MOST_TIME -> stringResource(KMR.strings.stats_sort_time)
+    AnalyticsTitleSort.MOST_CHARACTERS -> stringResource(KMR.strings.stats_sort_characters)
+    AnalyticsTitleSort.READING_SPEED -> stringResource(KMR.strings.stats_sort_speed)
+    AnalyticsTitleSort.NOVELTY -> stringResource(KMR.strings.stats_sort_novelty)
+    AnalyticsTitleSort.MINING_RATE -> stringResource(KMR.strings.stats_sort_mining)
+    AnalyticsTitleSort.PROGRESS -> stringResource(KMR.strings.stats_sort_progress)
+}
+
+@Composable
+private fun titleStateFilterLabel(value: AnalyticsTitleStateFilter): String = when (value) {
+    AnalyticsTitleStateFilter.ALL -> stringResource(KMR.strings.stats_filter_all)
+    AnalyticsTitleStateFilter.COMPLETED -> stringResource(KMR.strings.stats_title_completed)
+    AnalyticsTitleStateFilter.IN_PROGRESS -> stringResource(KMR.strings.stats_title_in_progress)
+    AnalyticsTitleStateFilter.UNKNOWN -> stringResource(KMR.strings.stats_title_state_unknown)
+}
+
+@Composable
+private fun titleCoverageFilterLabel(value: AnalyticsTitleCoverageFilter): String = when (value) {
+    AnalyticsTitleCoverageFilter.ALL -> stringResource(KMR.strings.stats_filter_all)
+    AnalyticsTitleCoverageFilter.COMPLETE ->
+        stringResource(KMR.strings.stats_title_coverage_complete)
+    AnalyticsTitleCoverageFilter.PARTIAL ->
+        stringResource(KMR.strings.stats_title_coverage_partial)
+    AnalyticsTitleCoverageFilter.MISSING ->
+        stringResource(KMR.strings.stats_title_coverage_missing)
 }
 
 @Composable
@@ -3669,6 +5312,43 @@ private fun capabilityLabel(value: CapabilityState): String = when (value) {
 }
 
 @Composable
+private fun ankiReportLabel(value: AnalyticsAnkiReport): String = when (value) {
+    AnalyticsAnkiReport.INVENTORY -> stringResource(KMR.strings.stats_anki_report_inventory)
+    AnalyticsAnkiReport.CARD_ACTIVITY -> stringResource(KMR.strings.stats_anki_report_card_activity)
+    AnalyticsAnkiReport.SOURCE_ATTRIBUTION ->
+        stringResource(KMR.strings.stats_anki_report_source_attribution)
+    AnalyticsAnkiReport.READING_TO_CARD_LAG ->
+        stringResource(KMR.strings.stats_anki_report_reading_card_lag)
+    AnalyticsAnkiReport.CARD_TO_MATURITY_LAG ->
+        stringResource(KMR.strings.stats_anki_report_card_maturity_lag)
+    AnalyticsAnkiReport.WEEKLY_FLOW -> stringResource(KMR.strings.stats_anki_report_weekly_flow)
+    AnalyticsAnkiReport.REVIEW_HISTORY ->
+        stringResource(KMR.strings.stats_anki_report_review_history)
+    AnalyticsAnkiReport.RETENTION -> stringResource(KMR.strings.stats_anki_report_retention)
+    AnalyticsAnkiReport.REVIEW_TIME -> stringResource(KMR.strings.stats_anki_report_review_time)
+}
+
+@Composable
+private fun ankiCapabilityReasonLabel(value: AnalyticsAnkiCapabilityReason): String = when (value) {
+    AnalyticsAnkiCapabilityReason.AVAILABLE ->
+        stringResource(KMR.strings.stats_anki_capability_available)
+    AnalyticsAnkiCapabilityReason.NO_CURRENT_INVENTORY ->
+        stringResource(KMR.strings.stats_anki_capability_no_inventory)
+    AnalyticsAnkiCapabilityReason.STALE_INVENTORY ->
+        stringResource(KMR.strings.stats_anki_capability_stale)
+    AnalyticsAnkiCapabilityReason.PARTIAL_INVENTORY ->
+        stringResource(KMR.strings.stats_anki_capability_partial)
+    AnalyticsAnkiCapabilityReason.NO_LINKED_SAMPLE ->
+        stringResource(KMR.strings.stats_anki_capability_no_linked_sample)
+    AnalyticsAnkiCapabilityReason.INSUFFICIENT_SAMPLE ->
+        stringResource(KMR.strings.stats_anki_capability_small_sample)
+    AnalyticsAnkiCapabilityReason.PROVIDER_UNSUPPORTED ->
+        stringResource(KMR.strings.stats_anki_capability_provider_unsupported)
+    AnalyticsAnkiCapabilityReason.DATA_NOT_COLLECTED ->
+        stringResource(KMR.strings.stats_anki_capability_not_collected)
+}
+
+@Composable
 private fun provenanceLabel(value: ProvenanceState): String = when (value) {
     ProvenanceState.AVAILABLE -> stringResource(KMR.strings.stats_available)
     ProvenanceState.PARTIAL -> stringResource(KMR.strings.stats_partial)
@@ -3745,6 +5425,7 @@ private fun ReadingMetrics.trendValue(
     StatsTrendMetric.LOOKUPS -> successfulLookups.value
     StatsTrendMetric.CARDS -> cardsCreated.value
     StatsTrendMetric.NEW_WORDS -> newWords.value
+    StatsTrendMetric.NEW_CHARACTERS -> newCharacters.value
 }
 
 @Composable
@@ -3758,6 +5439,7 @@ private fun trendMetricLabel(
     StatsTrendMetric.LOOKUPS -> stringResource(KMR.strings.stats_lookups)
     StatsTrendMetric.CARDS -> stringResource(KMR.strings.stats_cards_created)
     StatsTrendMetric.NEW_WORDS -> stringResource(KMR.strings.stats_new_words)
+    StatsTrendMetric.NEW_CHARACTERS -> stringResource(KMR.strings.stats_new_characters)
 }
 
 @Composable
@@ -3864,4 +5546,5 @@ private fun String.optionalPositiveLong(): Long? {
 }
 
 private val GOAL_MULTIPLIER_OPTIONS = listOf(0.0, 0.5, 1.0)
+private const val TITLE_ACQUISITION_VISIBLE_BUCKETS = 12
 private const val DEFAULT_GOAL_WINDOW_DAYS = 30L

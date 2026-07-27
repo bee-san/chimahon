@@ -21,6 +21,7 @@ import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.put
 import tachiyomi.core.common.util.lang.withIOContext
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
+import tachiyomi.domain.immersion.model.ImmersionTitleIdentityAdapter
 import tachiyomi.domain.immersion.model.LanguageTag
 import tachiyomi.domain.immersion.model.LegacyAggregateRow
 import tachiyomi.domain.immersion.model.LegacyDailyAggregate
@@ -320,7 +321,11 @@ class LegacyStatsImporter(
     ): LegacyDailyAggregate {
         val zoneId = zoneIdProvider()
         val anchor = localDate.atStartOfDay(zoneId)
-        val titleId = stableTitleId(mediaKind, descriptor.sourceKey, profileId)
+        val titleId = ImmersionTitleIdentityAdapter.legacy(
+            mediaKind = mediaKind,
+            sourceKey = descriptor.sourceKey,
+            profileId = profileId,
+        ).id
         return LegacyDailyAggregate(
             sessionId = stableSessionId(
                 "${document.kind}\u0000${document.sourceKey}\u0000$mediaKind\u0000" +
@@ -493,12 +498,6 @@ class LegacyStatsImporter(
 
     private fun legacyTitleSourceKey(mediaKind: MediaKind, legacyId: String?): String =
         "legacy:${mediaKind.name.lowercase()}:${legacyId?.takeIf(String::isNotBlank) ?: "global"}"
-
-    private fun stableTitleId(
-        mediaKind: MediaKind,
-        sourceKey: String,
-        profileId: String,
-    ) = TitleId(stableUuid("legacy-title\u0000$mediaKind\u0000$sourceKey\u0000$profileId"))
 
     private fun stableSessionId(value: String) = SessionId(stableUuid("legacy-session\u0000$value"))
 

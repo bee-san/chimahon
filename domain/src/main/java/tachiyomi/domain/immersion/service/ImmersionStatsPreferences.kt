@@ -5,7 +5,13 @@ package tachiyomi.domain.immersion.service
 import tachiyomi.core.common.preference.PreferenceStore
 import tachiyomi.core.common.preference.getEnum
 import tachiyomi.domain.immersion.model.AnalyticsBucketScale
+import tachiyomi.domain.immersion.model.AnalyticsCharacterPriorityMode
+import tachiyomi.domain.immersion.model.AnalyticsCharacterRange
 import tachiyomi.domain.immersion.model.AnalyticsSort
+import tachiyomi.domain.immersion.model.AnalyticsTitleAcquisitionBucketSize
+import tachiyomi.domain.immersion.model.AnalyticsTitleCoverageFilter
+import tachiyomi.domain.immersion.model.AnalyticsTitleSort
+import tachiyomi.domain.immersion.model.AnalyticsTitleStateFilter
 import tachiyomi.domain.immersion.model.CharacterMetric
 import tachiyomi.domain.immersion.model.NovelNetProgressPolicy
 import tachiyomi.domain.immersion.model.RawTextRetention
@@ -131,7 +137,22 @@ class ImmersionStatsPreferences(
 
     fun dashboardTitleSort() = preferenceStore.getEnum(
         DASHBOARD_TITLE_SORT,
-        AnalyticsSort.MOST_TIME,
+        AnalyticsTitleSort.MOST_TIME,
+    )
+
+    fun dashboardTitleState() = preferenceStore.getEnum(
+        DASHBOARD_TITLE_STATE,
+        AnalyticsTitleStateFilter.ALL,
+    )
+
+    fun dashboardTitleCoverage() = preferenceStore.getEnum(
+        DASHBOARD_TITLE_COVERAGE,
+        AnalyticsTitleCoverageFilter.ALL,
+    )
+
+    fun dashboardTitleAcquisitionBucketSize() = preferenceStore.getEnum(
+        DASHBOARD_TITLE_ACQUISITION_BUCKET_SIZE,
+        AnalyticsTitleAcquisitionBucketSize.TEN_THOUSAND,
     )
 
     fun dashboardVocabularySort() = preferenceStore.getEnum(
@@ -167,6 +188,34 @@ class ImmersionStatsPreferences(
         DASHBOARD_CHARACTER_SORT,
         AnalyticsSort.MOST_OCCURRENCES,
     )
+
+    fun dashboardCharacterScripts() =
+        preferenceStore.getStringSet(DASHBOARD_CHARACTER_SCRIPTS, emptySet())
+
+    fun dashboardCharacterRange() = preferenceStore.getEnum(
+        DASHBOARD_CHARACTER_RANGE,
+        AnalyticsCharacterRange.ENCOUNTERED,
+    )
+
+    fun dashboardCharacterPriorityMode() = preferenceStore.getEnum(
+        DASHBOARD_CHARACTER_PRIORITY_MODE,
+        AnalyticsCharacterPriorityMode.MIXED,
+    )
+
+    fun dashboardCharacterMaximumMissingFrequencyRank() =
+        preferenceStore.getLong(DASHBOARD_CHARACTER_MAXIMUM_MISSING_FREQUENCY_RANK, 10_000)
+
+    fun dashboardCharacterGridMode() =
+        preferenceStore.getString(DASHBOARD_CHARACTER_GRID_MODE, "FREQUENCY")
+
+    fun dashboardCharacterLayout() =
+        preferenceStore.getString(DASHBOARD_CHARACTER_LAYOUT, "GRID")
+
+    fun dashboardCharacterCoverageTargetPercent() =
+        preferenceStore.getInt(DASHBOARD_CHARACTER_COVERAGE_TARGET_PERCENT, 90)
+
+    fun dashboardAnkiWordCoverageTargetPercent() =
+        preferenceStore.getInt(DASHBOARD_ANKI_WORD_COVERAGE_TARGET_PERCENT, 90)
 
     fun dashboardSelectedTitleId() = preferenceStore.getString(DASHBOARD_SELECTED_TITLE_ID, "")
 
@@ -212,6 +261,10 @@ class ImmersionStatsPreferences(
         const val DASHBOARD_TREND_SCALE = "immersion_stats_dashboard_trend_scale"
         const val DASHBOARD_TREND_METRIC = "immersion_stats_dashboard_trend_metric"
         const val DASHBOARD_TITLE_SORT = "immersion_stats_dashboard_title_sort"
+        const val DASHBOARD_TITLE_STATE = "immersion_stats_dashboard_title_state"
+        const val DASHBOARD_TITLE_COVERAGE = "immersion_stats_dashboard_title_coverage"
+        const val DASHBOARD_TITLE_ACQUISITION_BUCKET_SIZE =
+            "immersion_stats_dashboard_title_acquisition_bucket_size"
         const val DASHBOARD_VOCABULARY_SORT = "immersion_stats_dashboard_vocabulary_sort"
         const val DASHBOARD_VOCABULARY_KNOWNNESS =
             "immersion_stats_dashboard_vocabulary_knownness"
@@ -230,6 +283,19 @@ class ImmersionStatsPreferences(
         const val DASHBOARD_VOCABULARY_EXCLUSION =
             "immersion_stats_dashboard_vocabulary_exclusion"
         const val DASHBOARD_CHARACTER_SORT = "immersion_stats_dashboard_character_sort"
+        const val DASHBOARD_CHARACTER_SCRIPTS = "immersion_stats_dashboard_character_scripts"
+        const val DASHBOARD_CHARACTER_RANGE = "immersion_stats_dashboard_character_range"
+        const val DASHBOARD_CHARACTER_PRIORITY_MODE =
+            "immersion_stats_dashboard_character_priority_mode"
+        const val DASHBOARD_CHARACTER_MAXIMUM_MISSING_FREQUENCY_RANK =
+            "immersion_stats_dashboard_character_maximum_missing_frequency_rank"
+        const val DASHBOARD_CHARACTER_GRID_MODE =
+            "immersion_stats_dashboard_character_grid_mode"
+        const val DASHBOARD_CHARACTER_LAYOUT = "immersion_stats_dashboard_character_layout"
+        const val DASHBOARD_CHARACTER_COVERAGE_TARGET_PERCENT =
+            "immersion_stats_dashboard_character_coverage_target_percent"
+        const val DASHBOARD_ANKI_WORD_COVERAGE_TARGET_PERCENT =
+            "immersion_stats_dashboard_anki_word_coverage_target_percent"
         const val DASHBOARD_SELECTED_TITLE_ID = "immersion_stats_dashboard_selected_title_id"
         const val DASHBOARD_SELECTED_WORD_ID = "immersion_stats_dashboard_selected_word_id"
         const val DASHBOARD_SELECTED_CHARACTER = "immersion_stats_dashboard_selected_character"

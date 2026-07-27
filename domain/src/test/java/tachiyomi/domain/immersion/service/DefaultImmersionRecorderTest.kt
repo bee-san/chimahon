@@ -88,6 +88,25 @@ class DefaultImmersionRecorderTest {
     }
 
     @Test
+    fun `unit completion retains its stable identity through the recorder queue`() = runTest {
+        val fixture = recorderFixture()
+        fixture.recorder.startSession(fixture.context)
+
+        fixture.recorder.record(
+            CaptureCommand.Activity(
+                eventType = EventType.UNIT_COMPLETED,
+                completionUnitId = "chapter-1",
+            ),
+        ) shouldBe RecordResult.Enqueued(1)
+        fixture.recorder.finalize(FinalizeReason.NORMAL)
+
+        fixture.repository.events
+            .filterIsInstance<SessionEvent>()
+            .single { it.type == EventType.UNIT_COMPLETED }
+            .completionUnitId shouldBe "chapter-1"
+    }
+
+    @Test
     fun `busy atomic session start retries one stable identity without partial rows`() = runTest {
         val fixture = recorderFixture()
         fixture.repository.startBusyFailuresRemaining = 2

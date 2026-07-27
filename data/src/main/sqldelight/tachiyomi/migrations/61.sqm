@@ -1,0 +1,103 @@
+-- SPDX-License-Identifier: MIT
+
+CREATE TABLE immersion_title_override(
+    title_id TEXT NOT NULL PRIMARY KEY,
+    display_title TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY(title_id) REFERENCES immersion_title(id) ON DELETE CASCADE,
+    CHECK(length(trim(display_title)) > 0)
+);
+
+CREATE TABLE immersion_title_mutation(
+    id TEXT NOT NULL PRIMARY KEY,
+    type TEXT NOT NULL,
+    source_title_id TEXT NOT NULL,
+    target_title_id TEXT,
+    display_title TEXT,
+    previous_display_title TEXT,
+    source_deleted_at_before INTEGER,
+    selection_digest TEXT NOT NULL,
+    sessions INTEGER NOT NULL,
+    source_units INTEGER NOT NULL,
+    goals INTEGER NOT NULL,
+    applied_at INTEGER NOT NULL,
+    rolled_back_at INTEGER,
+    status TEXT NOT NULL,
+    CHECK(type IN ('RENAME', 'MERGE', 'SPLIT')),
+    CHECK(status IN ('APPLIED', 'ROLLED_BACK')),
+    CHECK(sessions >= 0),
+    CHECK(source_units >= 0),
+    CHECK(goals >= 0),
+    CHECK(rolled_back_at IS NULL OR rolled_back_at >= applied_at)
+);
+
+CREATE INDEX immersion_title_mutation_title_time_index
+ON immersion_title_mutation(source_title_id, applied_at DESC, id DESC);
+
+CREATE INDEX immersion_title_mutation_target_time_index
+ON immersion_title_mutation(target_title_id, applied_at DESC, id DESC);
+
+CREATE TABLE immersion_title_alias(
+    source_title_id TEXT NOT NULL PRIMARY KEY,
+    target_title_id TEXT NOT NULL,
+    operation_id TEXT NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY(source_title_id) REFERENCES immersion_title(id) ON DELETE CASCADE,
+    FOREIGN KEY(target_title_id) REFERENCES immersion_title(id) ON DELETE CASCADE,
+    CHECK(source_title_id != target_title_id)
+);
+
+CREATE TABLE immersion_session_origin(
+    session_id TEXT NOT NULL PRIMARY KEY,
+    origin_title_id TEXT NOT NULL,
+    FOREIGN KEY(session_id) REFERENCES immersion_session(id) ON DELETE CASCADE,
+    FOREIGN KEY(origin_title_id) REFERENCES immersion_title(id) ON DELETE RESTRICT
+);
+
+CREATE INDEX immersion_session_origin_title_index
+ON immersion_session_origin(origin_title_id, session_id);
+
+INSERT INTO immersion_session_origin(session_id, origin_title_id)
+SELECT id, title_id
+FROM immersion_session;
+
+CREATE TABLE immersion_title_mutation_session(
+    operation_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    previous_title_id TEXT NOT NULL,
+    PRIMARY KEY(operation_id, session_id),
+    FOREIGN KEY(operation_id) REFERENCES immersion_title_mutation(id) ON DELETE CASCADE,
+    FOREIGN KEY(session_id) REFERENCES immersion_session(id) ON DELETE CASCADE
+);
+
+CREATE TABLE immersion_source_origin(
+    source_unit_id TEXT NOT NULL PRIMARY KEY,
+    origin_title_id TEXT NOT NULL,
+    FOREIGN KEY(source_unit_id) REFERENCES immersion_source_unit(id) ON DELETE CASCADE,
+    FOREIGN KEY(origin_title_id) REFERENCES immersion_title(id) ON DELETE RESTRICT
+);
+
+CREATE INDEX immersion_source_origin_title_index
+ON immersion_source_origin(origin_title_id, source_unit_id);
+
+INSERT INTO immersion_source_origin(source_unit_id, origin_title_id)
+SELECT id, title_id
+FROM immersion_source_unit;
+
+CREATE TABLE immersion_title_mutation_source(
+    operation_id TEXT NOT NULL,
+    source_unit_id TEXT NOT NULL,
+    previous_title_id TEXT NOT NULL,
+    PRIMARY KEY(operation_id, source_unit_id),
+    FOREIGN KEY(operation_id) REFERENCES immersion_title_mutation(id) ON DELETE CASCADE,
+    FOREIGN KEY(source_unit_id) REFERENCES immersion_source_unit(id) ON DELETE CASCADE
+);
+
+CREATE TABLE immersion_title_mutation_goal(
+    operation_id TEXT NOT NULL,
+    goal_id TEXT NOT NULL,
+    previous_title_id TEXT NOT NULL,
+    PRIMARY KEY(operation_id, goal_id),
+    FOREIGN KEY(operation_id) REFERENCES immersion_title_mutation(id) ON DELETE CASCADE,
+    FOREIGN KEY(goal_id) REFERENCES immersion_goal(id) ON DELETE CASCADE
+);

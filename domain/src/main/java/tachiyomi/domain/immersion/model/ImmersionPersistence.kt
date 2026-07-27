@@ -15,12 +15,20 @@ data class ImmersionTitle(
     val libraryId: Long? = null,
     val trackerId: String? = null,
     val mediaId: String? = null,
+    val status: String? = null,
+    val totalUnits: Long? = null,
+    val totalCharacterEstimate: Long? = null,
     val createdAtEpochMillis: Long,
     val updatedAtEpochMillis: Long,
 ) {
     init {
         require(sourceKey.isNotBlank()) { "Source key cannot be blank" }
         require(displayTitle.isNotBlank()) { "Display title cannot be blank" }
+        require(status == null || status.isNotBlank()) { "Status cannot be blank" }
+        require(totalUnits == null || totalUnits >= 0) { "Total units cannot be negative" }
+        require(totalCharacterEstimate == null || totalCharacterEstimate >= 0) {
+            "Total character estimate cannot be negative"
+        }
         require(createdAtEpochMillis >= 0) { "Creation timestamp cannot be negative" }
         require(updatedAtEpochMillis >= createdAtEpochMillis) {
             "Update timestamp cannot precede creation"
@@ -132,6 +140,7 @@ data class SessionEvent(
     override val type: EventType,
     override val activeDuration: MillisecondDuration = MillisecondDuration(0),
     val netCharacters: NetCharacterProgress = NetCharacterProgress.ZERO,
+    val completionUnitId: String? = null,
 ) : RecordedImmersionEvent {
     init {
         require(sequence > 0) { "Event sequence must be positive" }
@@ -142,6 +151,12 @@ data class SessionEvent(
         require(type != EventType.EXPOSURE) { "Exposure events must include a source unit" }
         require(type == EventType.PROGRESS || netCharacters == NetCharacterProgress.ZERO) {
             "Only progress events can include a net-character delta"
+        }
+        require(type == EventType.UNIT_COMPLETED || completionUnitId == null) {
+            "Only unit-completion events can include a completion unit identity"
+        }
+        require(type != EventType.UNIT_COMPLETED || !completionUnitId.isNullOrBlank()) {
+            "Unit-completion events require a stable unit identity"
         }
         activeDuration.requireSupportedRecordedEventDuration()
     }

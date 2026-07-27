@@ -27,16 +27,20 @@ import androidx.compose.ui.unit.dp
 import cafe.adriel.voyager.core.model.rememberScreenModel
 import cafe.adriel.voyager.navigator.LocalNavigator
 import cafe.adriel.voyager.navigator.currentOrThrow
+import com.canopus.chimareader.ui.reader.NovelReaderActivity
 import eu.kanade.presentation.components.AppBar
 import eu.kanade.presentation.components.AppBarActions
 import eu.kanade.presentation.more.stats.StatsScreenContent
 import eu.kanade.presentation.more.stats.StatsScreenState
 import eu.kanade.presentation.util.Screen
+import eu.kanade.tachiyomi.ui.entries.anime.AnimeScreen
+import eu.kanade.tachiyomi.ui.manga.MangaScreen
 import eu.kanade.tachiyomi.util.storage.getUriCompat
 import eu.kanade.tachiyomi.util.system.toShareIntent
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import mihon.feature.stats.anki.AnkiInventorySyncJob
 import mihon.feature.stats.retention.ImmersionRetentionJob
 import tachiyomi.domain.immersion.model.RawTextRetention
 import tachiyomi.domain.immersion.model.TitleId
@@ -172,6 +176,7 @@ class StatsScreen(
                 onTrendMetricSelect = screenModel::selectTrendMetric,
                 onTitleTrendSelectionSelect = screenModel::selectTitleTrendSelection,
                 onTitleSortSelect = screenModel::selectTitleSort,
+                onTitleFilterChange = screenModel::updateTitleFilter,
                 onVocabularySortSelect = screenModel::selectVocabularySort,
                 onVocabularyFilterChange = screenModel::updateVocabularyFilter,
                 onVocabularyWordSelectionChange = screenModel::setVocabularyWordSelected,
@@ -179,16 +184,71 @@ class StatsScreen(
                 onVocabularyExclusionChange = screenModel::setSelectedVocabularyWordsExcluded,
                 onVocabularyExport = screenModel::exportVocabulary,
                 onCharacterSortSelect = screenModel::selectCharacterSort,
+                onCharacterFilterChange = screenModel::updateCharacterFilter,
+                onCharacterGridModeSelect = screenModel::selectCharacterGridMode,
+                onCharacterLayoutSelect = screenModel::selectCharacterLayout,
+                onCharacterCoverageTargetChange =
+                screenModel::setCharacterCoverageTargetPercent,
+                onCharacterSelectionChange = screenModel::setCharacterSelected,
+                onCharacterSelectionClear = screenModel::clearCharacterSelection,
+                onCharacterExport = screenModel::exportSelectedCharacters,
                 onTitleSearch = screenModel::searchTitles,
                 onVocabularySearch = screenModel::searchVocabulary,
                 onCharacterSearch = screenModel::searchCharacters,
                 onSourceSearch = screenModel::searchSources,
                 onTitleSelect = screenModel::selectTitle,
+                onTitleOpen = { title ->
+                    val metadata = success.titleMetadata[title.titleId]
+                    if (metadata?.linkState == StatsTitleLinkState.AVAILABLE) {
+                        when (title.mediaKind) {
+                            tachiyomi.domain.immersion.model.MediaKind.MANGA -> {
+                                (title.libraryId ?: title.mediaId?.toLongOrNull())
+                                    ?.let { navigator.push(MangaScreen(it)) }
+                            }
+                            tachiyomi.domain.immersion.model.MediaKind.NOVEL -> {
+                                metadata.navigationPath
+                                    ?.let(::File)
+                                    ?.takeIf(File::isDirectory)
+                                    ?.let { NovelReaderActivity.launch(context, it) }
+                            }
+                            tachiyomi.domain.immersion.model.MediaKind.VIDEO -> {
+                                (title.libraryId ?: title.mediaId?.toLongOrNull())
+                                    ?.let { navigator.push(AnimeScreen(it)) }
+                            }
+                        }
+                    }
+                },
+                onTitleManage = { title ->
+                    navigator.push(StatsTitleMaintenanceScreen(title.titleId.value))
+                },
+                onTitleUnlink = screenModel::unlinkSelectedTitle,
+                onTitleDeleteStats = { title ->
+                    navigator.push(
+                        StatsMaintenanceScreen(
+                            initialTitleId = title.titleId.value,
+                            initialAction = StatsMaintenanceInitialAction.DELETE_STATS,
+                        ),
+                    )
+                },
+                onTitleDeleteRawText = { title ->
+                    navigator.push(
+                        StatsMaintenanceScreen(
+                            initialTitleId = title.titleId.value,
+                            initialAction = StatsMaintenanceInitialAction.DELETE_RAW_TEXT,
+                        ),
+                    )
+                },
                 onTitleCaptureExclusionChange = screenModel::setSelectedTitleCaptureExcluded,
+                onTitleAcquisitionBucketSizeSelect =
+                screenModel::selectTitleAcquisitionBucketSize,
                 onWordSelect = screenModel::selectWord,
                 onCharacterSelect = screenModel::selectCharacter,
                 onSessionSelect = screenModel::selectSession,
                 onSessionDelete = screenModel::deleteSession,
+                onLoadMoreTitles = screenModel::loadMoreTitles,
+                onLoadMoreTitleSessions = screenModel::loadMoreTitleSessions,
+                onLoadMoreTitleCompletedUnits = screenModel::loadMoreTitleCompletedUnits,
+                onLoadMoreTitleSources = screenModel::loadMoreTitleSources,
                 onLoadMoreVocabulary = screenModel::loadMoreVocabulary,
                 onLoadMoreWordOccurrences = screenModel::loadMoreWordOccurrences,
                 onLoadMoreCharacters = screenModel::loadMoreCharacters,
@@ -199,6 +259,12 @@ class StatsScreen(
                 onSaveGoal = screenModel::saveGoal,
                 onArchiveGoal = screenModel::archiveGoal,
                 onCheckInGoal = screenModel::checkInGoal,
+                onAnkiRefresh = { AnkiInventorySyncJob.refreshNow(context) },
+                onAnkiWordCoverageTargetChange =
+                screenModel::setAnkiWordCoverageTargetPercent,
+                onOpenMissingAnkiWords = screenModel::openMissingAnkiWordsWorkbench,
+                onOpenMissingAnkiCharacters =
+                screenModel::openMissingAnkiCharactersWorkbench,
             )
         }
         if (showRawTextDisclosure) {
