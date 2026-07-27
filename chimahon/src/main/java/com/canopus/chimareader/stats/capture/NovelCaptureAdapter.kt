@@ -23,6 +23,7 @@ import tachiyomi.domain.immersion.model.EventType
 import tachiyomi.domain.immersion.model.ImmersionSession
 import tachiyomi.domain.immersion.model.ImmersionSourceUnit
 import tachiyomi.domain.immersion.model.ImmersionTitle
+import tachiyomi.domain.immersion.model.ImmersionTitleIdentityAdapter
 import tachiyomi.domain.immersion.model.LanguageTag
 import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.NetCharacterProgress
@@ -260,10 +261,16 @@ data class NovelCaptureBook(
     val profileId: String,
     val languageTag: LanguageTag?,
     val createdAtEpochMillis: Long,
+    val totalUnits: Long? = null,
+    val totalCharacterEstimate: Long? = null,
 ) {
     init {
         require(documentId.isNotBlank()) { "Novel document identity cannot be blank" }
         require(displayTitle.isNotBlank()) { "Novel title cannot be blank" }
+        require(totalUnits == null || totalUnits >= 0) { "Novel total units cannot be negative" }
+        require(totalCharacterEstimate == null || totalCharacterEstimate >= 0) {
+            "Novel total character estimate cannot be negative"
+        }
         require(createdAtEpochMillis >= 0) { "Novel creation time cannot be negative" }
     }
 
@@ -288,6 +295,13 @@ data class NovelCaptureBook(
                 languageTag = metadata?.lang?.let { value ->
                     runCatching { LanguageTag.from(value) }.getOrNull()
                 },
+                totalUnits = metadata?.chapterStarts
+                    ?.takeIf { it.size >= 2 }
+                    ?.let { (it.size - 1).toLong() },
+                totalCharacterEstimate = metadata?.chapterStarts
+                    ?.lastOrNull()
+                    ?.takeIf { it > 0 }
+                    ?.toLong(),
                 createdAtEpochMillis = metadata?.dateAdded?.coerceAtLeast(0) ?: 0,
             )
         }
@@ -473,16 +487,22 @@ class NovelCaptureAdapter(
     diagnostics: ImmersionStatsDiagnosticsStore? = null,
 ) {
     private val documentId = book.documentId
-    private val sourceKey = "$SOURCE_KEY_PREFIX:$documentId"
-    private val titleId = TitleId(stableUuid(TITLE_NAMESPACE, "$sourceKey|${book.profileId}"))
+    private val titleIdentity = ImmersionTitleIdentityAdapter.novel(
+        documentId = documentId,
+        profileId = book.profileId,
+    )
+    private val sourceKey = titleIdentity.sourceKey
+    private val titleId = titleIdentity.id
     private val title = ImmersionTitle(
         id = titleId,
-        mediaKind = MediaKind.NOVEL,
+        mediaKind = titleIdentity.mediaKind,
         sourceKey = sourceKey,
-        profileId = book.profileId,
+        profileId = titleIdentity.profileId,
         languageTag = book.languageTag,
         displayTitle = book.displayTitle,
-        mediaId = book.documentId,
+        mediaId = titleIdentity.mediaId,
+        totalUnits = book.totalUnits,
+        totalCharacterEstimate = book.totalCharacterEstimate,
         createdAtEpochMillis = book.createdAtEpochMillis,
         updatedAtEpochMillis = maxOf(book.createdAtEpochMillis, clock()),
     )
@@ -512,7 +532,11 @@ class NovelCaptureAdapter(
                         is AdapterCommand.ChapterChanged -> handleChapterChanged(state, command)
                         is AdapterCommand.ChapterCompleted -> {
                             if (state.completedSections.add(state.sectionId)) {
-                                recordActivity(state, EventType.UNIT_COMPLETED)
+                                recordActivity(
+                                    state = state,
+                                    eventType = EventType.UNIT_COMPLETED,
+                                    completionUnitId = state.sectionId,
+                                )
                             }
                         }
                         AdapterCommand.TitleCompleted -> {
@@ -783,9 +807,10 @@ class NovelCaptureAdapter(
     private fun recordActivity(
         state: AdapterState,
         eventType: EventType,
+        completionUnitId: String? = null,
     ) {
         val handle = state.handle ?: return
-        recorder.record(handle, CaptureCommand.Activity(eventType))
+        recorder.record(handle, CaptureCommand.Activity(eventType, completionUnitId))
     }
 
     private suspend fun handleBlocked(
@@ -1009,10 +1034,8 @@ class NovelCaptureAdapter(
     }
 
     private companion object {
-        const val SOURCE_KEY_PREFIX = "novel"
         const val PARSER_REVISION = 1
         const val EXPOSURE_POLICY = "novel-viewport-area-50-fixed-64-v1"
-        const val TITLE_NAMESPACE = "immersion-title-novel"
         const val SOURCE_NAMESPACE = "immersion-source-novel"
     }
 }

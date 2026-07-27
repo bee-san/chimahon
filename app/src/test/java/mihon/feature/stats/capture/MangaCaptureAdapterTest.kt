@@ -584,8 +584,10 @@ class MangaCaptureAdapterTest {
         adapter.finalize(legacy()).await()
 
         adapter.queueDiagnostics.value.workerFailures shouldBe 1
-        recorder.commands.filterIsInstance<CaptureCommand.Activity>()
-            .map(CaptureCommand.Activity::eventType) shouldBe listOf(EventType.UNIT_COMPLETED)
+        recorder.commands.filterIsInstance<CaptureCommand.Activity>().single().let {
+            it.eventType shouldBe EventType.UNIT_COMPLETED
+            it.completionUnitId shouldBe "2"
+        }
     }
 
     @Test

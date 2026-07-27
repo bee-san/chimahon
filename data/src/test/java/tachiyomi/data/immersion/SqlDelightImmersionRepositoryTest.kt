@@ -33,8 +33,12 @@ import tachiyomi.data.MemoColumnAdapter
 import tachiyomi.data.Reading_sessions
 import tachiyomi.data.StringListColumnAdapter
 import tachiyomi.domain.immersion.model.AnalyticsBucketInventory
+import tachiyomi.domain.immersion.model.AnalyticsCharacterFilter
+import tachiyomi.domain.immersion.model.AnalyticsCharacterRange
+import tachiyomi.domain.immersion.model.AnalyticsCharacterScript
 import tachiyomi.domain.immersion.model.AnalyticsInventoryMetrics
 import tachiyomi.domain.immersion.model.AnalyticsSort
+import tachiyomi.domain.immersion.model.AnalyticsTitleAcquisitionBucketSize
 import tachiyomi.domain.immersion.model.AnalyticsTitleSeriesSelection
 import tachiyomi.domain.immersion.model.AnkiInventoryFailure
 import tachiyomi.domain.immersion.model.AnkiMatchConfidence
@@ -66,6 +70,8 @@ import tachiyomi.domain.immersion.model.ImmersionSessionStart
 import tachiyomi.domain.immersion.model.ImmersionSourceUnit
 import tachiyomi.domain.immersion.model.ImmersionStatsDeletionScope
 import tachiyomi.domain.immersion.model.ImmersionTitle
+import tachiyomi.domain.immersion.model.ImmersionTitleMutationBlocker
+import tachiyomi.domain.immersion.model.ImmersionTitleMutationRequest
 import tachiyomi.domain.immersion.model.IndexTerminalReason
 import tachiyomi.domain.immersion.model.IndexedCharacter
 import tachiyomi.domain.immersion.model.IndexedWord
@@ -144,8 +150,15 @@ class SqlDelightImmersionRepositoryTest {
     fun `fresh schema contains every immersion foundation table and metadata row`() {
         val expectedTables = setOf(
             "immersion_title",
+            "immersion_title_override",
+            "immersion_title_mutation",
+            "immersion_title_alias",
             "immersion_session",
+            "immersion_session_origin",
+            "immersion_title_mutation_session",
             "immersion_source_unit",
+            "immersion_source_origin",
+            "immersion_title_mutation_source",
             "immersion_source_fts",
             "immersion_event",
             "immersion_source_exposure",
@@ -163,6 +176,7 @@ class SqlDelightImmersionRepositoryTest {
             "immersion_lifetime_rollup",
             "immersion_applied_event",
             "immersion_goal",
+            "immersion_title_mutation_goal",
             "immersion_goal_check_in",
             "immersion_goal_achievement",
             "immersion_import_ledger",
@@ -314,6 +328,89 @@ class SqlDelightImmersionRepositoryTest {
                 "SELECT rollup_version FROM immersion_rollup_state WHERE scope_key = 'global'",
             ) shouldBe 2
             queryLong(migrationDriver, "SELECT count(*) FROM immersion_hourly_rollup") shouldBe 0
+        } finally {
+            migrationDriver.close()
+        }
+    }
+
+    @Test
+    fun `migration 61 adds reversible title maintenance and backfills origins`() {
+        val migrationDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        try {
+            Database.Schema.migrate(
+                driver = migrationDriver,
+                oldVersion = 47,
+                newVersion = 60,
+            ).value
+            migrationDriver.execute(
+                null,
+                """
+                INSERT INTO immersion_title(
+                    id,
+                    media_kind,
+                    source_key,
+                    display_title,
+                    created_at,
+                    updated_at
+                )
+                VALUES ('title', 'NOVEL', 'novel:title', 'Title', 1, 1)
+                """.trimIndent(),
+                0,
+            ).value
+            migrationDriver.execute(
+                null,
+                """
+                INSERT INTO immersion_session(
+                    id,
+                    device_id,
+                    title_id,
+                    media_kind,
+                    started_at,
+                    start_zone_id,
+                    start_offset_seconds,
+                    status,
+                    capture_version,
+                    schema_version
+                )
+                VALUES ('session', 'device', 'title', 'NOVEL', 1, 'UTC', 0, 'COMPLETED', 1, 1)
+                """.trimIndent(),
+                0,
+            ).value
+            migrationDriver.execute(
+                null,
+                """
+                INSERT INTO immersion_source_unit(
+                    id,
+                    title_id,
+                    source_kind,
+                    canonical_locator,
+                    normalized_text_hash,
+                    first_exposed_at,
+                    last_exposed_at
+                )
+                VALUES ('source', 'title', 'NOVEL_RANGE', 'section:1', 'sha256:1', 1, 1)
+                """.trimIndent(),
+                0,
+            ).value
+
+            Database.Schema.migrate(
+                driver = migrationDriver,
+                oldVersion = 60,
+                newVersion = Database.Schema.version,
+            ).value
+
+            queryStrings(
+                migrationDriver,
+                "SELECT origin_title_id FROM immersion_session_origin WHERE session_id = 'session'",
+            ) shouldContainExactly listOf("title")
+            queryStrings(
+                migrationDriver,
+                "SELECT origin_title_id FROM immersion_source_origin WHERE source_unit_id = 'source'",
+            ) shouldContainExactly listOf("title")
+            queryLong(
+                migrationDriver,
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'immersion_title_mutation'",
+            ) shouldBe 1
         } finally {
             migrationDriver.close()
         }
@@ -643,6 +740,505 @@ class SqlDelightImmersionRepositoryTest {
     @Test
     fun `session counter repair ignores unknown sessions`() = runTest {
         repository.repairSessionCounters(sessionId(404), 2_000) shouldBe false
+    }
+
+    @Test
+    fun `title metadata persists known status and trustworthy length fields`() = runTest {
+        val enriched = title().copy(
+            status = "IN_PROGRESS",
+            totalUnits = 12,
+            totalCharacterEstimate = 240_000,
+            updatedAtEpochMillis = 2_000,
+        )
+
+        repository.upsertTitle(enriched) shouldBe PersistenceResult.Applied
+        repository.titleMetadata(setOf(TITLE_ID)).single().let { metadata ->
+            metadata.status shouldBe "IN_PROGRESS"
+            metadata.totalUnits shouldBe 12
+            metadata.totalCharacterEstimate shouldBe 240_000
+            metadata.completed shouldBe false
+        }
+        repository.upsertTitle(enriched) shouldBe PersistenceResult.AlreadyApplied
+    }
+
+    @Test
+    fun `title completion event overrides unknown persisted status`() = runTest {
+        prepareSession()
+        repository.appendEventBatch(
+            listOf(
+                SessionEvent(
+                    id = eventId(88),
+                    sessionId = SESSION_ID,
+                    sequence = 1,
+                    occurredAtEpochMillis = 2_000,
+                    timezoneOffsetSeconds = 0,
+                    type = EventType.TITLE_COMPLETED,
+                ),
+            ),
+        ) shouldContainExactly listOf(PersistenceResult.Applied)
+
+        repository.titleMetadata(setOf(TITLE_ID)).single().completed shouldBe true
+    }
+
+    @Test
+    fun `title unit progress deduplicates stable identities and exposes legacy gaps`() = runTest {
+        prepareSession()
+        repository.appendEventBatch(
+            listOf(
+                SessionEvent(
+                    id = eventId(89),
+                    sessionId = SESSION_ID,
+                    sequence = 1,
+                    occurredAtEpochMillis = 2_000,
+                    timezoneOffsetSeconds = 0,
+                    type = EventType.UNIT_COMPLETED,
+                    completionUnitId = "chapter-1",
+                ),
+                SessionEvent(
+                    id = eventId(90),
+                    sessionId = SESSION_ID,
+                    sequence = 2,
+                    occurredAtEpochMillis = 3_000,
+                    timezoneOffsetSeconds = 0,
+                    type = EventType.UNIT_COMPLETED,
+                    completionUnitId = "chapter-1",
+                ),
+                SessionEvent(
+                    id = eventId(91),
+                    sessionId = SESSION_ID,
+                    sequence = 3,
+                    occurredAtEpochMillis = 4_000,
+                    timezoneOffsetSeconds = 0,
+                    type = EventType.UNIT_COMPLETED,
+                    completionUnitId = "chapter-2",
+                ),
+            ),
+        ) shouldContainExactly List(3) { PersistenceResult.Applied }
+
+        repository.titleUnitProgress(StatsFilter()).getValue(TITLE_ID).let { progress ->
+            progress.identityAvailable shouldBe true
+            progress.hasTrustworthyIdentity shouldBe true
+            progress.completedUnits shouldBe 2
+            progress.identifiedCompletionEvents shouldBe 3
+            progress.unidentifiedCompletionEvents shouldBe 0
+            progress.firstCompletionsByDay.single().completedUnits shouldBe 2
+        }
+        repository.titleCompletedUnits(
+            filter = StatsFilter(titleIds = setOf(TITLE_ID)),
+            offset = 0,
+            limit = 10,
+        ).let { page ->
+            page.nextOffset shouldBe null
+            page.items.map { it.completionUnitId } shouldBe listOf("chapter-2", "chapter-1")
+            page.items.last().completionEventCount shouldBe 2
+            page.items.last().firstCompletedAtEpochMillis shouldBe 2_000
+            page.items.last().lastCompletedAtEpochMillis shouldBe 3_000
+        }
+
+        driver.execute(
+            null,
+            """
+            INSERT INTO immersion_event(
+                id,
+                session_id,
+                sequence,
+                occurred_at,
+                timezone_offset_seconds,
+                type,
+                payload_hash,
+                local_date
+            )
+            VALUES (
+                '00000000-0000-0000-0000-000000000092',
+                '${SESSION_ID.value}',
+                4,
+                5000,
+                0,
+                'UNIT_COMPLETED',
+                'legacy-without-unit-identity',
+                0
+            )
+            """.trimIndent(),
+            0,
+        ).value
+
+        repository.titleUnitProgress(StatsFilter()).getValue(TITLE_ID).let { progress ->
+            progress.completedUnits shouldBe 2
+            progress.unidentifiedCompletionEvents shouldBe 1
+            progress.hasTrustworthyIdentity shouldBe false
+        }
+    }
+
+    @Test
+    fun `title word acquisition and source lines use cumulative character buckets and stable paging`() = runTest {
+        recordScopedAnkiExposure(
+            number = 501,
+            titleId = TITLE_ID,
+            mediaKind = MediaKind.NOVEL,
+            profileId = "default",
+            languageTag = LanguageTag("ja"),
+            occurredAtEpochMillis = 1_000,
+            normalizedWord = "猫",
+            normalizedReading = "ねこ",
+            character = '猫',
+        )
+        recordScopedAnkiExposure(
+            number = 502,
+            titleId = TITLE_ID,
+            mediaKind = MediaKind.NOVEL,
+            profileId = "default",
+            languageTag = LanguageTag("ja"),
+            occurredAtEpochMillis = 2_000,
+            normalizedWord = "犬",
+            normalizedReading = "いぬ",
+            character = '犬',
+        )
+        driver.execute(
+            null,
+            """
+            UPDATE immersion_event
+            SET gross_character_delta = CASE id
+                WHEN '${eventId(501).value}' THEN 9999
+                WHEN '${eventId(502).value}' THEN 2
+            END
+            WHERE id IN ('${eventId(501).value}', '${eventId(502).value}')
+            """.trimIndent(),
+            0,
+        ).value
+
+        repository.titleWordAcquisition(
+            filter = StatsFilter(titleIds = setOf(TITLE_ID)),
+            bucketSize = AnalyticsTitleAcquisitionBucketSize.TEN_THOUSAND,
+        ).getValue(TITLE_ID).let { acquisition ->
+            acquisition.totalGrossCharacters shouldBe 10_001
+            acquisition.buckets.map { it.startCharacter } shouldBe listOf(0, 10_000)
+            acquisition.buckets.map { it.endCharacterInclusive } shouldBe listOf(9_999, 10_000)
+            acquisition.buckets.map { it.newWords } shouldBe listOf(1, 1)
+            acquisition.buckets.map { it.cumulativeNewWords } shouldBe listOf(1, 2)
+        }
+
+        val first = repository.sourceOccurrences(
+            filter = StatsFilter(titleIds = setOf(TITLE_ID)),
+            offset = 0,
+            limit = 1,
+        )
+        val second = repository.sourceOccurrences(
+            filter = StatsFilter(titleIds = setOf(TITLE_ID)),
+            offset = checkNotNull(first.nextOffset),
+            limit = 1,
+        )
+
+        first.items.single().excerpt shouldBe "犬"
+        second.items.single().excerpt shouldBe "猫"
+        second.nextOffset shouldBe null
+    }
+
+    @Test
+    fun `title net progress is all time and honors replay and legacy filters`() = runTest {
+        driver.execute(
+            null,
+            """
+            INSERT INTO immersion_lifetime_rollup(
+                scope_key,
+                language_tag,
+                media_kind,
+                title_id,
+                net_characters,
+                provenance_state,
+                replay_state,
+                rollup_version,
+                updated_at
+            )
+            VALUES
+                ('primary', 'ja', 'NOVEL', '${TITLE_ID.value}', 120, 'AVAILABLE', 'PRIMARY', 1, 1000),
+                ('replay', 'ja', 'NOVEL', '${TITLE_ID.value}', 30, 'AVAILABLE', 'REPLAY', 1, 1000),
+                ('legacy', 'ja', 'NOVEL', '${TITLE_ID.value}', 50, 'LEGACY_AGGREGATE', 'PRIMARY', 1, 1000)
+            """.trimIndent(),
+            0,
+        ).value
+        val dateRange = LocalDateRange(ImmersionLocalDate(20_000), ImmersionLocalDate(20_010))
+
+        repository.titleNetProgress(
+            StatsFilter(
+                dateRange = dateRange,
+                mediaKinds = setOf(MediaKind.NOVEL),
+                languageTags = setOf(LanguageTag("ja")),
+                includeRereadsAndReplays = false,
+                includeLegacyAggregates = false,
+            ),
+        )[TITLE_ID] shouldBe NetCharacterProgress(120)
+        repository.titleNetProgress(
+            StatsFilter(dateRange = dateRange),
+        )[TITLE_ID] shouldBe NetCharacterProgress(200)
+    }
+
+    @Test
+    fun `title unlink retains stats identity and a later capture can relink it`() = runTest {
+        val linked = title().copy(
+            libraryId = 42,
+            trackerId = "tracker:42",
+            mediaId = "media:42",
+            updatedAtEpochMillis = 2_000,
+        )
+        repository.upsertTitle(linked) shouldBe PersistenceResult.Applied
+
+        repository.unlinkTitle(TITLE_ID, 3_000) shouldBe true
+        repository.titleMetadata(setOf(TITLE_ID)).single().let { metadata ->
+            metadata.titleId shouldBe TITLE_ID
+            metadata.libraryId shouldBe null
+            metadata.trackerId shouldBe null
+            metadata.mediaId shouldBe null
+            metadata.deletedAtEpochMillis shouldBe 3_000
+        }
+
+        repository.upsertTitle(linked.copy(updatedAtEpochMillis = 4_000)) shouldBe
+            PersistenceResult.Applied
+        repository.titleMetadata(setOf(TITLE_ID)).single().let { metadata ->
+            metadata.libraryId shouldBe 42
+            metadata.trackerId shouldBe "tracker:42"
+            metadata.mediaId shouldBe "media:42"
+            metadata.deletedAtEpochMillis shouldBe null
+        }
+        repository.unlinkTitle(TitleId("00000000-0000-0000-0000-000000000999"), 5_000) shouldBe
+            false
+    }
+
+    @Test
+    fun `title rename survives capture metadata refresh and rolls back exactly`() = runTest {
+        prepareSession()
+        val request = ImmersionTitleMutationRequest.Rename(
+            sourceTitleId = TITLE_ID,
+            displayTitle = "User title",
+        )
+        val preview = repository.previewTitleMutation(request)
+
+        preview.canApply shouldBe true
+        preview.sessions shouldBe 1
+        val operation = repository.applyTitleMutation(preview, 2_000)
+        repository.titleMetadata(setOf(TITLE_ID)).single().displayTitle shouldBe "User title"
+
+        repository.upsertTitle(
+            title().copy(
+                displayTitle = "Refreshed local title",
+                updatedAtEpochMillis = 3_000,
+            ),
+        ) shouldBe PersistenceResult.Applied
+        repository.titleMetadata(setOf(TITLE_ID)).single().displayTitle shouldBe "User title"
+
+        repository.rollbackTitleMutation(operation.id, 4_000).rolledBackAtEpochMillis shouldBe 4_000
+        repository.titleMetadata(setOf(TITLE_ID)).single().displayTitle shouldBe
+            "Refreshed local title"
+    }
+
+    @Test
+    fun `title merge routes later capture to target and rollback restores every origin`() = runTest {
+        val targetTitleId = TitleId("00000000-0000-0000-0000-000000000002")
+        val target = title().copy(
+            id = targetTitleId,
+            sourceKey = "novel:target",
+            displayTitle = "Target",
+        )
+        prepareSession()
+        repository.appendExposure(exposure(sequence = 1, eventNumber = 701)) shouldBe
+            PersistenceResult.Applied
+        repository.finalizeSession(
+            sessionId = SESSION_ID,
+            status = SessionStatus.COMPLETED,
+            endedAtEpochMillis = 3_000,
+            elapsedDuration = MillisecondDuration(2_000),
+        ) shouldBe PersistenceResult.Applied
+        repository.upsertTitle(target) shouldBe PersistenceResult.Applied
+
+        val preview = repository.previewTitleMutation(
+            ImmersionTitleMutationRequest.Merge(TITLE_ID, targetTitleId),
+        )
+        preview.canApply shouldBe true
+        preview.sessions shouldBe 1
+        preview.sourceUnits shouldBe 1
+        val operation = repository.applyTitleMutation(preview, 4_000)
+        queryStrings("SELECT title_id FROM immersion_session WHERE id = '${SESSION_ID.value}'")
+            .single() shouldBe targetTitleId.value
+        queryStrings("SELECT title_id FROM immersion_source_unit WHERE id = '${SOURCE_ID.value}'")
+            .single() shouldBe targetTitleId.value
+
+        val futureSessionId = sessionId(702)
+        repository.startSession(
+            title = title().copy(updatedAtEpochMillis = 5_000),
+            session = sessionStart(
+                id = futureSessionId,
+                startedAt = 5_000,
+            ),
+            event = SessionEvent(
+                id = eventId(702),
+                sessionId = futureSessionId,
+                sequence = 1,
+                occurredAtEpochMillis = 5_000,
+                timezoneOffsetSeconds = 0,
+                type = EventType.SESSION_STARTED,
+            ),
+        ) shouldBe PersistenceResult.Applied
+        val futureSourceId = SourceUnitId("00000000-0000-0000-0000-000000000702")
+        repository.appendExposure(
+            exposure(sequence = 2, eventNumber = 703).copy(
+                sessionId = futureSessionId,
+                occurredAtEpochMillis = 5_100,
+                source = source(5_100).copy(
+                    id = futureSourceId,
+                    canonicalLocator = "novel:test:chapter-2:0-100",
+                    normalizedTextHash = "sha256:future",
+                    firstExposedAtEpochMillis = 5_100,
+                ),
+            ),
+        ) shouldBe PersistenceResult.Applied
+        repository.finalizeSession(
+            sessionId = futureSessionId,
+            status = SessionStatus.COMPLETED,
+            endedAtEpochMillis = 6_000,
+            elapsedDuration = MillisecondDuration(1_000),
+        ) shouldBe PersistenceResult.Applied
+        queryStrings("SELECT title_id FROM immersion_session WHERE id = '${futureSessionId.value}'")
+            .single() shouldBe targetTitleId.value
+        queryStrings("SELECT title_id FROM immersion_source_unit WHERE id = '${futureSourceId.value}'")
+            .single() shouldBe targetTitleId.value
+
+        repository.rollbackTitleMutation(operation.id, 7_000)
+        queryStrings(
+            "SELECT title_id FROM immersion_session ORDER BY id",
+        ) shouldContainExactly listOf(TITLE_ID.value, TITLE_ID.value)
+        queryStrings(
+            "SELECT title_id FROM immersion_source_unit ORDER BY id",
+        ) shouldContainExactly listOf(TITLE_ID.value, TITLE_ID.value)
+        queryLong(
+            "SELECT count(*) FROM immersion_title_alias WHERE source_title_id = '${TITLE_ID.value}'",
+        ) shouldBe 0
+    }
+
+    @Test
+    fun `title merge preview rejects duplicate source provenance identity`() = runTest {
+        val targetTitleId = TitleId("00000000-0000-0000-0000-000000000002")
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        repository.upsertTitle(
+            title().copy(
+                id = targetTitleId,
+                sourceKey = "novel:target",
+                displayTitle = "Target",
+            ),
+        ) shouldBe PersistenceResult.Applied
+        repository.upsertSourceUnit(source(1_000)) shouldBe PersistenceResult.Applied
+        repository.upsertSourceUnit(
+            source(1_000).copy(
+                id = SourceUnitId("00000000-0000-0000-0000-000000000102"),
+                titleId = targetTitleId,
+            ),
+        ) shouldBe PersistenceResult.Applied
+
+        val preview = repository.previewTitleMutation(
+            ImmersionTitleMutationRequest.Merge(TITLE_ID, targetTitleId),
+        )
+
+        preview.canApply shouldBe false
+        preview.conflictingSourceUnits shouldBe 1
+        preview.blockers shouldBe setOf(ImmersionTitleMutationBlocker.SOURCE_IDENTITY_CONFLICT)
+    }
+
+    @Test
+    fun `title split moves a bounded history selection and rolls back`() = runTest {
+        val day = 86_400_000L
+        val firstSessionId = sessionId(710)
+        val secondSessionId = sessionId(711)
+        val firstSourceId = SourceUnitId("00000000-0000-0000-0000-000000000710")
+        val secondSourceId = SourceUnitId("00000000-0000-0000-0000-000000000711")
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        listOf(
+            Triple(firstSessionId, firstSourceId, day + 1_000),
+            Triple(secondSessionId, secondSourceId, 2 * day + 1_000),
+        ).forEachIndexed { index, (sessionId, sourceId, startedAt) ->
+            repository.createSession(sessionStart(sessionId, startedAt)) shouldBe
+                PersistenceResult.Applied
+            repository.appendExposure(
+                exposure(sequence = 1, eventNumber = 710 + index).copy(
+                    sessionId = sessionId,
+                    occurredAtEpochMillis = startedAt + 100,
+                    source = source(startedAt + 100).copy(
+                        id = sourceId,
+                        canonicalLocator = "split:$index",
+                        normalizedTextHash = "sha256:split:$index",
+                        firstExposedAtEpochMillis = startedAt + 100,
+                    ),
+                ),
+            ) shouldBe PersistenceResult.Applied
+            repository.finalizeSession(
+                sessionId = sessionId,
+                status = SessionStatus.COMPLETED,
+                endedAtEpochMillis = startedAt + 1_000,
+                elapsedDuration = MillisecondDuration(1_000),
+            ) shouldBe PersistenceResult.Applied
+        }
+        val targetTitleId = TitleId("00000000-0000-0000-0000-000000000712")
+        val request = ImmersionTitleMutationRequest.Split(
+            sourceTitleId = TITLE_ID,
+            targetTitleId = targetTitleId,
+            displayTitle = "First part",
+            dateRange = LocalDateRange(ImmersionLocalDate(1), ImmersionLocalDate(1)),
+        )
+
+        val preview = repository.previewTitleMutation(request)
+        preview.canApply shouldBe true
+        preview.sessions shouldBe 1
+        preview.sourceUnits shouldBe 1
+        val operation = repository.applyTitleMutation(preview, 3 * day)
+        queryStrings("SELECT title_id FROM immersion_session WHERE id = '${firstSessionId.value}'")
+            .single() shouldBe targetTitleId.value
+        queryStrings("SELECT title_id FROM immersion_session WHERE id = '${secondSessionId.value}'")
+            .single() shouldBe TITLE_ID.value
+
+        repository.rollbackTitleMutation(operation.id, 3 * day + 1_000)
+        queryStrings("SELECT title_id FROM immersion_session ORDER BY id") shouldContainExactly
+            listOf(TITLE_ID.value, TITLE_ID.value)
+        queryLong(
+            "SELECT count(*) FROM immersion_title WHERE id = '${targetTitleId.value}'",
+        ) shouldBe 0
+    }
+
+    @Test
+    fun `title split preview rejects provenance shared outside its date selection`() = runTest {
+        val day = 86_400_000L
+        val firstSessionId = sessionId(720)
+        val secondSessionId = sessionId(721)
+        repository.upsertTitle(title()) shouldBe PersistenceResult.Applied
+        listOf(firstSessionId to day, secondSessionId to 2 * day).forEachIndexed {
+                index,
+                (sessionId, startedAt),
+            ->
+            repository.createSession(sessionStart(sessionId, startedAt)) shouldBe
+                PersistenceResult.Applied
+            repository.appendExposure(
+                exposure(sequence = 1, eventNumber = 720 + index).copy(
+                    sessionId = sessionId,
+                    occurredAtEpochMillis = startedAt + 100,
+                    source = source(startedAt + 100),
+                ),
+            ) shouldBe PersistenceResult.Applied
+            repository.finalizeSession(
+                sessionId = sessionId,
+                status = SessionStatus.COMPLETED,
+                endedAtEpochMillis = startedAt + 1_000,
+                elapsedDuration = MillisecondDuration(1_000),
+            ) shouldBe PersistenceResult.Applied
+        }
+
+        val preview = repository.previewTitleMutation(
+            ImmersionTitleMutationRequest.Split(
+                sourceTitleId = TITLE_ID,
+                targetTitleId = TitleId("00000000-0000-0000-0000-000000000722"),
+                displayTitle = "First part",
+                dateRange = LocalDateRange(ImmersionLocalDate(1), ImmersionLocalDate(1)),
+            ),
+        )
+
+        preview.canApply shouldBe false
+        preview.conflictingSourceUnits shouldBe 1
+        preview.blockers shouldBe setOf(ImmersionTitleMutationBlocker.SHARED_SOURCE_UNITS)
     }
 
     @Test
@@ -2407,6 +3003,142 @@ class SqlDelightImmersionRepositoryTest {
     }
 
     @Test
+    fun `Anki learning impact aligns weeks preserves attribution and invalidates its cache`() = runTest {
+        val profileId = "profile"
+        val languageTag = LanguageTag("ja")
+        val occurredAt = Instant.parse("2026-07-01T12:00:00Z").toEpochMilli()
+        val operationAt = occurredAt + 3_600_000
+        val localDate = ImmersionLocalDate.parse("2026-07-01")
+        val titleId = TitleId("00000000-0000-0000-0007-000000000001")
+        val number = 501
+        val sourceId = SourceUnitId("00000000-0000-0000-0002-000000000501")
+        val sessionId = sessionId(number)
+
+        recordScopedAnkiExposure(
+            number = number,
+            titleId = titleId,
+            mediaKind = MediaKind.NOVEL,
+            profileId = profileId,
+            languageTag = languageTag,
+            occurredAtEpochMillis = occurredAt,
+            normalizedWord = "猫",
+            normalizedReading = "ねこ",
+            character = '猫',
+        )
+        repository.appendEventBatch(
+            listOf(
+                AnkiOperationEvent(
+                    id = eventId(5_501),
+                    sessionId = sessionId,
+                    sequence = 2,
+                    occurredAtEpochMillis = operationAt,
+                    timezoneOffsetSeconds = 0,
+                    operationId = AnkiOperationId(
+                        "00000000-0000-0000-0008-000000000501",
+                    ),
+                    sourceUnitId = sourceId,
+                    expressionHash = "sha256:cat",
+                    normalizedExpression = "猫",
+                    normalizedReading = "ねこ",
+                    operationType = AnkiOperationType.CREATE,
+                    status = AnkiOperationStatus.SUCCESS,
+                    noteId = 501,
+                    cardId = 501,
+                ),
+            ),
+        ) shouldContainExactly listOf(PersistenceResult.Applied)
+        val firstUnattributed = PendingAnkiOperation(
+            token = AnkiOperationToken(
+                operationId = AnkiOperationId(
+                    "00000000-0000-0000-0008-000000000502",
+                ),
+                sessionId = sessionId,
+                sourceUnitId = sourceId,
+                expressionHash = "sha256:outside",
+                normalizedExpression = "外",
+                normalizedReading = "そと",
+            ),
+            operationType = AnkiOperationType.CREATE,
+            status = AnkiOperationStatus.SUCCESS,
+            noteId = 502,
+            errorCode = null,
+        )
+        repository.storeUnlinkedAnkiOperation(
+            firstUnattributed,
+            occurredAtEpochMillis = operationAt + 1_000,
+        ) shouldBe true
+        repository.activateSnapshot(
+            ankiSnapshot("snapshot-impact", requestedAt = operationAt + 2_000),
+            listOf(
+                ankiItem(
+                    snapshotId = "snapshot-impact",
+                    intervalDays = 30,
+                    tier = MaturityTier.MATURE,
+                    noteId = 501,
+                    cardId = 501,
+                    normalizedWord = "猫",
+                    normalizedReading = "ねこ",
+                    characters = setOf(UnicodeCodePoint('猫'.code)),
+                ).copy(firstMatureAtEpochMillis = operationAt + 86_400_000),
+            ),
+        )
+        val range = LocalDateRange(localDate, ImmersionLocalDate.parse("2026-07-07"))
+        repository.rebuildRollups(
+            range = range,
+            rollupVersion = ImmersionStatsVersions.ROLLUP,
+            nowEpochMillis = operationAt + 3_000,
+        )
+        val filter = StatsFilter(
+            dateRange = range,
+            mediaKinds = setOf(MediaKind.NOVEL),
+            profileIds = setOf(profileId),
+            languageTags = setOf(languageTag),
+            includeLegacyAggregates = false,
+            provenanceStates = setOf(
+                tachiyomi.domain.immersion.model.ProvenanceState.AVAILABLE,
+            ),
+        )
+
+        repository.ankiSummary(filter).let { summary ->
+            summary.weeklyImpact.single().let { week ->
+                week.weekStart shouldBe ImmersionLocalDate.parse("2026-06-29")
+                week.weekEndInclusive shouldBe ImmersionLocalDate.parse("2026-07-05")
+                week.cardsCreated shouldBe 1
+                week.linkedOperations shouldBe 1
+                week.unattributedOperations shouldBe 1
+                week.sameWeekReadingToCardOperations shouldBe 1
+                week.maturedOperations shouldBe 1
+                week.meanReadingToCardLagMillis shouldBe 3_600_000
+                week.meanCardToMaturityLagMillis shouldBe 86_400_000
+            }
+            summary.titleImpact.single { it.titleId == titleId }.let { title ->
+                title.displayTitle shouldBe "Scope 000000000001"
+                title.mediaKind shouldBe MediaKind.NOVEL
+                title.cardsCreated shouldBe 1
+                title.operationCount shouldBe 1
+                title.cardsPerTenThousandGrossCharacters() shouldNotBe null
+            }
+            summary.titleImpact.single { it.titleId == null }.operationCount shouldBe 1
+        }
+
+        repository.storeUnlinkedAnkiOperation(
+            firstUnattributed.copy(
+                token = firstUnattributed.token.copy(
+                    operationId = AnkiOperationId(
+                        "00000000-0000-0000-0008-000000000503",
+                    ),
+                ),
+                noteId = 503,
+            ),
+            occurredAtEpochMillis = operationAt + 4_000,
+        ) shouldBe true
+        repository.ankiSummary(filter)
+            .weeklyImpact
+            .single()
+            .unattributedOperations shouldBe 2
+    }
+
+    @Test
     fun `Anki word matching prefers exact readings and rejects homographs`() = runTest {
         fun homographTitle(number: Int) =
             TitleId("00000000-0000-0000-0005-${number.toString().padStart(12, '0')}")
@@ -3345,7 +4077,64 @@ class SqlDelightImmersionRepositoryTest {
             offset = 0,
             limit = 100,
             searchQuery = "猫",
-        ).items.single().wordCount shouldBe 2
+        ).items.single { it.rendered == "猫" }.wordCount shouldBe 2
+        repository.characterPage(
+            filter = scopedFilter,
+            sort = AnalyticsSort.MOST_OCCURRENCES,
+            offset = 0,
+            limit = 100,
+            characterFilter = AnalyticsCharacterFilter(
+                scripts = setOf(AnalyticsCharacterScript.HAN),
+            ),
+        ).items.map { it.rendered } shouldContainExactly listOf("猫", "又", "犬")
+        repository.characterPage(
+            filter = scopedFilter,
+            sort = AnalyticsSort.MOST_OCCURRENCES,
+            offset = 0,
+            limit = 100,
+            characterFilter = AnalyticsCharacterFilter(
+                scripts = setOf(AnalyticsCharacterScript.LATIN),
+            ),
+        ).items shouldBe emptyList()
+        repository.characterSummary(
+            filter = scopedFilter,
+            characterFilter = AnalyticsCharacterFilter(
+                scripts = setOf(AnalyticsCharacterScript.HAN),
+            ),
+        ).let { summary ->
+            summary.scripts.single().let { script ->
+                script.script shouldBe AnalyticsCharacterScript.HAN
+                script.distinctCharacters shouldBe 3
+                script.grossOccurrenceExposure shouldBe 4
+            }
+            summary.firstSeenInRange shouldBe 3
+            summary.maximumOccurrenceCount shouldBe 2
+        }
+
+        val secondDayFirstSeenFilter = AnalyticsCharacterFilter(
+            scripts = setOf(AnalyticsCharacterScript.HAN),
+            range = AnalyticsCharacterRange.FIRST_SEEN_IN_RANGE,
+        )
+        repository.characterPage(
+            filter = scopedFilter.copy(
+                dateRange = LocalDateRange(secondDate, secondDate),
+            ),
+            sort = AnalyticsSort.MOST_OCCURRENCES,
+            offset = 0,
+            limit = 100,
+            characterFilter = secondDayFirstSeenFilter,
+        ).items.map { it.rendered } shouldContainExactly listOf("又", "犬")
+        repository.characterSummary(
+            filter = scopedFilter.copy(
+                dateRange = LocalDateRange(secondDate, secondDate),
+            ),
+            characterFilter = secondDayFirstSeenFilter,
+        ).let { summary ->
+            summary.distinctCharacters shouldBe 2
+            summary.grossOccurrenceExposure shouldBe 2
+            summary.firstSeenInRange shouldBe 2
+            summary.maximumOccurrenceCount shouldBe 1
+        }
 
         val firstPage = repository.characterContainingWords(
             scopedFilter,

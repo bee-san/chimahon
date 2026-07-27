@@ -7,12 +7,15 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import tachiyomi.domain.immersion.model.AnalyticsAnkiSummary
 import tachiyomi.domain.immersion.model.AnalyticsBucketScale
+import tachiyomi.domain.immersion.model.AnalyticsCharacterFilter
+import tachiyomi.domain.immersion.model.AnalyticsCharacterRow
 import tachiyomi.domain.immersion.model.AnalyticsGoalProgress
 import tachiyomi.domain.immersion.model.AnalyticsOverview
 import tachiyomi.domain.immersion.model.AnalyticsSort
 import tachiyomi.domain.immersion.model.AnalyticsTitleRow
 import tachiyomi.domain.immersion.model.AnalyticsTrends
 import tachiyomi.domain.immersion.model.StatsFilter
+import tachiyomi.domain.immersion.model.UnicodeCodePoint
 import tachiyomi.domain.immersion.model.VocabularyFilter
 import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
 
@@ -178,14 +181,20 @@ class ImmersionExportService(
                 "code_point",
                 "character",
                 "unicode_name",
+                "unicode_category",
                 "unicode_script",
+                "japanese_readings",
                 "occurrences",
+                "source_units",
                 "words",
                 "titles",
                 "first_seen_at_ms",
                 "last_seen_at_ms",
                 "frequency_rank",
+                "jlpt_level",
+                "grade_level",
                 "maturity",
+                "priority_score",
             ),
         )
         var offset = 0L
@@ -202,19 +211,119 @@ class ImmersionExportService(
                     character.codePoint.value.toString(),
                     character.rendered,
                     character.unicodeName.orEmpty(),
+                    character.unicodeCategory,
                     character.unicodeScript,
+                    character.japaneseReadings.orEmpty(),
                     character.occurrenceCount.toString(),
+                    character.sourceUnitCount.toString(),
                     character.wordCount.toString(),
                     character.titleCount.toString(),
                     character.firstSeenAtEpochMillis.toString(),
                     character.lastSeenAtEpochMillis.toString(),
                     character.frequencyRank?.toString().orEmpty(),
+                    character.jlptLevel?.toString().orEmpty(),
+                    character.gradeLevel?.toString().orEmpty(),
                     character.maturity.name,
+                    character.priorityScore.toString(),
                 )
             }
             offset = page.nextOffset ?: break
         } while (true)
         return document("chimahon-stats-characters.csv", CSV_MIME_TYPE, rows.toCsv())
+    }
+
+    suspend fun selectedCharactersCsv(
+        filter: StatsFilter,
+        characterFilter: AnalyticsCharacterFilter,
+        sort: AnalyticsSort,
+        selectedCodePoints: Set<UnicodeCodePoint>,
+    ): ImmersionExportDocument {
+        require(selectedCodePoints.isNotEmpty())
+        val characters = mutableListOf<AnalyticsCharacterRow>()
+        var offset = 0L
+        do {
+            val page = analytics.characters(
+                filter = filter,
+                sort = sort,
+                offset = offset,
+                limit = EXPORT_PAGE_SIZE,
+                searchQuery = characterFilter.searchQuery,
+                characterFilter = characterFilter,
+            ).value
+            characters += page.items.filter { it.codePoint in selectedCodePoints }
+            if (characters.mapTo(mutableSetOf(), AnalyticsCharacterRow::codePoint)
+                    .containsAll(selectedCodePoints)
+            ) {
+                break
+            }
+            offset = page.nextOffset ?: break
+        } while (true)
+        val rows = mutableListOf(
+            listOf(
+                "schema_version",
+                "code_point",
+                "character",
+                "unicode_name",
+                "unicode_category",
+                "unicode_script",
+                "japanese_readings",
+                "occurrences",
+                "source_units",
+                "words",
+                "titles",
+                "first_seen_at_ms",
+                "last_seen_at_ms",
+                "frequency_rank",
+                "jlpt_level",
+                "grade_level",
+                "maturity",
+                "priority_score",
+                "supporting_words",
+            ),
+        )
+        characters.distinctBy(AnalyticsCharacterRow::codePoint).forEach { character ->
+            val supportingWords = mutableListOf<String>()
+            var wordOffset = 0L
+            do {
+                val page = analytics.characterContainingWords(
+                    filter = filter,
+                    codePoint = character.codePoint,
+                    sort = AnalyticsSort.MOST_OCCURRENCES,
+                    offset = wordOffset,
+                    limit = EXPORT_PAGE_SIZE,
+                ).value
+                supportingWords += page.items.map { word ->
+                    if (word.reading.isNullOrBlank()) {
+                        word.headword
+                    } else {
+                        "${word.headword} [${word.reading}]"
+                    }
+                }
+                wordOffset = page.nextOffset ?: break
+            } while (true)
+            rows += listOf(
+                EXPORT_SCHEMA_VERSION.toString(),
+                character.codePoint.value.toString(),
+                character.rendered,
+                character.unicodeName.orEmpty(),
+                character.unicodeCategory,
+                character.unicodeScript,
+                character.japaneseReadings.orEmpty(),
+                character.occurrenceCount.toString(),
+                character.sourceUnitCount.toString(),
+                character.wordCount.toString(),
+                character.titleCount.toString(),
+                character.firstSeenAtEpochMillis.toString(),
+                character.lastSeenAtEpochMillis.toString(),
+                character.frequencyRank?.toString().orEmpty(),
+                character.jlptLevel?.toString().orEmpty(),
+                character.gradeLevel?.toString().orEmpty(),
+                character.maturity.name,
+                character.priorityScore.toString(),
+                supportingWords.joinToString(" | "),
+            )
+        }
+        return document("chimahon-stats-selected-characters.csv", CSV_MIME_TYPE, rows.toCsv())
     }
 
     private fun document(

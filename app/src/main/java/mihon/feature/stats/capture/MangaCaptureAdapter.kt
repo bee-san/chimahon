@@ -21,6 +21,7 @@ import tachiyomi.domain.immersion.model.EventType
 import tachiyomi.domain.immersion.model.ImmersionSession
 import tachiyomi.domain.immersion.model.ImmersionSourceUnit
 import tachiyomi.domain.immersion.model.ImmersionTitle
+import tachiyomi.domain.immersion.model.ImmersionTitleIdentityAdapter
 import tachiyomi.domain.immersion.model.LanguageTag
 import tachiyomi.domain.immersion.model.MangaSourceLocator
 import tachiyomi.domain.immersion.model.MediaKind
@@ -67,10 +68,14 @@ data class MangaCaptureTitle(
     val profileId: String,
     val languageTag: LanguageTag?,
     val createdAtEpochMillis: Long,
+    val status: String? = null,
+    val totalUnits: Long? = null,
 ) {
     init {
         require(mangaId >= 0) { "Manga ID cannot be negative" }
         require(displayTitle.isNotBlank()) { "Manga title cannot be blank" }
+        require(status == null || status.isNotBlank()) { "Manga status cannot be blank" }
+        require(totalUnits == null || totalUnits >= 0) { "Manga total units cannot be negative" }
         require(createdAtEpochMillis >= 0) { "Manga creation time cannot be negative" }
     }
 }
@@ -285,17 +290,23 @@ class MangaCaptureAdapter(
     workerScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     diagnostics: ImmersionStatsDiagnosticsStore? = null,
 ) {
-    private val sourceKey = "manga:${captureTitle.mangaId}"
-    private val titleId = TitleId(stableUuid(TITLE_NAMESPACE, "$sourceKey|${captureTitle.profileId}"))
+    private val titleIdentity = ImmersionTitleIdentityAdapter.manga(
+        mangaId = captureTitle.mangaId,
+        profileId = captureTitle.profileId,
+    )
+    private val sourceKey = titleIdentity.sourceKey
+    private val titleId = titleIdentity.id
     private val title = ImmersionTitle(
         id = titleId,
-        mediaKind = MediaKind.MANGA,
+        mediaKind = titleIdentity.mediaKind,
         sourceKey = sourceKey,
-        profileId = captureTitle.profileId,
+        profileId = titleIdentity.profileId,
         languageTag = captureTitle.languageTag,
         displayTitle = captureTitle.displayTitle,
-        libraryId = captureTitle.mangaId,
-        mediaId = captureTitle.mangaId.toString(),
+        libraryId = titleIdentity.libraryId,
+        mediaId = titleIdentity.mediaId,
+        status = captureTitle.status,
+        totalUnits = captureTitle.totalUnits,
         createdAtEpochMillis = captureTitle.createdAtEpochMillis,
         updatedAtEpochMillis = maxOf(captureTitle.createdAtEpochMillis, clock()),
     )
@@ -321,7 +332,11 @@ class MangaCaptureAdapter(
                         is AdapterCommand.OcrResult -> handleOcrResult(state, command)
                         is AdapterCommand.ChapterCompleted -> {
                             if (state.completedChapters.add(command.chapterId)) {
-                                recordActivity(state, EventType.UNIT_COMPLETED)
+                                recordActivity(
+                                    state = state,
+                                    eventType = EventType.UNIT_COMPLETED,
+                                    completionUnitId = command.chapterId.toString(),
+                                )
                             }
                         }
                         AdapterCommand.TitleCompleted -> {
@@ -583,9 +598,10 @@ class MangaCaptureAdapter(
     private suspend fun recordActivity(
         state: AdapterState,
         eventType: EventType,
+        completionUnitId: String? = null,
     ) {
         val handle = ensureStarted(state) ?: return
-        recorder.record(handle, CaptureCommand.Activity(eventType))
+        recorder.record(handle, CaptureCommand.Activity(eventType, completionUnitId))
     }
 
     private suspend fun handleBlocked(
@@ -792,7 +808,6 @@ class MangaCaptureAdapter(
     private companion object {
         const val PAGE_EXPOSURE_POLICY = "manga-page-area-50-v1"
         const val OCR_EXPOSURE_POLICY = "manga-ocr-block-area-50-v1"
-        const val TITLE_NAMESPACE = "immersion-title-manga"
         const val SOURCE_NAMESPACE = "immersion-source-manga"
     }
 }

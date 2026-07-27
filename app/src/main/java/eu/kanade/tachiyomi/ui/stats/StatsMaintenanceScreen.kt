@@ -48,6 +48,7 @@ import mihon.feature.stats.indexing.ImmersionIndexJob
 import tachiyomi.domain.immersion.model.ImmersionStatsDeletionScope
 import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.RawTextRetention
+import tachiyomi.domain.immersion.model.TitleId
 import tachiyomi.i18n.kmk.KMR
 import tachiyomi.presentation.core.components.material.Scaffold
 import tachiyomi.presentation.core.i18n.pluralStringResource
@@ -57,13 +58,19 @@ import java.text.NumberFormat
 
 class StatsMaintenanceScreen(
     private val initialTitleId: String? = null,
+    private val initialAction: StatsMaintenanceInitialAction? = null,
 ) : Screen() {
 
     @Composable
     override fun Content() {
         val context = LocalContext.current
         val navigator = LocalNavigator.currentOrThrow
-        val screenModel = rememberScreenModel { StatsMaintenanceScreenModel() }
+        val parsedTitleId = remember(initialTitleId) {
+            initialTitleId?.let { value -> runCatching { TitleId(value) }.getOrNull() }
+        }
+        val screenModel = rememberScreenModel {
+            StatsMaintenanceScreenModel(initialTitleId = parsedTitleId)
+        }
         val state by screenModel.state.collectAsState()
         var showExportDialog by remember { mutableStateOf(false) }
         var showRawTextExportConfirmation by remember { mutableStateOf(false) }
@@ -73,6 +80,24 @@ class StatsMaintenanceScreen(
         var showReaderIdleTimeoutDialog by remember { mutableStateOf(false) }
         var showScopedDeletionDialog by remember { mutableStateOf(false) }
         var showAnkiCacheDeletionDialog by remember { mutableStateOf(false) }
+        var initialActionHandled by remember(initialAction) { mutableStateOf(false) }
+
+        LaunchedEffect(initialAction, state.summary) {
+            val initialScopeValid = initialTitleId == null || parsedTitleId != null
+            if (!initialActionHandled && initialScopeValid) {
+                when (initialAction) {
+                    StatsMaintenanceInitialAction.DELETE_STATS -> {
+                        showScopedDeletionDialog = true
+                        initialActionHandled = true
+                    }
+                    StatsMaintenanceInitialAction.DELETE_RAW_TEXT -> if (state.summary != null) {
+                        showRawTextDeleteConfirmation = true
+                        initialActionHandled = true
+                    }
+                    null -> initialActionHandled = true
+                }
+            }
+        }
 
         LaunchedEffect(screenModel) {
             screenModel.exportDocuments.collect { document ->
@@ -223,6 +248,11 @@ class StatsMaintenanceScreen(
             )
         }
     }
+}
+
+enum class StatsMaintenanceInitialAction {
+    DELETE_STATS,
+    DELETE_RAW_TEXT,
 }
 
 @Composable

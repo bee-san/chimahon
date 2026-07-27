@@ -9,6 +9,10 @@ import tachiyomi.core.common.preference.Preference
 import tachiyomi.core.common.preference.PreferenceStore
 import tachiyomi.domain.immersion.model.AnalyticsBucketScale
 import tachiyomi.domain.immersion.model.AnalyticsSort
+import tachiyomi.domain.immersion.model.AnalyticsTitleAcquisitionBucketSize
+import tachiyomi.domain.immersion.model.AnalyticsTitleCoverageFilter
+import tachiyomi.domain.immersion.model.AnalyticsTitleSort
+import tachiyomi.domain.immersion.model.AnalyticsTitleStateFilter
 import tachiyomi.domain.immersion.model.CharacterMetric
 import tachiyomi.domain.immersion.model.NovelNetProgressPolicy
 import tachiyomi.domain.immersion.model.RawTextRetention
@@ -125,6 +129,11 @@ class ImmersionStatsPreferencesTest {
         first.dashboardSelectedTab().set("VOCABULARY")
         first.dashboardTrendScale().set(AnalyticsBucketScale.WEEK)
         first.dashboardTrendMetric().set("ACTIVE_TIME")
+        first.dashboardTitleSort().set(AnalyticsTitleSort.READING_SPEED)
+        first.dashboardTitleState().set(AnalyticsTitleStateFilter.IN_PROGRESS)
+        first.dashboardTitleCoverage().set(AnalyticsTitleCoverageFilter.PARTIAL)
+        first.dashboardTitleAcquisitionBucketSize()
+            .set(AnalyticsTitleAcquisitionBucketSize.FIFTY_THOUSAND)
         first.dashboardVocabularySort().set(AnalyticsSort.FIRST_SEEN)
         first.dashboardVocabularyKnownness().set(VocabularyKnownness.KNOWN.name)
         first.dashboardVocabularyScripts().set(setOf(VocabularyScript.KANJI.name))
@@ -134,6 +143,7 @@ class ImmersionStatsPreferencesTest {
         first.dashboardVocabularyMaximumOccurrences().set(200)
         first.dashboardVocabularyMaximumFrequencyRank().set(10_000)
         first.dashboardVocabularyExclusion().set(VocabularyExclusion.ALL.name)
+        first.dashboardAnkiWordCoverageTargetPercent().set(85)
         first.dashboardSelectedWordId().set("word-1")
 
         val restored = ImmersionStatsPreferences(store)
@@ -151,6 +161,11 @@ class ImmersionStatsPreferencesTest {
         restored.dashboardSelectedTab().get() shouldBe "VOCABULARY"
         restored.dashboardTrendScale().get() shouldBe AnalyticsBucketScale.WEEK
         restored.dashboardTrendMetric().get() shouldBe "ACTIVE_TIME"
+        restored.dashboardTitleSort().get() shouldBe AnalyticsTitleSort.READING_SPEED
+        restored.dashboardTitleState().get() shouldBe AnalyticsTitleStateFilter.IN_PROGRESS
+        restored.dashboardTitleCoverage().get() shouldBe AnalyticsTitleCoverageFilter.PARTIAL
+        restored.dashboardTitleAcquisitionBucketSize().get() shouldBe
+            AnalyticsTitleAcquisitionBucketSize.FIFTY_THOUSAND
         restored.dashboardVocabularySort().get() shouldBe AnalyticsSort.FIRST_SEEN
         restored.dashboardVocabularyKnownness().get() shouldBe VocabularyKnownness.KNOWN.name
         restored.dashboardVocabularyScripts().get() shouldBe setOf(VocabularyScript.KANJI.name)
@@ -160,6 +175,7 @@ class ImmersionStatsPreferencesTest {
         restored.dashboardVocabularyMaximumOccurrences().get() shouldBe 200
         restored.dashboardVocabularyMaximumFrequencyRank().get() shouldBe 10_000
         restored.dashboardVocabularyExclusion().get() shouldBe VocabularyExclusion.ALL.name
+        restored.dashboardAnkiWordCoverageTargetPercent().get() shouldBe 85
         restored.dashboardSelectedWordId().get() shouldBe "word-1"
     }
 

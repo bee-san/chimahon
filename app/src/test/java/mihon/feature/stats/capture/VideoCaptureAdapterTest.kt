@@ -423,7 +423,8 @@ class VideoCaptureAdapterTest {
             estimatedRemainingMillis = 4_000,
             completed = true,
         )
-        recorder.activities().count { it.eventType == EventType.UNIT_COMPLETED } shouldBe 1
+        recorder.activities().single { it.eventType == EventType.UNIT_COMPLETED }
+            .completionUnitId shouldBe "10"
         recorder.activities().count { it.eventType == EventType.TITLE_COMPLETED } shouldBe 1
         adapter.mediaContext.value?.let {
             it.episodeId shouldBe 10
