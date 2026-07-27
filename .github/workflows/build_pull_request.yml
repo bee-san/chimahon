@@ -34,7 +34,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Checkout submodules
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --recursive
+
       - name: Dependency Review
+        if: github.event.repository.fork == false
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
 
       - name: Validate Gradle Wrapper
@@ -46,41 +52,113 @@ jobs:
           java-version-file: .github/.java-version
           distribution: temurin
 
+      - name: Set up gradle
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6
+
+      - name: Read distribution gates
+        id: distribution_gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          native_gate=$(jq -r '.releaseGate' docs/native-source-manifest.json)
+          scene_gate=$(jq -r '.releaseGate' docs/animated-scene-device-validation.json)
+
+          for gate in "$native_gate" "$scene_gate"; do
+            if [[ "$gate" != "blocked" && "$gate" != "verified" ]]; then
+              echo "::error::Release gates must be blocked or verified"
+              exit 1
+            fi
+          done
+
+          if [[ "$native_gate" == "verified" && "$scene_gate" == "verified" ]]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Distributable builds remain disabled while a release gate is blocked"
+          fi
+
+      - name: Validate preview client secret
+        if: |
+          steps.distribution_gate.outputs.ready == 'true' &&
+          github.repository == github.event.pull_request.head.repo.full_name
+        env:
+          GOOGLE_CLIENT_SECRETS_JSON: ${{ secrets.GOOGLE_CLIENT_SECRETS_JSON }}
+        run: |
+          set -euo pipefail
+          jq -e '
+            .installed as $installed |
+            ($installed.client_id | type == "string" and length > 0) and
+            ($installed.client_secret | type == "string" and length > 0) and
+            ($installed.auth_uri | type == "string" and startswith("https://")) and
+            ($installed.token_uri | type == "string" and startswith("https://")) and
+            ($installed.redirect_uris | type == "array" and length > 0)
+          ' <<< "$GOOGLE_CLIENT_SECRETS_JSON" > /dev/null
+
       - name: Write client_secrets.json
-        if: github.repository == github.event.pull_request.head.repo.full_name
+        if: |
+          steps.distribution_gate.outputs.ready == 'true' &&
+          github.repository == github.event.pull_request.head.repo.full_name
         uses: DamianReeves/write-file-action@6929a9a6d1807689191dcc8bbe62b54d70a32b42 # v1.3
         with:
           path: app/src/main/assets/client_secrets.json
           contents: ${{ secrets.GOOGLE_CLIENT_SECRETS_JSON }}
           write-mode: overwrite
 
-      - name: Set up gradle
-        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6
-
       - name: Check code format
         run: ./gradlew spotlessCheck
 
+      - name: Verify release gate metadata and wiring
+        run: |
+          ./gradlew \
+            :app:verifyNativeComplianceMetadata \
+            :app:verifyNativeComplianceTaskWiring \
+            :app:verifyAnimatedSceneValidationMetadata \
+            :app:verifyAnimatedSceneValidationTaskWiring
+
       - name: Build app
-        if: github.repository == github.event.pull_request.head.repo.full_name
+        if: |
+          steps.distribution_gate.outputs.ready == 'true' &&
+          github.repository == github.event.pull_request.head.repo.full_name
         run: ./gradlew assemblePreview -Pinclude-telemetry -Penable-updater
 
       - name: Build app
-        if: github.repository != github.event.pull_request.head.repo.full_name
+        if: |
+          steps.distribution_gate.outputs.ready == 'true' &&
+          github.repository != github.event.pull_request.head.repo.full_name
         run: ./gradlew assemblePreview
 
-      - name: Run unit tests
-        id: unit_tests
+      - name: Build debug app for a non-distributable ref
+        if: steps.distribution_gate.outputs.ready != 'true'
+        run: ./gradlew assembleDebug
+
+      - name: Run release unit tests
+        if: steps.distribution_gate.outputs.ready == 'true'
+        id: release_unit_tests
         run: ./gradlew testReleaseUnitTest
 
+      - name: Run debug unit tests for a non-distributable ref
+        if: steps.distribution_gate.outputs.ready != 'true'
+        id: debug_unit_tests
+        run: ./gradlew testDebugUnitTest
+
       - name: Upload test report
-        if: steps.unit_tests.outcome == 'failure'
+        if: |
+          failure() &&
+          (
+            steps.release_unit_tests.outcome == 'failure' ||
+            steps.debug_unit_tests.outcome == 'failure'
+          )
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-report-${{ github.sha }}
-          path: app/build/reports/tests/testReleaseUnitTest
+          path: |
+            app/build/reports/tests/testReleaseUnitTest
+            app/build/reports/tests/testDebugUnitTest
 
       - name: Sign APK
-        if: github.repository == github.event.pull_request.head.repo.full_name
+        if: |
+          steps.distribution_gate.outputs.ready == 'true' &&
+          github.repository == github.event.pull_request.head.repo.full_name
         uses: r0adkll/sign-android-release@f30bdd30588842ac76044ecdbd4b6d0e3e813478
         with:
           releaseDirectory: app/build/outputs/apk/preview
@@ -93,30 +171,42 @@ jobs:
 
       - name: Signed File name
         id: signed_filename
-        if: github.repository == github.event.pull_request.head.repo.full_name
+        if: |
+          steps.distribution_gate.outputs.ready == 'true' &&
+          github.repository == github.event.pull_request.head.repo.full_name
         run: |
-          echo "SIGNED_TRAIL=-signed" >> $GITHUB_OUTPUT
+          echo "SIGNED_TRAIL=-signed" >> "$GITHUB_OUTPUT"
 
       - name: Rename apk
         id: current_commit
+        if: steps.distribution_gate.outputs.ready == 'true'
+        env:
+          GIT_REF: ${{ github.ref }}
+          SIGNED_TRAIL: ${{ steps.signed_filename.outputs.SIGNED_TRAIL }}
         run: |
-          set -e
-          echo "The git ref is: ${{ github.ref }}"
-          version_tag=p$(echo ${{ github.ref }} | cut -d '/' -f 3)
+          set -euo pipefail
+          echo "The git ref is: $GIT_REF"
+          version_tag="p$(cut -d '/' -f 3 <<< "$GIT_REF")"
           commit_count=$(git rev-list --count HEAD)
           echo "VERSION_TAG=$version_tag"
-          echo "VERSION_TAG=$version_tag" >> $GITHUB_OUTPUT
           echo "COMMIT_COUNT=$commit_count"
-          echo "COMMIT_COUNT=$commit_count" >> $GITHUB_OUTPUT
-          mv app/build/outputs/apk/preview/app-universal-preview${{ steps.signed_filename.outputs.SIGNED_TRAIL }}.apk Komikku-$version_tag-r$commit_count.apk
+          {
+            echo "VERSION_TAG=$version_tag"
+            echo "COMMIT_COUNT=$commit_count"
+          } >> "$GITHUB_OUTPUT"
+          mv \
+            "app/build/outputs/apk/preview/app-universal-preview${SIGNED_TRAIL}.apk" \
+            "Komikku-$version_tag-r$commit_count.apk"
 
       - name: Upload APK
+        if: steps.distribution_gate.outputs.ready == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: Komikku-${{ steps.current_commit.outputs.VERSION_TAG }}-r${{ steps.current_commit.outputs.COMMIT_COUNT }}.apk
           path: ./*.apk
 
       - name: Upload mapping
+        if: steps.distribution_gate.outputs.ready == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: mapping-${{ github.sha }}

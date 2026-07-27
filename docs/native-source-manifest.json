@@ -1,46 +1,47 @@
 {
-  "schemaVersion": 2,
-  "releaseGate": "blocked",
-  "reason": "The historical builds cloned dav1d, libass, and libplacebo without immutable revisions, so the exact Corresponding Source for the shipped native artifacts has not been recovered.",
-  "applicationSourceUrl": "",
-  "applicationSourceCommit": "",
+  "schemaVersion": 3,
+  "releaseGate": "verified",
+  "reason": "Both native coordinates resolve to audited fork releases with exact Corresponding Source, immutable annotated tags, checksummed toolchain evidence, and byte-identical JitPack AARs.",
+  "applicationSourceTag": "v2.5.0",
+  "applicationSourceRevisionUrl": "https://github.com/bee-san/chimahon/tree/v2.5.0",
+  "applicationSourceArchiveUrl": "https://github.com/bee-san/chimahon/releases/download/v2.5.0/chimahon-source-v2.5.0.tar.gz",
   "artifacts": [
     {
-      "coordinate": "com.github.jmir1:ffmpeg-kit:1.17",
-      "binarySha256": "4570a5cb8fa2c87808e81ebf4b7f3747cb5aa52b1662dc8a1c03831c37b26b89",
-      "sourceTag": "1.17",
-      "sourceTagObject": "9100744a0838c1fea786203c07cb850dc6260243",
-      "sourceCommit": "8bcf912e2b008d18637bb3fb18343d62297d5253",
-      "sourceRevisionUrl": "https://github.com/jmir1/ffmpeg-kit/tree/8bcf912e2b008d18637bb3fb18343d62297d5253",
-      "sourceArchiveUrl": "",
-      "sourceArchiveSha256": "",
+      "coordinate": "com.github.bee-san:ffmpeg-kit:1.18-chimahon.2",
+      "binarySha256": "840ab71ef95a3fe056bf085e17d58f647397b2fdaea8b3bc2e95b1d4577f9a61",
+      "sourceTag": "1.18-chimahon.2",
+      "sourceTagObject": "c3b7bb33d9d97554ef7b433f737e26eb30df3469",
+      "sourceCommit": "6a937c79cea09748385215891b68bf7d78215f81",
+      "sourceRevisionUrl": "https://github.com/bee-san/ffmpeg-kit/tree/6a937c79cea09748385215891b68bf7d78215f81",
+      "sourceArchiveUrl": "https://github.com/bee-san/ffmpeg-kit/releases/download/1.18-chimahon.2/ffmpeg-kit-source-1.18-chimahon.2.tar.gz",
+      "sourceArchiveSha256": "a68fe00a26e52e322f516a581079778efb4614a9447ae8da557b8109388020cc",
       "toolchain": {
         "androidNdk": "27.2.12479018",
         "androidSdkPlatform": "34",
         "androidBuildTools": "34.0.0",
-        "ffmpeg": "n7.1",
+        "ffmpeg": "n7.1@b08d7969c550a804a59511c7b83f2dd8cc0499b8",
         "mpv": "d82701962f99051a18d65c215b70d41ebadd9a22",
-        "archiveUrl": "",
-        "archiveSha256": ""
+        "archiveUrl": "https://github.com/bee-san/ffmpeg-kit/releases/download/1.18-chimahon.2/ffmpeg-kit-toolchain-1.18-chimahon.2.tar.gz",
+        "archiveSha256": "85acdd55b61b93a265abf95a8c64eebcb04ed659385ba3c5f33917db6dc761a6"
       }
     },
     {
-      "coordinate": "com.github.aniyomiorg:aniyomi-mpv-lib:1.17.n",
-      "binarySha256": "a08c2d3345fb1f46f7ffe2f68999f244666de4a1ed1f90a0cef6c1c761a6d793",
-      "sourceTag": "1.17.n",
-      "sourceTagObject": "4ad07ea2d7f08781e8d870d1f174588e7a3af113",
-      "sourceCommit": "484373b7cb772d43405c4312af1ad4f508f6dbd0",
-      "sourceRevisionUrl": "https://github.com/aniyomiorg/aniyomi-mpv-lib/tree/484373b7cb772d43405c4312af1ad4f508f6dbd0",
-      "sourceArchiveUrl": "",
-      "sourceArchiveSha256": "",
+      "coordinate": "com.github.bee-san:aniyomi-mpv-lib:1.18.n-chimahon.4",
+      "binarySha256": "33749a56f8afbc9b83252705f9e1dbdaba22f8418448e67d2f60efd6946e0cb8",
+      "sourceTag": "1.18.n-chimahon.4",
+      "sourceTagObject": "295cb75a01066fa3f157ea4fb75eed19a91b2b78",
+      "sourceCommit": "ff7447ea918eb460bf379cc8de16e076865b067b",
+      "sourceRevisionUrl": "https://github.com/bee-san/aniyomi-mpv-lib/tree/ff7447ea918eb460bf379cc8de16e076865b067b",
+      "sourceArchiveUrl": "https://github.com/bee-san/aniyomi-mpv-lib/releases/download/1.18.n-chimahon.4/aniyomi-mpv-lib-source-1.18.n-chimahon.4.tar.gz",
+      "sourceArchiveSha256": "4083e436db9a7b9d44d54d876ede48a139ac2de59d4b5b4d01198b6b9d71fec3",
       "toolchain": {
         "androidNdk": "27.2.12479018",
         "androidSdkPlatform": "34",
         "androidBuildTools": "34.0.0",
-        "ffmpeg": "n7.1",
+        "ffmpeg": "n7.1@b08d7969c550a804a59511c7b83f2dd8cc0499b8",
         "mpv": "d82701962f99051a18d65c215b70d41ebadd9a22",
-        "archiveUrl": "",
-        "archiveSha256": ""
+        "archiveUrl": "https://github.com/bee-san/aniyomi-mpv-lib/releases/download/1.18.n-chimahon.4/aniyomi-mpv-lib-toolchain-1.18.n-chimahon.4.tar.gz",
+        "archiveSha256": "535a7996e0701e37b8a46bd9707b0b872d3be1d958b4ec20a2ef234911b6136d"
       }
     }
   ]
