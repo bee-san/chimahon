@@ -26,8 +26,10 @@ import tachiyomi.domain.immersion.model.AnalyticsTitleTrendDailyPoint
 import tachiyomi.domain.immersion.model.AnalyticsVocabularyFirstSeenDay
 import tachiyomi.domain.immersion.model.AnalyticsWeekdayActivity
 import tachiyomi.domain.immersion.model.AnalyticsWordRow
+import tachiyomi.domain.immersion.model.AnkiMaturityAggregation
 import tachiyomi.domain.immersion.model.AnkiSnapshotStatus
 import tachiyomi.domain.immersion.model.CapabilityState
+import tachiyomi.domain.immersion.model.CharacterMetric
 import tachiyomi.domain.immersion.model.CharacterVolume
 import tachiyomi.domain.immersion.model.ImmersionAnkiSnapshot
 import tachiyomi.domain.immersion.model.ImmersionDailyRollup
@@ -249,6 +251,143 @@ class ImmersionAnalyticsServiceTest {
         overview.streak.currentDays shouldBe 2
         overview.streak.longestDays shouldBe 2
     }
+
+    @Test
+    fun `overview preserves the complete filter across totals comparison inventory quality and streak`() =
+        runTest {
+            val previous = LocalDateRange(date("2026-07-01"), date("2026-07-01"))
+            val current = LocalDateRange(date("2026-07-02"), date("2026-07-02"))
+            val profileId = "target-profile"
+            val languageTag = LanguageTag("ja")
+            val filter = StatsFilter(
+                dateRange = current,
+                comparisonRange = previous,
+                mediaKinds = setOf(MediaKind.NOVEL),
+                profileIds = setOf(profileId),
+                languageTags = setOf(languageTag),
+                titleIds = setOf(TITLE),
+                includeLegacyAggregates = false,
+                characterMetric = CharacterMetric.UNIQUE_SOURCE,
+                includeRereadsAndReplays = false,
+                maturityTiers = setOf(MaturityTier.MATURE),
+                ankiMaturityAggregation = AnkiMaturityAggregation.MIN_INTERVAL,
+                provenanceStates = setOf(
+                    ProvenanceState.AVAILABLE,
+                    ProvenanceState.LEGACY_AGGREGATE,
+                ),
+            )
+            val rows = listOf(
+                rollup(
+                    "2026-07-01",
+                    100,
+                    uniqueCharacters = 40,
+                    profileId = profileId,
+                    languageTag = languageTag,
+                ),
+                rollup(
+                    "2026-07-02",
+                    300,
+                    uniqueCharacters = 120,
+                    profileId = profileId,
+                    languageTag = languageTag,
+                ),
+                rollup(
+                    "2026-07-02",
+                    1_000,
+                    profileId = profileId,
+                    languageTag = languageTag,
+                    mediaKind = MediaKind.MANGA,
+                ),
+                rollup(
+                    "2026-07-02",
+                    1_000,
+                    profileId = "other-profile",
+                    languageTag = languageTag,
+                ),
+                rollup(
+                    "2026-07-02",
+                    1_000,
+                    profileId = profileId,
+                    languageTag = LanguageTag("en"),
+                ),
+                rollup(
+                    "2026-07-02",
+                    1_000,
+                    titleId = TITLE_TWO,
+                    profileId = profileId,
+                    languageTag = languageTag,
+                ),
+                rollup(
+                    "2026-07-02",
+                    1_000,
+                    profileId = profileId,
+                    languageTag = languageTag,
+                    provenanceState = ProvenanceState.PARTIAL,
+                ),
+                rollup(
+                    "2026-07-02",
+                    1_000,
+                    profileId = profileId,
+                    languageTag = languageTag,
+                    provenanceState = ProvenanceState.LEGACY_AGGREGATE,
+                ),
+                rollup(
+                    "2026-07-02",
+                    1_000,
+                    replay = true,
+                    profileId = profileId,
+                    languageTag = languageTag,
+                ),
+            )
+            stub(rows)
+            val currentFilter = filter.copy(comparisonRange = null)
+            val previousFilter = filter.copy(dateRange = previous, comparisonRange = null)
+            val historyFilter = filter.copy(dateRange = null, comparisonRange = null)
+            val currentInventory = inventory(distinct = 3, new = 2)
+            val previousInventory = inventory(distinct = 1, new = 1)
+            val quality = AnalyticsDataQuality(
+                eventBackedSessionCount = 1,
+                sourceUnitCount = 1,
+                indexedSourceUnitCount = 1,
+                textAvailableSourceUnitCount = 1,
+                provenanceState = ProvenanceState.AVAILABLE,
+            )
+            coEvery { repository.inventoryMetrics(currentFilter) } returns currentInventory
+            coEvery { repository.inventoryMetrics(previousFilter) } returns previousInventory
+            coEvery {
+                repository.dataQuality(filter, Instant.parse("2026-07-02T12:00:00Z").toEpochMilli())
+            } returns quality
+
+            val result = serviceAt("2026-07-02T12:00:00Z").overview(filter)
+
+            result.value.comparison.current.let { metrics ->
+                metrics.characters.gross.value shouldBe 300
+                metrics.characters.uniqueSource.value shouldBe 120
+                metrics.distinctCharacters.value shouldBe 3
+                metrics.newCharacters.value shouldBe 2
+            }
+            checkNotNull(result.value.comparison.previous).let { metrics ->
+                metrics.characters.gross.value shouldBe 100
+                metrics.characters.uniqueSource.value shouldBe 40
+                metrics.distinctCharacters.value shouldBe 1
+            }
+            result.value.comparison.characterChangeRatio shouldBe 2.0
+            result.value.streak.currentDays shouldBe 2
+            result.value.streak.qualifyingDates shouldBe setOf(
+                date("2026-07-01"),
+                date("2026-07-02"),
+            )
+            result.quality shouldBe quality
+            coVerify(exactly = 1) { repository.inventoryMetrics(currentFilter) }
+            coVerify(exactly = 1) { repository.inventoryMetrics(previousFilter) }
+            coVerify(exactly = 1) { repository.availableDateRange(historyFilter) }
+            coVerify(exactly = 1) {
+                repository.dataQuality(
+                    filter,
+                    Instant.parse("2026-07-02T12:00:00Z").toEpochMilli(),
+                )
+            }
+        }
 
     @Test
     fun `daily goals apply weekday multipliers and rest days without breaking streaks`() = runTest {
@@ -773,18 +912,24 @@ class ImmersionAnalyticsServiceTest {
         titleId: TitleId = TITLE,
         poisonedInventory: Long = 0,
         sourceUnits: Long = 0,
+        uniqueCharacters: Long = characters,
+        netCharacters: Long = characters,
+        profileId: String = "default",
+        languageTag: LanguageTag = LanguageTag("ja"),
+        mediaKind: MediaKind = MediaKind.NOVEL,
+        provenanceState: ProvenanceState = ProvenanceState.AVAILABLE,
     ) = ImmersionDailyRollup(
         date = date(date),
-        profileId = "default",
-        languageTag = LanguageTag("ja"),
-        mediaKind = MediaKind.NOVEL,
+        profileId = profileId,
+        languageTag = languageTag,
+        mediaKind = mediaKind,
         titleId = titleId,
         metrics = ReadingMetrics(
             activeTime = MillisecondDuration(characters * 10),
             characters = CharacterVolume(
                 gross = NonNegativeCounter(characters),
-                uniqueSource = NonNegativeCounter(characters),
-                netProgress = NetCharacterProgress(characters),
+                uniqueSource = NonNegativeCounter(uniqueCharacters),
+                netProgress = NetCharacterProgress(netCharacters),
             ),
             distinctCharacters = NonNegativeCounter(poisonedInventory),
             newCharacters = NonNegativeCounter(poisonedInventory),
@@ -793,7 +938,7 @@ class ImmersionAnalyticsServiceTest {
             sourceUnits = NonNegativeCounter(sourceUnits),
             sessions = NonNegativeCounter(1),
         ),
-        provenanceState = ProvenanceState.AVAILABLE,
+        provenanceState = provenanceState,
         replay = replay,
         rollupVersion = 2,
     )

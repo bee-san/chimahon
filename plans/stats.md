@@ -1583,6 +1583,11 @@ Additional content:
 - Compose screenshot/golden tests if the repository has a supported harness.
 - Mandatory `spotlessApply` → `spotlessCheck` → `assembleDebug`.
 
+Local JVM coverage asserts every Overview filter dimension across current,
+comparison, inventory, quality, and streak queries. It also asserts that the
+reading-stats widget uses the default Today filter and projects the selected
+character basis, time, speed, and cards from the same Overview metrics.
+
 ### End state / definition of done
 
 - The default Stats screen answers "what did I do today and how does it compare?"
