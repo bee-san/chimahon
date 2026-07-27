@@ -34,6 +34,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Checkout submodules
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --recursive
+
       - name: Dependency Review
         if: github.event.repository.fork == false
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
