@@ -343,15 +343,6 @@ val verifyNativeSourceCompliance by tasks.registering {
         ) {
             "applicationSourceArchiveUrl must identify the tagged release source archive exactly."
         }
-        val applicationTag = resolveRemoteAnnotatedTag(
-            applicationSourceRepository,
-            applicationSourceTag,
-            "Application source",
-        )
-        check(applicationTag.commitId == currentGitHead()) {
-            "Application source tag must peel to the checked-out Git HEAD."
-        }
-
         val artifacts = (manifest["artifacts"] as List<*>).map {
             it.requiredObject("Native source manifest artifact")
         }
@@ -404,6 +395,29 @@ val verifyNativeSourceCompliance by tasks.registering {
             } == 1,
         ) {
             "${noticeLibraryFile.name} must expose applicationSourceArchiveUrl as a structured Corresponding Source link."
+        }
+    }
+}
+
+val verifyApplicationReleaseSourceCompliance by tasks.registering {
+    group = "verification"
+    description = "Requires the application release source tag to identify the checked-out commit."
+    dependsOn(verifyNativeSourceCompliance)
+    inputs.file(nativeSourceManifest)
+
+    doLast {
+        val manifest = JsonSlurper().parse(nativeSourceManifest).requiredObject("Native source manifest")
+        val applicationSourceTag = manifest.requiredString(
+            "applicationSourceTag",
+            "Native source manifest",
+        )
+        val applicationTag = resolveRemoteAnnotatedTag(
+            applicationSourceRepository,
+            applicationSourceTag,
+            "Application source",
+        )
+        check(applicationTag.commitId == currentGitHead()) {
+            "Application source tag must peel to the checked-out Git HEAD."
         }
     }
 }
@@ -500,17 +514,24 @@ val verifyAnimatedSceneReleaseReadiness by tasks.registering {
     }
 }
 
-val nativeDistributionTaskPrefix = Regex("^(assemble|bundle|package|sign|publish|upload)", RegexOption.IGNORE_CASE)
-val nativeDistributionVariant = Regex("(releaseTest|release|foss|preview|benchmark)", RegexOption.IGNORE_CASE)
+val nativeDistributionTaskPrefix = Regex("^(assemble|bundle|package|publish|upload|sign(?=[A-Z]))")
+val nativeDistributionVariant =
+    Regex("(ReleaseTest|Release|Foss|Preview|Benchmark)(Bundle|UniversalApk)?$")
 val nativeDistributionTasks = tasks.matching { task ->
     nativeDistributionTaskPrefix.containsMatchIn(task.name) &&
         nativeDistributionVariant.containsMatchIn(task.name)
+}
+val applicationReleaseTasks = nativeDistributionTasks.matching { task ->
+    Regex("Release(Bundle|UniversalApk)?$").containsMatchIn(task.name)
 }
 nativeDistributionTasks.configureEach {
     dependsOn(
         verifyNativeSourceCompliance,
         verifyAnimatedSceneReleaseReadiness,
     )
+}
+applicationReleaseTasks.configureEach {
+    dependsOn(verifyApplicationReleaseSourceCompliance)
 }
 
 val verifyNativeComplianceTaskWiring by tasks.registering {
@@ -520,9 +541,15 @@ val verifyNativeComplianceTaskWiring by tasks.registering {
     doLast {
         val complianceTask = verifyNativeSourceCompliance.get()
         val complianceTaskProvider = verifyNativeSourceCompliance
+        val applicationComplianceTask = verifyApplicationReleaseSourceCompliance.get()
+        val applicationComplianceTaskProvider = verifyApplicationReleaseSourceCompliance
         val protectedTasks = nativeDistributionTasks.toList()
+        val protectedApplicationReleaseTasks = applicationReleaseTasks.toList()
         check(protectedTasks.isNotEmpty()) {
             "No protected native distribution tasks were found."
+        }
+        check(protectedApplicationReleaseTasks.isNotEmpty()) {
+            "No protected application release tasks were found."
         }
         protectedTasks.forEach { task ->
             check(
@@ -530,6 +557,22 @@ val verifyNativeComplianceTaskWiring by tasks.registering {
                     complianceTaskProvider in task.dependsOn,
             ) {
                 "${task.path} does not depend on ${complianceTask.path}."
+            }
+        }
+        protectedApplicationReleaseTasks.forEach { task ->
+            check(
+                applicationComplianceTask in task.dependsOn ||
+                    applicationComplianceTaskProvider in task.dependsOn,
+            ) {
+                "${task.path} does not depend on ${applicationComplianceTask.path}."
+            }
+        }
+        (protectedTasks - protectedApplicationReleaseTasks.toSet()).forEach { task ->
+            check(
+                applicationComplianceTask !in task.dependsOn &&
+                    applicationComplianceTaskProvider !in task.dependsOn,
+            ) {
+                "Non-release task ${task.path} must not require an application release tag."
             }
         }
         val debugDistributionTasks = tasks.filter {
@@ -550,6 +593,12 @@ val verifyNativeComplianceTaskWiring by tasks.registering {
                 check(task != null && task in protectedTasks) {
                     "Expected protected task $prefix$variant was not found."
                 }
+            }
+        }
+        listOf("assembleRelease", "bundleRelease", "packageRelease").forEach { taskName ->
+            val task = tasks.findByName(taskName)
+            check(task != null && task in protectedApplicationReleaseTasks) {
+                "Expected protected application release task $taskName was not found."
             }
         }
     }

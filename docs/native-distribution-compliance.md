@@ -69,14 +69,16 @@ GitHub release AARs.
 `verifyNativeComplianceMetadata` resolves each coordinate without transitive
 dependencies, checks the AAR hash and annotated tag, and validates packaged
 license metadata. `verifyNativeSourceCompliance` additionally requires the
-verified gate, exact source and toolchain URLs and hashes, structured in-app
-Corresponding Source links, and an annotated application release tag that
-peels to the checked-out commit.
+verified gate, exact source and toolchain URLs and hashes, and structured
+in-app Corresponding Source links. Production release tasks additionally run
+`verifyApplicationReleaseSourceCompliance`, which requires the annotated
+application release tag to peel to the checked-out commit.
 
 Release, release-test, FOSS, preview, and benchmark assembly, bundle, package,
 signing, publishing, and upload task paths depend on this enforcement. Source
 archives and equivalent-source directions must remain available for as long as
-their binaries are offered.
+their binaries are offered. Non-release variants do not require an application
+release tag, so preview and benchmark CI remain usable after a tagged release.
 
 ## Application release status
 

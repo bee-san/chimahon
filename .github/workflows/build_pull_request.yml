@@ -58,14 +58,10 @@ jobs:
       - name: Read distribution gates
         id: distribution_gate
         shell: bash
-        env:
-          GIT_REF_NAME: ${{ github.ref_name }}
-          GIT_REF_TYPE: ${{ github.ref_type }}
         run: |
           set -euo pipefail
           native_gate=$(jq -r '.releaseGate' docs/native-source-manifest.json)
           scene_gate=$(jq -r '.releaseGate' docs/animated-scene-device-validation.json)
-          application_tag=$(jq -r '.applicationSourceTag' docs/native-source-manifest.json)
 
           for gate in "$native_gate" "$scene_gate"; do
             if [[ "$gate" != "blocked" && "$gate" != "verified" ]]; then
@@ -74,21 +70,11 @@ jobs:
             fi
           done
 
-          if [[ -z "$application_tag" || "$application_tag" == "null" ]]; then
-            echo "::error::Native source manifest must identify the application source tag"
-            exit 1
-          fi
-
-          if [[
-            "$native_gate" == "verified" &&
-            "$scene_gate" == "verified" &&
-            "$GIT_REF_TYPE" == "tag" &&
-            "$GIT_REF_NAME" == "$application_tag"
-          ]]; then
+          if [[ "$native_gate" == "verified" && "$scene_gate" == "verified" ]]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::PR and untagged refs use non-distributable debug verification"
+            echo "::notice::Distributable builds remain disabled while a release gate is blocked"
           fi
 
       - name: Validate preview client secret
