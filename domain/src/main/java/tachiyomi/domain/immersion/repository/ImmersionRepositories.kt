@@ -325,6 +325,13 @@ interface ImmersionMaintenanceRepository {
         expectedPreview: ImmersionDeletionPreview,
     ): ImmersionDeletionPreview
 
+    suspend fun previewSessionDeletion(sessionId: SessionId): ImmersionDeletionPreview?
+
+    suspend fun deleteSession(
+        sessionId: SessionId,
+        expectedPreview: ImmersionDeletionPreview,
+    ): ImmersionDeletionPreview?
+
     suspend fun deleteSession(sessionId: SessionId): Boolean
 
     suspend fun beginRollupRebuild(

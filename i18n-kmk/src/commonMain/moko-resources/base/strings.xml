@@ -602,6 +602,7 @@
     <string name="stats_source_navigation_stale">The requested historical source passage has changed or is no longer available.</string>
     <string name="stats_delete_session">Delete session</string>
     <string name="stats_delete_session_warning">Delete this session with %1$s active time and %2$s gross characters? Its private source context and derived totals will also be removed.</string>
+    <string name="stats_delete_preview_failed">The exact deletion preview could not be loaded. Nothing can be deleted until the current impact is available.</string>
     <string name="stats_session_timeline">Session timeline</string>
     <string name="stats_timeline_summary">%1$d timeline buckets aggregating %2$s events.</string>
     <string name="stats_timeline_metrics">%1$s active · %2$s lookups · %3$s card changes · %4$s inactive-state buckets.</string>
@@ -623,9 +624,10 @@
     <string name="stats_goal_timezone_policy">Timezone: activity stays on the local date recorded when it happened; today and future boundaries use the device’s current timezone.</string>
     <string name="stats_goal_edit_prospective">Edits apply from today forward. Existing check-ins and earned milestones are kept.</string>
     <string name="stats_goal_title_required">Select a title filter before creating a finish-title goal.</string>
-    <string name="stats_goal_required_pace">Required pace: %1$s per active day</string>
+    <string name="stats_goal_required_pace">Required pace: %1$s per full-target active day across %2$d remaining active days</string>
     <string name="stats_goal_rolling_seven">Rolling 7-day pace: %1$s</string>
     <string name="stats_goal_rolling_thirty">Rolling 30-day pace: %1$s</string>
+    <string name="stats_goal_forecast_assumptions">Projection uses a %1$d-day pace from %2$d qualifying active days, caps extreme high-volume days, and applies configured weekday and rest-day targets.</string>
     <string name="stats_goal_streaks">Current streak: %1$d · Longest: %2$d</string>
     <string name="stats_goal_rest_day">Today is a configured rest day and does not break the streak.</string>
     <string name="stats_goal_check_in">Check in</string>
@@ -743,7 +745,7 @@
     <string name="stats_delete_language_tag">Language tag (optional)</string>
     <string name="stats_language_tag_hint">For example, ja or en-GB</string>
     <string name="stats_delete_preview">Preview deletion</string>
-    <string name="stats_delete_scoped_preview">Preview: %1$s sessions · %2$s active · %3$s gross characters · %4$s source units · %5$s words · %6$s characters. Confirm only if this matches your intended scope.</string>
+    <string name="stats_delete_scoped_preview">Preview: %1$s sessions · %2$s active · %3$s gross characters · %4$s source units · %5$s words · %6$s characters · %7$s affected goals. Confirm only if this matches your intended scope.</string>
     <string name="stats_delete_matching">Delete matching stats</string>
     <string name="stats_delete_anki_cache">Delete Anki statistics cache</string>
     <string name="stats_delete_anki_cache_summary">Remove only a profile\'s cached Anki inventory; cards in AnkiDroid and reading statistics remain.</string>

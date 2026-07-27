@@ -1156,12 +1156,23 @@ private fun ImmersionGoal.progress(
     } else {
         null
     }
-    val activeDates = dates.filter { multipliers.multiplier(it) > 0.0 }
-    val pace = if (activeDates.isEmpty()) null else achieved / activeDates.size
-    val rollingSeven = achievedByDate.rollingPace(effectiveEnd, 7, multipliers)
-    val rollingThirty = achievedByDate.rollingPace(effectiveEnd, 30, multipliers)
+    val activeWeight = dates.sumOf { multipliers.multiplier(it) }
+    val pace = activeWeight.takeIf { it > 0.0 }?.let { achieved / it }
+    val rollingSeven = achievedByDate.robustRollingPace(
+        end = effectiveEnd,
+        days = GOAL_SHORT_PACE_WINDOW_DAYS,
+        multipliers = multipliers,
+    )
+    val rollingThirty = achievedByDate.robustRollingPace(
+        end = effectiveEnd,
+        days = GOAL_FORECAST_WINDOW_DAYS,
+        multipliers = multipliers,
+    )
+    val forecastWindowStart = effectiveEnd.epochDay - GOAL_FORECAST_WINDOW_DAYS + 1
     val sampleDays = achievedByDate.count { (date, value) ->
-        multipliers.multiplier(date) > 0.0 && value > 0.0
+        date.epochDay >= forecastWindowStart &&
+            multipliers.multiplier(date) > 0.0 &&
+            value > 0.0
     }
     val forecastConfidence = when {
         sampleDays >= 7 -> CapabilityState.AVAILABLE
@@ -1175,18 +1186,19 @@ private fun ImmersionGoal.progress(
     } else {
         null
     }
-    val remainingActiveDays = endDate?.let { deadline ->
+    val remainingActiveDates = endDate?.let { deadline ->
         if (deadline <= effectiveEnd) {
-            0
+            emptyList()
         } else {
             (effectiveEnd.epochDay + 1..deadline.epochDay)
                 .map(::ImmersionLocalDate)
-                .count { multipliers.multiplier(it) > 0.0 }
+                .filter { multipliers.multiplier(it) > 0.0 }
         }
     }
-    val requiredPace = remainingActiveDays
-        ?.takeIf { it > 0 }
-        ?.let { remaining / it }
+    val remainingActiveWeight = remainingActiveDates
+        ?.sumOf { multipliers.multiplier(it) }
+        ?.takeIf { it > 0.0 }
+    val requiredPace = remainingActiveWeight?.let { remaining / it }
     val (currentStreak, longestStreak) = if (dailyGoal) {
         dailyGoalStreaks(
             achievedByDate = achievedByDate,
@@ -1216,6 +1228,9 @@ private fun ImmersionGoal.progress(
         longestStreakDays = longestStreak,
         isRestDay = multipliers.multiplier(effectiveEnd) == 0.0,
         forecastConfidence = forecastConfidence,
+        remainingActiveDays = remainingActiveDates?.size,
+        forecastSampleDays = sampleDays,
+        forecastWindowDays = GOAL_FORECAST_WINDOW_DAYS,
     )
 }
 
@@ -1247,15 +1262,30 @@ private fun String?.parseWeekdayMultipliers(): Map<DayOfWeek, Double> {
 private fun Map<DayOfWeek, Double>.multiplier(date: ImmersionLocalDate): Double =
     getValue(date.toLocalDate().dayOfWeek)
 
-private fun Map<ImmersionLocalDate, Double>.rollingPace(
+private fun Map<ImmersionLocalDate, Double>.robustRollingPace(
     end: ImmersionLocalDate,
     days: Int,
     multipliers: Map<DayOfWeek, Double>,
 ): Double? {
     val start = end.epochDay - days + 1
-    val relevant = filterKeys { it.epochDay in start..end.epochDay }
-    val activeDayCount = relevant.keys.count { multipliers.multiplier(it) > 0.0 }
-    return if (activeDayCount == 0) null else relevant.values.sum() / activeDayCount
+    val normalizedActiveDays = entries
+        .asSequence()
+        .filter { (date) -> date.epochDay in start..end.epochDay }
+        .mapNotNull { (date, value) ->
+            multipliers.multiplier(date)
+                .takeIf { it > 0.0 }
+                ?.let { multiplier -> value / multiplier }
+        }
+        .toList()
+    if (normalizedActiveDays.isEmpty()) return null
+    val positiveDays = normalizedActiveDays.filter { it > 0.0 }
+    if (positiveDays.size < MIN_ROBUST_PACE_DAYS) {
+        return normalizedActiveDays.average()
+    }
+    val sorted = positiveDays.sorted()
+    val cappedDayCount = max(1, sorted.size / 10)
+    val upperBound = sorted[sorted.lastIndex - cappedDayCount]
+    return normalizedActiveDays.sumOf { it.coerceAtMost(upperBound) } / normalizedActiveDays.size
 }
 
 private fun projectCompletion(
@@ -1350,6 +1380,10 @@ private fun LocalDateRange.dailyBuckets(): List<LocalDateRange> =
         val date = ImmersionLocalDate(epochDay)
         LocalDateRange(date, date)
     }
+
+private const val GOAL_SHORT_PACE_WINDOW_DAYS = 7
+private const val GOAL_FORECAST_WINDOW_DAYS = 30
+private const val MIN_ROBUST_PACE_DAYS = 5
 
 private fun StatsFilter.forCharacterRange(range: AnalyticsCharacterRange): StatsFilter =
     when (range) {

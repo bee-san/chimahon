@@ -689,6 +689,7 @@ private fun ScopedDeletionDialog(
                             NumberFormat.getIntegerInstance().format(it.sourceUnits),
                             NumberFormat.getIntegerInstance().format(it.words),
                             NumberFormat.getIntegerInstance().format(it.characters),
+                            NumberFormat.getIntegerInstance().format(it.goals),
                         ),
                     )
                 }

@@ -1,5 +1,9 @@
 # Immersion statistics continuation checkpoint
 
+> Superseded by `immersion-stats-completion-audit.md` and
+> `immersion-stats-legacy-retirement-runbook.md`. This file is retained as the
+> historical handoff before the atomic-start and analytics follow-up commits.
+
 This branch is based on `feat/stats` at
 `0ced34e29691cb189663cbf6e170e4cf920f4284`. The fork's `main` and
 `feat/stats` refs already contain the complete implementation through that

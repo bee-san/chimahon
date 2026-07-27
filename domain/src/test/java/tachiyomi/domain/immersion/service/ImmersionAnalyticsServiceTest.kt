@@ -780,6 +780,81 @@ class ImmersionAnalyticsServiceTest {
     }
 
     @Test
+    fun `goal forecast caps high outliers and normalizes fractional active days`() = runTest {
+        val start = date("2026-07-20")
+        val today = date("2026-07-27")
+        val deadline = date("2026-08-03")
+        stub(
+            listOf(
+                rollup("2026-07-20", 100),
+                rollup("2026-07-21", 100),
+                rollup("2026-07-22", 10_000),
+                rollup("2026-07-23", 100),
+                rollup("2026-07-24", 100),
+                rollup("2026-07-25", 50),
+                rollup("2026-07-27", 100),
+            ),
+        )
+        stubGoals(
+            goal(
+                id = "robust-forecast",
+                target = 20_000.0,
+                period = "TOTAL",
+                type = "DATE_BOUND_TOTAL",
+                startDate = start,
+                endDate = deadline,
+                weekdayMultipliers = "SATURDAY=0.5,SUNDAY=0",
+            ),
+        )
+
+        val progress = serviceAt("2026-07-27T12:00:00Z")
+            .goals(StatsFilter())
+            .value
+            .single()
+
+        progress.rollingThirtyDayPace shouldBe 100.0
+        progress.forecastConfidence shouldBe CapabilityState.AVAILABLE
+        progress.forecastSampleDays shouldBe 7
+        progress.forecastWindowDays shouldBe 30
+        progress.remainingActiveDays shouldBe 6
+        progress.requiredPacePerActiveDay shouldBe (9_450.0 / 5.5)
+        progress.projectedCompletionDate shouldBe date("2026-11-24")
+    }
+
+    @Test
+    fun `goal forecast confidence and outlier handling use recent qualifying days`() = runTest {
+        val start = date("2026-06-01")
+        val today = date("2026-07-30")
+        stub(
+            (1..7).map { day -> rollup("2026-06-${day.toString().padStart(2, '0')}", 100) } +
+                listOf(
+                    rollup("2026-07-28", 100),
+                    rollup("2026-07-29", 100),
+                    rollup("2026-07-30", 100),
+                ),
+        )
+        stubGoals(
+            goal(
+                id = "recent-sample",
+                target = 2_000.0,
+                period = "TOTAL",
+                type = "DATE_BOUND_TOTAL",
+                startDate = start,
+            ),
+        )
+
+        val progress = serviceAt("2026-07-30T12:00:00Z")
+            .goals(StatsFilter())
+            .value
+            .single()
+
+        progress.forecastSampleDays shouldBe 3
+        progress.forecastConfidence shouldBe CapabilityState.PARTIAL
+        progress.rollingThirtyDayPace shouldBe 10.0
+        progress.projectedCompletionDate shouldBe date("2026-11-07")
+    }
+
+    @Test
     fun `goals evaluate stored history instead of the dashboard date range`() = runTest {
         val range = LocalDateRange(date("2026-07-01"), date("2026-07-03"))
         stub(
@@ -1230,6 +1305,7 @@ class ImmersionAnalyticsServiceTest {
         startDate: ImmersionLocalDate,
         endDate: ImmersionLocalDate? = null,
         titleId: TitleId? = null,
+        weekdayMultipliers: String? = null,
     ) = ImmersionGoal(
         id = id,
         type = type,
@@ -1242,7 +1318,7 @@ class ImmersionAnalyticsServiceTest {
         profileId = null,
         languageTag = null,
         titleId = titleId,
-        weekdayMultipliers = null,
+        weekdayMultipliers = weekdayMultipliers,
         restDayPolicy = "SKIP",
         state = "ACTIVE",
         createdAtEpochMillis = 1,
