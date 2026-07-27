@@ -405,13 +405,9 @@ class DefaultImmersionRecorder(
         start: ImmersionSessionStart,
         startEvent: SessionEvent,
     ): EventWriteOutcome {
-        persistSingleWithRetry { repository.upsertTitle(context.title) }.let {
-            if (!it.successful) return it
+        val persisted = persistSingleWithRetry {
+            repository.startSession(context.title, start, startEvent)
         }
-        persistSingleWithRetry { repository.createSession(start) }.let {
-            if (!it.successful) return it
-        }
-        val persisted = persistEventsWithRetry(listOf(startEvent))
         if (persisted.successful) {
             diagnostics.addRollupLag(1)
             rollupScheduler.schedule(startEvent.id, 1)

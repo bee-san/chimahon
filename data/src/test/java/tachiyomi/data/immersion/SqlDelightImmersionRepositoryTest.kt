@@ -455,6 +455,72 @@ class SqlDelightImmersionRepositoryTest {
     }
 
     @Test
+    fun `atomic session start commits title session and event exactly once`() = runTest {
+        val event = sessionStartedEvent()
+
+        repository.startSession(title(), sessionStart(), event) shouldBe PersistenceResult.Applied
+        repository.startSession(title(), sessionStart(), event) shouldBe PersistenceResult.AlreadyApplied
+
+        queryLong("SELECT count(*) FROM immersion_title") shouldBe 1
+        queryLong("SELECT count(*) FROM immersion_session") shouldBe 1
+        queryLong("SELECT count(*) FROM immersion_event") shouldBe 1
+        repository.getSession(SESSION_ID)?.let { session ->
+            session.lastSequence shouldBe 1
+            session.lastHeartbeatAtEpochMillis shouldBe event.occurredAtEpochMillis
+        } shouldNotBe null
+    }
+
+    @Test
+    fun `atomic session start rolls every row back when event insertion fails`() = runTest {
+        driver.execute(
+            null,
+            """
+            CREATE TRIGGER simulate_session_start_crash
+            BEFORE INSERT ON immersion_event
+            BEGIN
+                SELECT RAISE(ABORT, 'simulated crash');
+            END
+            """.trimIndent(),
+            0,
+        ).value
+
+        runCatching {
+            repository.startSession(title(), sessionStart(), sessionStartedEvent())
+        }.exceptionOrNull() shouldNotBe null
+
+        queryLong("SELECT count(*) FROM immersion_title") shouldBe 0
+        queryLong("SELECT count(*) FROM immersion_session") shouldBe 0
+        queryLong("SELECT count(*) FROM immersion_event") shouldBe 0
+        queryLong("SELECT count(*) FROM immersion_rollup_dirty") shouldBe 0
+        queryLong(
+            "SELECT revision FROM immersion_rollup_state WHERE scope_key = 'global'",
+        ) shouldBe 0
+    }
+
+    @Test
+    fun `atomic session start preserves typed identity conflicts without partial updates`() = runTest {
+        val event = sessionStartedEvent()
+        repository.startSession(title(), sessionStart(), event) shouldBe PersistenceResult.Applied
+
+        val error = runCatching {
+            repository.startSession(
+                title().copy(
+                    displayTitle = "Changed title",
+                    updatedAtEpochMillis = 2_000,
+                ),
+                sessionStart().copy(deviceId = "conflicting-device"),
+                event,
+            )
+        }.exceptionOrNull()
+
+        error shouldNotBe null
+        (error as ImmersionDataException).code shouldBe PersistenceErrorCode.IDENTITY_CONFLICT
+        queryStrings("SELECT display_title FROM immersion_title") shouldContainExactly listOf("Test title")
+        queryLong("SELECT count(*) FROM immersion_session") shouldBe 1
+        queryLong("SELECT count(*) FROM immersion_event") shouldBe 1
+    }
+
+    @Test
     fun `session counter repair reconstructs event-backed counters`() = runTest {
         prepareSession()
         repository.appendExposure(exposure(sequence = 1, eventNumber = 2)) shouldBe PersistenceResult.Applied
@@ -6070,6 +6136,15 @@ class SqlDelightImmersionRepositoryTest {
         startOffsetSeconds = 0,
         captureVersion = 1,
         schemaVersion = 1,
+    )
+
+    private fun sessionStartedEvent() = SessionEvent(
+        id = eventId(0),
+        sessionId = SESSION_ID,
+        sequence = 1,
+        occurredAtEpochMillis = 1_000,
+        timezoneOffsetSeconds = 0,
+        type = EventType.SESSION_STARTED,
     )
 
     private fun exposure(
