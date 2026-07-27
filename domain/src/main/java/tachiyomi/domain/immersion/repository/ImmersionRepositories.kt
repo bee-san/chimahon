@@ -49,6 +49,7 @@ import tachiyomi.domain.immersion.model.MillisecondDuration
 import tachiyomi.domain.immersion.model.PersistenceResult
 import tachiyomi.domain.immersion.model.RecordedImmersionEvent
 import tachiyomi.domain.immersion.model.SessionCursor
+import tachiyomi.domain.immersion.model.SessionEvent
 import tachiyomi.domain.immersion.model.SessionId
 import tachiyomi.domain.immersion.model.SessionPage
 import tachiyomi.domain.immersion.model.SessionStatus
@@ -60,6 +61,12 @@ import tachiyomi.domain.immersion.service.AnkiCoverage
 
 interface ImmersionRecorderRepository {
     suspend fun isTitleCaptureExcluded(titleId: TitleId): Boolean = false
+
+    suspend fun startSession(
+        title: ImmersionTitle,
+        session: ImmersionSessionStart,
+        event: SessionEvent,
+    ): PersistenceResult
 
     suspend fun upsertTitle(title: ImmersionTitle): PersistenceResult
 

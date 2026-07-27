@@ -12,6 +12,7 @@ import tachiyomi.domain.immersion.model.MillisecondDuration
 import tachiyomi.domain.immersion.model.PersistenceErrorCode
 import tachiyomi.domain.immersion.model.PersistenceResult
 import tachiyomi.domain.immersion.model.RecordedImmersionEvent
+import tachiyomi.domain.immersion.model.SessionEvent
 import tachiyomi.domain.immersion.model.SessionId
 import tachiyomi.domain.immersion.model.SessionStatus
 import tachiyomi.domain.immersion.model.SourceUnitId
@@ -33,6 +34,16 @@ class FeatureFlaggedImmersionRecorderRepository(
                 diagnostics.recordError(ImmersionDiagnosticStage.WRITE, error.toDiagnosticCode())
                 true
             }
+    }
+
+    override suspend fun startSession(
+        title: ImmersionTitle,
+        session: ImmersionSessionStart,
+        event: SessionEvent,
+    ): PersistenceResult = guarded(
+        disabled = { disabledDelegate.startSession(title, session, event) },
+    ) {
+        delegate.startSession(title, session, event)
     }
 
     override suspend fun upsertTitle(title: ImmersionTitle): PersistenceResult =
@@ -120,6 +131,12 @@ class FeatureFlaggedImmersionRecorderRepository(
 
 class NoOpImmersionRecorderRepository : ImmersionRecorderRepository {
     override suspend fun isTitleCaptureExcluded(titleId: tachiyomi.domain.immersion.model.TitleId) = false
+
+    override suspend fun startSession(
+        title: ImmersionTitle,
+        session: ImmersionSessionStart,
+        event: SessionEvent,
+    ) = PersistenceResult.Disabled
 
     override suspend fun upsertTitle(title: ImmersionTitle) = PersistenceResult.Disabled
 

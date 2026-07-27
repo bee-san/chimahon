@@ -179,6 +179,29 @@ class SqlDelightImmersionRepository(
             ).executeAsOne() > 0
         }
 
+    override suspend fun startSession(
+        title: ImmersionTitle,
+        session: ImmersionSessionStart,
+        event: SessionEvent,
+    ): PersistenceResult {
+        ensureAtomicSessionStartIdentity(title, session, event)
+        event.requireSupportedActiveDuration()
+        return handler.await(inTransaction = true) {
+            val titleResult = upsertTitleInDatabase(title)
+            val sessionResult = createSessionInDatabase(session)
+            val eventResult = appendSessionEventInDatabase(event)
+            if (
+                titleResult == PersistenceResult.AlreadyApplied &&
+                sessionResult == PersistenceResult.AlreadyApplied &&
+                eventResult == PersistenceResult.AlreadyApplied
+            ) {
+                PersistenceResult.AlreadyApplied
+            } else {
+                PersistenceResult.Applied
+            }
+        }
+    }
+
     override suspend fun upsertTitle(title: ImmersionTitle): PersistenceResult =
         handler.await(inTransaction = true) {
             upsertTitleInDatabase(title)
@@ -186,34 +209,7 @@ class SqlDelightImmersionRepository(
 
     override suspend fun createSession(session: ImmersionSessionStart): PersistenceResult =
         handler.await(inTransaction = true) {
-            val existing = immersionQueries.selectImmersionSessionById(session.id.value).executeAsOneOrNull()
-            if (existing != null) {
-                ensureSessionIdentity(existing, session)
-                return@await PersistenceResult.AlreadyApplied
-            }
-            immersionQueries.insertImmersionSession(
-                id = session.id.value,
-                deviceId = session.deviceId,
-                titleId = session.titleId.value,
-                mediaKind = session.mediaKind.name,
-                languageTag = session.languageTag?.value,
-                profileId = session.profileId,
-                startedAt = session.startedAtEpochMillis,
-                startZoneId = session.startZoneId,
-                startOffsetSeconds = session.startOffsetSeconds.toLong(),
-                captureVersion = session.captureVersion.toLong(),
-                schemaVersion = session.schemaVersion.toLong(),
-                legacyImport = session.legacyImport.toLong(),
-                syncOrigin = session.syncOrigin,
-            )
-            markRollupDirty(
-                session.startedAtEpochMillis,
-                session.startOffsetSeconds,
-                session.titleId.value,
-                "SESSION",
-            )
-            immersionQueries.incrementImmersionRevision(session.startedAtEpochMillis)
-            PersistenceResult.Applied
+            createSessionInDatabase(session)
         }
 
     override suspend fun upsertSourceUnit(source: ImmersionSourceUnit): PersistenceResult =
@@ -4276,6 +4272,37 @@ class SqlDelightImmersionRepository(
         return if (unchanged) PersistenceResult.AlreadyApplied else PersistenceResult.Applied
     }
 
+    private fun Database.createSessionInDatabase(session: ImmersionSessionStart): PersistenceResult {
+        val existing = immersionQueries.selectImmersionSessionById(session.id.value).executeAsOneOrNull()
+        if (existing != null) {
+            ensureSessionIdentity(existing, session)
+            return PersistenceResult.AlreadyApplied
+        }
+        immersionQueries.insertImmersionSession(
+            id = session.id.value,
+            deviceId = session.deviceId,
+            titleId = session.titleId.value,
+            mediaKind = session.mediaKind.name,
+            languageTag = session.languageTag?.value,
+            profileId = session.profileId,
+            startedAt = session.startedAtEpochMillis,
+            startZoneId = session.startZoneId,
+            startOffsetSeconds = session.startOffsetSeconds.toLong(),
+            captureVersion = session.captureVersion.toLong(),
+            schemaVersion = session.schemaVersion.toLong(),
+            legacyImport = session.legacyImport.toLong(),
+            syncOrigin = session.syncOrigin,
+        )
+        markRollupDirty(
+            session.startedAtEpochMillis,
+            session.startOffsetSeconds,
+            session.titleId.value,
+            "SESSION",
+        )
+        immersionQueries.incrementImmersionRevision(session.startedAtEpochMillis)
+        return PersistenceResult.Applied
+    }
+
     private fun Database.upsertSourceInDatabase(source: ImmersionSourceUnit): PersistenceResult {
         val byLocator = immersionQueries.selectImmersionSourceUnitByLocator(
             titleId = source.titleId.value,
@@ -4899,6 +4926,32 @@ private fun ensureSessionIdentity(existing: Immersion_session, expected: Immersi
         existing.schema_version != expected.schemaVersion.toLong()
     ) {
         throw identityConflict("Session ${expected.id.value} was retried with a different identity")
+    }
+}
+
+private fun ensureAtomicSessionStartIdentity(
+    title: ImmersionTitle,
+    session: ImmersionSessionStart,
+    event: SessionEvent,
+) {
+    if (
+        session.titleId != title.id ||
+        session.mediaKind != title.mediaKind ||
+        session.languageTag != title.languageTag ||
+        session.profileId != title.profileId
+    ) {
+        throw identityConflict("Session ${session.id.value} does not match title ${title.id.value}")
+    }
+    if (
+        event.sessionId != session.id ||
+        event.type != EventType.SESSION_STARTED ||
+        event.sequence != 1L ||
+        event.occurredAtEpochMillis != session.startedAtEpochMillis ||
+        event.timezoneOffsetSeconds != session.startOffsetSeconds ||
+        event.activeDuration != MillisecondDuration(0) ||
+        event.netCharacters != NetCharacterProgress.ZERO
+    ) {
+        throw identityConflict("Event ${event.id.value} is not the start of session ${session.id.value}")
     }
 }
 
