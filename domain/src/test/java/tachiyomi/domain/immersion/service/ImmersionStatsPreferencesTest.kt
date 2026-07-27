@@ -12,6 +12,10 @@ import tachiyomi.domain.immersion.model.AnalyticsSort
 import tachiyomi.domain.immersion.model.CharacterMetric
 import tachiyomi.domain.immersion.model.NovelNetProgressPolicy
 import tachiyomi.domain.immersion.model.RawTextRetention
+import tachiyomi.domain.immersion.model.VocabularyCategory
+import tachiyomi.domain.immersion.model.VocabularyExclusion
+import tachiyomi.domain.immersion.model.VocabularyKnownness
+import tachiyomi.domain.immersion.model.VocabularyScript
 
 class ImmersionStatsPreferencesTest {
     private val preferences = ImmersionStatsPreferences(InMemoryPreferenceStore())
@@ -122,6 +126,14 @@ class ImmersionStatsPreferencesTest {
         first.dashboardTrendScale().set(AnalyticsBucketScale.WEEK)
         first.dashboardTrendMetric().set("ACTIVE_TIME")
         first.dashboardVocabularySort().set(AnalyticsSort.FIRST_SEEN)
+        first.dashboardVocabularyKnownness().set(VocabularyKnownness.KNOWN.name)
+        first.dashboardVocabularyScripts().set(setOf(VocabularyScript.KANJI.name))
+        first.dashboardVocabularyCategories().set(setOf(VocabularyCategory.GRAMMAR.name))
+        first.dashboardVocabularyPartOfSpeech().set("particle")
+        first.dashboardVocabularyMinimumOccurrences().set(2)
+        first.dashboardVocabularyMaximumOccurrences().set(200)
+        first.dashboardVocabularyMaximumFrequencyRank().set(10_000)
+        first.dashboardVocabularyExclusion().set(VocabularyExclusion.ALL.name)
         first.dashboardSelectedWordId().set("word-1")
 
         val restored = ImmersionStatsPreferences(store)
@@ -140,6 +152,14 @@ class ImmersionStatsPreferencesTest {
         restored.dashboardTrendScale().get() shouldBe AnalyticsBucketScale.WEEK
         restored.dashboardTrendMetric().get() shouldBe "ACTIVE_TIME"
         restored.dashboardVocabularySort().get() shouldBe AnalyticsSort.FIRST_SEEN
+        restored.dashboardVocabularyKnownness().get() shouldBe VocabularyKnownness.KNOWN.name
+        restored.dashboardVocabularyScripts().get() shouldBe setOf(VocabularyScript.KANJI.name)
+        restored.dashboardVocabularyCategories().get() shouldBe setOf(VocabularyCategory.GRAMMAR.name)
+        restored.dashboardVocabularyPartOfSpeech().get() shouldBe "particle"
+        restored.dashboardVocabularyMinimumOccurrences().get() shouldBe 2
+        restored.dashboardVocabularyMaximumOccurrences().get() shouldBe 200
+        restored.dashboardVocabularyMaximumFrequencyRank().get() shouldBe 10_000
+        restored.dashboardVocabularyExclusion().get() shouldBe VocabularyExclusion.ALL.name
         restored.dashboardSelectedWordId().get() shouldBe "word-1"
     }
 

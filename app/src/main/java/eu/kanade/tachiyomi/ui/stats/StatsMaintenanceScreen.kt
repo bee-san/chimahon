@@ -408,6 +408,16 @@ private fun StatsMaintenanceContent(
             )
         }
         item {
+            ListItem(
+                headlineContent = {
+                    Text(stringResource(KMR.strings.stats_vocabulary_exclusions))
+                },
+                supportingContent = {
+                    Text(stringResource(KMR.strings.stats_vocabulary_exclusions_summary))
+                },
+            )
+        }
+        item {
             MaintenanceAction(
                 title = stringResource(KMR.strings.stats_delete_raw_text),
                 description = stringResource(KMR.strings.stats_delete_raw_text_summary),

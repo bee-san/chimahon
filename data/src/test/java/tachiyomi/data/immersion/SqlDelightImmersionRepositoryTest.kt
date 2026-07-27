@@ -94,6 +94,11 @@ import tachiyomi.domain.immersion.model.SourceUnitId
 import tachiyomi.domain.immersion.model.StatsFilter
 import tachiyomi.domain.immersion.model.TitleId
 import tachiyomi.domain.immersion.model.UnicodeCodePoint
+import tachiyomi.domain.immersion.model.VocabularyCategory
+import tachiyomi.domain.immersion.model.VocabularyExclusion
+import tachiyomi.domain.immersion.model.VocabularyFilter
+import tachiyomi.domain.immersion.model.VocabularyKnownness
+import tachiyomi.domain.immersion.model.VocabularyScript
 import tachiyomi.domain.immersion.service.AnkiOperationToken
 import tachiyomi.domain.immersion.service.ImmersionStatsVersions
 import tachiyomi.domain.immersion.service.PendingAnkiOperation
@@ -2545,10 +2550,10 @@ class SqlDelightImmersionRepositoryTest {
         )
         val words = repository.vocabularyPage(
             filter = filter,
+            vocabularyFilter = VocabularyFilter(),
             sort = AnalyticsSort.ALPHABETICAL,
             offset = 0,
             limit = 100,
-            searchQuery = null,
         ).items.associateBy { it.headword }
         words.getValue("今日").let {
             it.maturity shouldBe MaturityTier.MATURE
@@ -2569,10 +2574,10 @@ class SqlDelightImmersionRepositoryTest {
 
         suspend fun headwordsFor(tier: MaturityTier) = repository.vocabularyPage(
             filter = filter.copy(maturityTiers = setOf(tier)),
+            vocabularyFilter = VocabularyFilter(),
             sort = AnalyticsSort.ALPHABETICAL,
             offset = 0,
             limit = 100,
-            searchQuery = null,
         ).items.map { it.headword }.toSet()
         headwordsFor(MaturityTier.MATURE) shouldBe setOf("今日")
         headwordsFor(MaturityTier.YOUNG) shouldBe setOf("明日")
@@ -2710,6 +2715,7 @@ class SqlDelightImmersionRepositoryTest {
             val filter = baseFilter.copy(ankiMaturityAggregation = aggregation)
             repository.vocabularyPage(
                 filter,
+                VocabularyFilter(),
                 AnalyticsSort.ALPHABETICAL,
                 0,
                 10,
@@ -2723,6 +2729,7 @@ class SqlDelightImmersionRepositoryTest {
             repository.ankiSummary(filter).maturityDistribution shouldBe mapOf(expected to 1L)
             repository.vocabularyPage(
                 filter.copy(maturityTiers = setOf(expected)),
+                VocabularyFilter(),
                 AnalyticsSort.ALPHABETICAL,
                 0,
                 10,
@@ -2736,6 +2743,7 @@ class SqlDelightImmersionRepositoryTest {
                 ankiMaturityAggregation = AnkiMaturityAggregation.MIN_INTERVAL,
                 maturityTiers = setOf(MaturityTier.MATURE),
             ),
+            VocabularyFilter(),
             AnalyticsSort.ALPHABETICAL,
             0,
             10,
@@ -2881,6 +2889,7 @@ class SqlDelightImmersionRepositoryTest {
         repository.availableDateRange(StatsFilter()) shouldBe range
         repository.vocabularyPage(
             StatsFilter(dateRange = range),
+            VocabularyFilter(),
             AnalyticsSort.MOST_OCCURRENCES,
             0,
             100,
@@ -2891,18 +2900,21 @@ class SqlDelightImmersionRepositoryTest {
         }
         repository.vocabularyPage(
             StatsFilter(dateRange = range, includeRereadsAndReplays = false),
+            VocabularyFilter(),
             AnalyticsSort.MOST_OCCURRENCES,
             0,
             100,
         ).items.single().occurrenceCount shouldBe 1
         repository.vocabularyPage(
             StatsFilter(dateRange = range, maturityTiers = setOf(MaturityTier.MATURE)),
+            VocabularyFilter(),
             AnalyticsSort.MOST_OCCURRENCES,
             0,
             100,
         ).items shouldBe emptyList()
         repository.vocabularyPage(
             StatsFilter(dateRange = range, maturityTiers = setOf(MaturityTier.UNKNOWN)),
+            VocabularyFilter(),
             AnalyticsSort.MOST_OCCURRENCES,
             0,
             100,
@@ -3361,6 +3373,113 @@ class SqlDelightImmersionRepositoryTest {
             offset = 0,
             limit = 100,
         ).items shouldBe emptyList()
+    }
+
+    @Test
+    fun `vocabulary workbench filters and exclusions are exact reversible and rollup aware`() = runTest {
+        val date = ImmersionLocalDate.parse("2026-07-20")
+        val range = LocalDateRange(date, date)
+        val startedAt = Instant.parse("2026-07-20T12:00:00Z").toEpochMilli()
+        listOf(
+            Triple("猫", "ねこ", '猫'),
+            Triple("かな", "かな", 'か'),
+            Triple("Alice", "ありす", 'A'),
+            Triple("☆", "ほし", '☆'),
+        ).forEachIndexed { index, (word, reading, character) ->
+            recordScopedAnkiExposure(
+                number = 700 + index,
+                titleId = TITLE_ID,
+                mediaKind = MediaKind.NOVEL,
+                profileId = "profile",
+                languageTag = LanguageTag("ja"),
+                occurredAtEpochMillis = startedAt + index * 1_000,
+                normalizedWord = word,
+                normalizedReading = reading,
+                character = character,
+            )
+        }
+        driver.execute(
+            null,
+            """
+            UPDATE immersion_word
+            SET part_of_speech = CASE id
+                    WHEN 'scope-word-700' THEN 'noun'
+                    WHEN 'scope-word-701' THEN 'particle grammar'
+                    WHEN 'scope-word-702' THEN 'proper name'
+                    ELSE 'symbol'
+                END,
+                frequency_rank = CASE id
+                    WHEN 'scope-word-700' THEN 10
+                    WHEN 'scope-word-701' THEN 20
+                    WHEN 'scope-word-702' THEN 30
+                    ELSE NULL
+                END,
+                jlpt_level = CASE id WHEN 'scope-word-700' THEN 5 ELSE NULL END,
+                grade_level = CASE id WHEN 'scope-word-700' THEN 1 ELSE NULL END
+            """.trimIndent(),
+            0,
+        ).value
+        repository.rebuildRollups(range, ImmersionStatsVersions.ROLLUP, startedAt + 10_000)
+        repository.dirtyRollupRanges(100) shouldBe emptyList()
+
+        suspend fun words(filter: VocabularyFilter = VocabularyFilter()) =
+            repository.vocabularyPage(
+                StatsFilter(dateRange = range),
+                filter,
+                AnalyticsSort.ALPHABETICAL,
+                0,
+                100,
+            ).items
+
+        words(VocabularyFilter(scripts = setOf(VocabularyScript.KANJI)))
+            .map { it.headword } shouldContainExactly listOf("猫")
+        words(VocabularyFilter(scripts = setOf(VocabularyScript.KANA)))
+            .map { it.headword } shouldContainExactly listOf("かな")
+        words(VocabularyFilter(scripts = setOf(VocabularyScript.LATIN)))
+            .map { it.headword } shouldContainExactly listOf("Alice")
+        words(VocabularyFilter(categories = setOf(VocabularyCategory.GRAMMAR)))
+            .map { it.headword } shouldContainExactly listOf("かな")
+        words(VocabularyFilter(categories = setOf(VocabularyCategory.NAME)))
+            .map { it.headword } shouldContainExactly listOf("Alice")
+        words(VocabularyFilter(partOfSpeechQuery = "noun"))
+            .map { it.headword } shouldContainExactly listOf("猫")
+        words(VocabularyFilter(searchQuery = "ありす"))
+            .map { it.headword } shouldContainExactly listOf("Alice")
+        words(VocabularyFilter(minimumOccurrences = 2)) shouldBe emptyList()
+        words(VocabularyFilter(maximumOccurrences = 1)).size shouldBe 4
+        words(VocabularyFilter(maximumFrequencyRank = 15))
+            .map { it.headword } shouldContainExactly listOf("猫")
+        words(VocabularyFilter(knownness = VocabularyKnownness.UNKNOWN)).size shouldBe 4
+        words(VocabularyFilter(knownness = VocabularyKnownness.KNOWN)) shouldBe emptyList()
+        words().single { it.headword == "猫" }.let {
+            it.jlptLevel shouldBe 5
+            it.gradeLevel shouldBe 1
+            it.script shouldBe VocabularyScript.KANJI
+            it.category shouldBe VocabularyCategory.OTHER
+        }
+
+        repository.setWordExclusions(setOf("scope-word-700"), true, startedAt + 20_000) shouldBe 1
+        words().map { it.headword }.toSet() shouldBe setOf("かな", "Alice", "☆")
+        words(VocabularyFilter(exclusion = VocabularyExclusion.EXCLUDED)).single().let {
+            it.headword shouldBe "猫"
+            it.excluded shouldBe true
+        }
+        repository.isIndexEntityExcluded(
+            entityType = "WORD",
+            entityId = "scope-word-700",
+            scopeKeys = listOf(""),
+        ) shouldBe true
+        repository.dirtyRollupRanges(100).map { it.start }.toSet() shouldBe setOf(date)
+
+        repository.rebuildRollups(range, ImmersionStatsVersions.ROLLUP, startedAt + 30_000)
+        repository.inventoryMetrics(StatsFilter(dateRange = range)).uniqueWords shouldBe 3
+        repository.setWordExclusions(setOf("scope-word-700"), false, startedAt + 40_000) shouldBe 1
+        words().map { it.headword }.toSet() shouldBe setOf("猫", "かな", "Alice", "☆")
+        repository.isIndexEntityExcluded(
+            entityType = "WORD",
+            entityId = "scope-word-700",
+            scopeKeys = listOf(""),
+        ) shouldBe false
     }
 
     @Test

@@ -1,6 +1,9 @@
 # Chimahon Immersion Statistics — Product and Implementation Plan
 
-Status: proposed
+Status: implementation in progress
+
+Requirement-level evidence and remaining blockers are tracked in
+`docs/implementation/immersion-stats-completion-audit.md`.
 Research date: 2026-07-25
 Target branch: `feat/stats`
 Target product: Chimahon / Komikku Android app
@@ -1799,20 +1802,20 @@ Phases 8–13; Phase 9 for knownness/maturity.
 
 ### Implementation tasks
 
-- [ ] Build paged list with stable search/sort/filter.
-- [ ] Add filters for knownness, maturity, script, POS, name, kana-only, grammar, occurrence count, date, title, media, and frequency rank.
-- [ ] Add configurable persisted exclusions by normalized word identity.
-- [ ] Define exclusion impact on growth/coverage denominators and expose it in settings.
-- [ ] Add bulk include/exclude with preview.
-- [ ] Add CSV export of the filtered list with versioned headers and no raw source text unless explicitly selected.
-- [ ] Add drill-down occurrence paging grouped by title/source.
-- [ ] Indicate when raw text was deleted but occurrence counts remain.
-- [ ] Link a retained source occurrence back to reader/player if locator resolution succeeds.
+- [x] Build paged list with stable search/sort/filter.
+- [x] Add filters for knownness, maturity, script, POS, name, kana-only, grammar, occurrence count, date, title, media, and frequency rank.
+- [x] Add configurable persisted exclusions by normalized word identity.
+- [x] Define exclusion impact on growth/coverage denominators and expose it in settings.
+- [x] Add bulk include/exclude with preview.
+- [x] Add CSV export of the filtered list with versioned headers and no raw source text unless explicitly selected.
+- [x] Add drill-down occurrence paging grouped by title/source.
+- [x] Indicate when raw text was deleted but occurrence counts remain.
+- [x] Link a retained source occurrence back to reader/player if locator resolution succeeds.
 - [ ] Reuse current mining flow with historical text/audio/screenshot only when those assets are still accessible and user confirms.
-- [ ] Never cache copyrighted media blobs in stats solely to enable future mining.
-- [ ] Add deep link to current dictionary/Anki search.
-- [ ] Add content descriptions combining maturity tier, occurrence count, and knownness without color reliance.
-- [ ] Keep list-state filters across detail navigation.
+- [x] Never cache copyrighted media blobs in stats solely to enable future mining.
+- [x] Add deep link to current dictionary/Anki search.
+- [x] Add content descriptions combining maturity tier, occurrence count, and knownness without color reliance.
+- [x] Keep list-state filters across detail navigation.
 
 ### Tests and verification
 

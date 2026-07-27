@@ -119,6 +119,9 @@ import tachiyomi.domain.immersion.model.SourceUnitId
 import tachiyomi.domain.immersion.model.StatsFilter
 import tachiyomi.domain.immersion.model.TitleId
 import tachiyomi.domain.immersion.model.UnicodeCodePoint
+import tachiyomi.domain.immersion.model.VocabularyCategory
+import tachiyomi.domain.immersion.model.VocabularyFilter
+import tachiyomi.domain.immersion.model.VocabularyScript
 import tachiyomi.domain.immersion.repository.ImmersionAnalyticsRepository
 import tachiyomi.domain.immersion.repository.ImmersionAnkiRepository
 import tachiyomi.domain.immersion.repository.ImmersionGoalRepository
@@ -1085,10 +1088,10 @@ class SqlDelightImmersionRepository(
 
     override suspend fun vocabularyPage(
         filter: StatsFilter,
+        vocabularyFilter: VocabularyFilter,
         sort: AnalyticsSort,
         offset: Long,
         limit: Int,
-        searchQuery: String?,
     ): AnalyticsPage<AnalyticsWordRow> {
         require(offset >= 0)
         require(limit in 1..MAX_PAGE_SIZE)
@@ -1114,7 +1117,19 @@ class SqlDelightImmersionRepository(
                 filterMaturity = args.filterMaturity,
                 maturityAggregation = args.maturityAggregation,
                 maturityTiers = args.maturityTiers,
-                searchQuery = searchQuery?.trim().orEmpty(),
+                searchQuery = vocabularyFilter.searchQuery?.trim().orEmpty(),
+                knownness = vocabularyFilter.knownness.name,
+                filterScripts = vocabularyFilter.scripts.isNotEmpty().toLong(),
+                scripts = vocabularyFilter.scripts.map { it.name }
+                    .ifEmpty { listOf(VocabularyScript.OTHER.name) },
+                filterCategories = vocabularyFilter.categories.isNotEmpty().toLong(),
+                categories = vocabularyFilter.categories.map { it.name }
+                    .ifEmpty { listOf(VocabularyCategory.OTHER.name) },
+                partOfSpeechQuery = vocabularyFilter.partOfSpeechQuery?.trim().orEmpty(),
+                minimumOccurrences = vocabularyFilter.minimumOccurrences,
+                maximumOccurrences = vocabularyFilter.maximumOccurrences,
+                maximumFrequencyRank = vocabularyFilter.maximumFrequencyRank,
+                exclusion = vocabularyFilter.exclusion.name,
                 sort = sort.analyticsSqlSort(),
                 limit = limit.toLong() + 1,
                 offset = offset,
@@ -1137,6 +1152,11 @@ class SqlDelightImmersionRepository(
                         matchConfidence = row.match_confidence
                             .takeIf(String::isNotBlank)
                             ?.let(AnkiMatchConfidence::valueOf),
+                        jlptLevel = row.jlpt_level?.toIntExact("word JLPT level"),
+                        gradeLevel = row.grade_level?.toIntExact("word grade level"),
+                        script = VocabularyScript.valueOf(row.word_script),
+                        category = VocabularyCategory.valueOf(row.word_category),
+                        excluded = row.excluded == 1L,
                     )
                 },
                 nextOffset = if (hasNext) Math.addExact(offset, limit.toLong()) else null,
@@ -3296,6 +3316,68 @@ class SqlDelightImmersionRepository(
                 )
             }
             immersionQueries.incrementImmersionRevision(updatedAtEpochMillis)
+        }
+    }
+
+    override suspend fun setWordExclusions(
+        wordIds: Set<String>,
+        excluded: Boolean,
+        updatedAtEpochMillis: Long,
+    ): Long {
+        require(wordIds.none(String::isBlank)) { "Word IDs cannot be blank" }
+        require(updatedAtEpochMillis >= 0)
+        if (wordIds.isEmpty()) return 0
+        return handler.await(inTransaction = true) {
+            val requestedState = excluded.toLong()
+            val changedWordIds = wordIds
+                .chunked(IMMERSION_INDEX_ID_CHUNK_SIZE)
+                .flatMap { ids ->
+                    immersionQueries.selectImmersionWordIdsByIds(ids)
+                        .executeAsList()
+                        .filter { it.excluded != requestedState }
+                        .map { it.id }
+                }
+            if (changedWordIds.isEmpty()) return@await 0
+            val dirtyScopes = changedWordIds
+                .chunked(IMMERSION_INDEX_ID_CHUNK_SIZE)
+                .flatMap { ids ->
+                    immersionQueries.selectImmersionWordRollupScopes(ids).executeAsList()
+                }
+                .distinctBy { it.local_date to it.title_id }
+            changedWordIds.chunked(IMMERSION_INDEX_ID_CHUNK_SIZE).forEach { ids ->
+                immersionQueries.updateImmersionWordsExcluded(
+                    excluded = requestedState,
+                    wordIds = ids,
+                )
+            }
+            changedWordIds.forEach { wordId ->
+                if (excluded) {
+                    immersionQueries.upsertImmersionExclusion(
+                        id = "vocabulary-word:$wordId",
+                        entityType = IMMERSION_WORD_EXCLUSION_TYPE,
+                        entityId = wordId,
+                        scopeKey = IMMERSION_GLOBAL_EXCLUSION_SCOPE,
+                        reason = "USER_VOCABULARY_EXCLUSION",
+                        createdAt = updatedAtEpochMillis,
+                    )
+                } else {
+                    immersionQueries.deleteImmersionExclusion(
+                        entityType = IMMERSION_WORD_EXCLUSION_TYPE,
+                        entityId = wordId,
+                        scopeKey = IMMERSION_GLOBAL_EXCLUSION_SCOPE,
+                    )
+                }
+            }
+            dirtyScopes.forEach { scope ->
+                immersionQueries.upsertImmersionRollupDirty(
+                    localDate = scope.local_date,
+                    titleId = scope.title_id,
+                    reason = "WORD_EXCLUSION",
+                    updatedAt = updatedAtEpochMillis,
+                )
+            }
+            immersionQueries.incrementImmersionRevision(updatedAtEpochMillis)
+            changedWordIds.size.toLong()
         }
     }
 
@@ -7169,6 +7251,8 @@ private const val PORTABLE_ROLLUP_FINGERPRINT_DOMAIN =
     "chimahon:immersion:portable-rollup-semantic:v3"
 private const val IMMERSION_TITLE_EXCLUSION_TYPE = "TITLE"
 private const val IMMERSION_CAPTURE_EXCLUSION_SCOPE = "capture"
+private const val IMMERSION_WORD_EXCLUSION_TYPE = "WORD"
+private const val IMMERSION_GLOBAL_EXCLUSION_SCOPE = ""
 private const val MILLIS_PER_DAY = 86_400_000L
 private const val MAX_ZONE_OFFSET_MILLIS = 18L * 60L * 60L * 1_000L
 private const val UTF8 = "UTF-8"

@@ -139,6 +139,30 @@ class ImmersionStatsPreferences(
         AnalyticsSort.MOST_OCCURRENCES,
     )
 
+    fun dashboardVocabularyKnownness() =
+        preferenceStore.getString(DASHBOARD_VOCABULARY_KNOWNNESS, "ALL")
+
+    fun dashboardVocabularyScripts() =
+        preferenceStore.getStringSet(DASHBOARD_VOCABULARY_SCRIPTS, emptySet())
+
+    fun dashboardVocabularyCategories() =
+        preferenceStore.getStringSet(DASHBOARD_VOCABULARY_CATEGORIES, emptySet())
+
+    fun dashboardVocabularyPartOfSpeech() =
+        preferenceStore.getString(DASHBOARD_VOCABULARY_PART_OF_SPEECH, "")
+
+    fun dashboardVocabularyMinimumOccurrences() =
+        preferenceStore.getLong(DASHBOARD_VOCABULARY_MINIMUM_OCCURRENCES, -1)
+
+    fun dashboardVocabularyMaximumOccurrences() =
+        preferenceStore.getLong(DASHBOARD_VOCABULARY_MAXIMUM_OCCURRENCES, -1)
+
+    fun dashboardVocabularyMaximumFrequencyRank() =
+        preferenceStore.getLong(DASHBOARD_VOCABULARY_MAXIMUM_FREQUENCY_RANK, -1)
+
+    fun dashboardVocabularyExclusion() =
+        preferenceStore.getString(DASHBOARD_VOCABULARY_EXCLUSION, "INCLUDED")
+
     fun dashboardCharacterSort() = preferenceStore.getEnum(
         DASHBOARD_CHARACTER_SORT,
         AnalyticsSort.MOST_OCCURRENCES,
@@ -189,6 +213,22 @@ class ImmersionStatsPreferences(
         const val DASHBOARD_TREND_METRIC = "immersion_stats_dashboard_trend_metric"
         const val DASHBOARD_TITLE_SORT = "immersion_stats_dashboard_title_sort"
         const val DASHBOARD_VOCABULARY_SORT = "immersion_stats_dashboard_vocabulary_sort"
+        const val DASHBOARD_VOCABULARY_KNOWNNESS =
+            "immersion_stats_dashboard_vocabulary_knownness"
+        const val DASHBOARD_VOCABULARY_SCRIPTS =
+            "immersion_stats_dashboard_vocabulary_scripts"
+        const val DASHBOARD_VOCABULARY_CATEGORIES =
+            "immersion_stats_dashboard_vocabulary_categories"
+        const val DASHBOARD_VOCABULARY_PART_OF_SPEECH =
+            "immersion_stats_dashboard_vocabulary_part_of_speech"
+        const val DASHBOARD_VOCABULARY_MINIMUM_OCCURRENCES =
+            "immersion_stats_dashboard_vocabulary_minimum_occurrences"
+        const val DASHBOARD_VOCABULARY_MAXIMUM_OCCURRENCES =
+            "immersion_stats_dashboard_vocabulary_maximum_occurrences"
+        const val DASHBOARD_VOCABULARY_MAXIMUM_FREQUENCY_RANK =
+            "immersion_stats_dashboard_vocabulary_maximum_frequency_rank"
+        const val DASHBOARD_VOCABULARY_EXCLUSION =
+            "immersion_stats_dashboard_vocabulary_exclusion"
         const val DASHBOARD_CHARACTER_SORT = "immersion_stats_dashboard_character_sort"
         const val DASHBOARD_SELECTED_TITLE_ID = "immersion_stats_dashboard_selected_title_id"
         const val DASHBOARD_SELECTED_WORD_ID = "immersion_stats_dashboard_selected_word_id"
