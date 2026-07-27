@@ -1,0 +1,130 @@
+PRAGMA legacy_alter_table = ON;
+
+CREATE TABLE immersion_title_mutation_session_migration_62 AS
+SELECT operation_id, session_id, previous_title_id
+FROM immersion_title_mutation_session;
+
+CREATE TABLE immersion_title_mutation_source_migration_62 AS
+SELECT operation_id, source_unit_id, previous_title_id
+FROM immersion_title_mutation_source;
+
+CREATE TABLE immersion_title_mutation_goal_migration_62 AS
+SELECT operation_id, goal_id, previous_title_id
+FROM immersion_title_mutation_goal;
+
+DROP TABLE immersion_title_mutation_session;
+DROP TABLE immersion_title_mutation_source;
+DROP TABLE immersion_title_mutation_goal;
+
+ALTER TABLE immersion_title_mutation RENAME TO immersion_title_mutation_legacy;
+
+CREATE TABLE immersion_title_mutation(
+    id TEXT NOT NULL PRIMARY KEY,
+    type TEXT NOT NULL,
+    source_title_id TEXT NOT NULL,
+    target_title_id TEXT,
+    display_title TEXT,
+    previous_display_title TEXT,
+    source_deleted_at_before INTEGER,
+    selection_digest TEXT NOT NULL,
+    sessions INTEGER NOT NULL,
+    source_units INTEGER NOT NULL,
+    goals INTEGER NOT NULL,
+    applied_at INTEGER NOT NULL,
+    rolled_back_at INTEGER,
+    status TEXT NOT NULL,
+    CHECK(type IN ('RENAME', 'MERGE', 'RELINK', 'SPLIT')),
+    CHECK(status IN ('APPLIED', 'ROLLED_BACK')),
+    CHECK(sessions >= 0),
+    CHECK(source_units >= 0),
+    CHECK(goals >= 0),
+    CHECK(rolled_back_at IS NULL OR rolled_back_at >= applied_at)
+);
+
+INSERT INTO immersion_title_mutation(
+    id,
+    type,
+    source_title_id,
+    target_title_id,
+    display_title,
+    previous_display_title,
+    source_deleted_at_before,
+    selection_digest,
+    sessions,
+    source_units,
+    goals,
+    applied_at,
+    rolled_back_at,
+    status
+)
+SELECT
+    id,
+    type,
+    source_title_id,
+    target_title_id,
+    display_title,
+    previous_display_title,
+    source_deleted_at_before,
+    selection_digest,
+    sessions,
+    source_units,
+    goals,
+    applied_at,
+    rolled_back_at,
+    status
+FROM immersion_title_mutation_legacy;
+
+DROP TABLE immersion_title_mutation_legacy;
+
+CREATE INDEX immersion_title_mutation_title_time_index
+ON immersion_title_mutation(source_title_id, applied_at DESC, id DESC);
+
+CREATE INDEX immersion_title_mutation_target_time_index
+ON immersion_title_mutation(target_title_id, applied_at DESC, id DESC);
+
+CREATE TABLE immersion_title_mutation_session(
+    operation_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    previous_title_id TEXT NOT NULL,
+    PRIMARY KEY(operation_id, session_id),
+    FOREIGN KEY(operation_id) REFERENCES immersion_title_mutation(id) ON DELETE CASCADE,
+    FOREIGN KEY(session_id) REFERENCES immersion_session(id) ON DELETE CASCADE
+);
+
+INSERT INTO immersion_title_mutation_session(operation_id, session_id, previous_title_id)
+SELECT operation_id, session_id, previous_title_id
+FROM immersion_title_mutation_session_migration_62;
+
+DROP TABLE immersion_title_mutation_session_migration_62;
+
+CREATE TABLE immersion_title_mutation_source(
+    operation_id TEXT NOT NULL,
+    source_unit_id TEXT NOT NULL,
+    previous_title_id TEXT NOT NULL,
+    PRIMARY KEY(operation_id, source_unit_id),
+    FOREIGN KEY(operation_id) REFERENCES immersion_title_mutation(id) ON DELETE CASCADE,
+    FOREIGN KEY(source_unit_id) REFERENCES immersion_source_unit(id) ON DELETE CASCADE
+);
+
+INSERT INTO immersion_title_mutation_source(operation_id, source_unit_id, previous_title_id)
+SELECT operation_id, source_unit_id, previous_title_id
+FROM immersion_title_mutation_source_migration_62;
+
+DROP TABLE immersion_title_mutation_source_migration_62;
+
+CREATE TABLE immersion_title_mutation_goal(
+    operation_id TEXT NOT NULL,
+    goal_id TEXT NOT NULL,
+    previous_title_id TEXT NOT NULL,
+    PRIMARY KEY(operation_id, goal_id),
+    FOREIGN KEY(operation_id) REFERENCES immersion_title_mutation(id) ON DELETE CASCADE,
+    FOREIGN KEY(goal_id) REFERENCES immersion_goal(id) ON DELETE CASCADE
+);
+
+INSERT INTO immersion_title_mutation_goal(operation_id, goal_id, previous_title_id)
+SELECT operation_id, goal_id, previous_title_id
+FROM immersion_title_mutation_goal_migration_62;
+
+DROP TABLE immersion_title_mutation_goal_migration_62;
+
+PRAGMA legacy_alter_table = OFF;

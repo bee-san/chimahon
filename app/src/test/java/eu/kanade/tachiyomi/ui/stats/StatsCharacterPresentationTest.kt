@@ -60,15 +60,16 @@ class StatsCharacterPresentationTest {
     }
 
     @Test
-    fun `character Anki detail queries each selected profile once and deduplicates cards`() = runTest {
+    fun `character Anki detail batches selected profiles and deduplicates cards`() = runTest {
         val repository = mockk<ImmersionAnkiRepository>()
         val codePoint = UnicodeCodePoint('猫'.code)
         val item = mockk<ImmersionAnkiItem> {
             every { snapshotId } returns "snapshot"
             every { cardId } returns 7
         }
-        coEvery { repository.findCharacterItems("primary", codePoint) } returns listOf(item)
-        coEvery { repository.findCharacterItems("secondary", codePoint) } returns listOf(item)
+        coEvery {
+            repository.findCharacterItems(listOf("primary", "secondary"), codePoint)
+        } returns listOf(item, item)
 
         loadCharacterAnkiItems(
             repository = repository,
@@ -76,7 +77,8 @@ class StatsCharacterPresentationTest {
             codePoint = codePoint,
         ) shouldBe listOf(item)
 
-        coVerify(exactly = 1) { repository.findCharacterItems("primary", codePoint) }
-        coVerify(exactly = 1) { repository.findCharacterItems("secondary", codePoint) }
+        coVerify(exactly = 1) {
+            repository.findCharacterItems(listOf("primary", "secondary"), codePoint)
+        }
     }
 }

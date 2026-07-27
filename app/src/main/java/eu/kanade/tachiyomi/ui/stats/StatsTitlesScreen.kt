@@ -251,6 +251,7 @@ class StatsTitlesScreen(
 
     @Composable
     override fun Content() {
+        StatsRecentsPrivacy()
         val navigator = LocalNavigator.currentOrThrow
 
         val screenModel = rememberScreenModel {

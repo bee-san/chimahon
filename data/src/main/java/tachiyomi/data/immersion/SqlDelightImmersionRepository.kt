@@ -4015,6 +4015,21 @@ class SqlDelightImmersionRepository(
                             updatedAtEpochMillis = appliedAtEpochMillis,
                         )
                     }
+                    is ImmersionTitleMutationRequest.RelinkSession -> {
+                        journalAndMoveTitleMutationRows(
+                            operationId = operationId,
+                            sessions = snapshot.sessions,
+                            sources = snapshot.sources,
+                            goals = emptyList(),
+                            targetTitleId = request.targetTitleId,
+                            updatedAtEpochMillis = appliedAtEpochMillis,
+                        )
+                        beginRollupRebuildInDatabase(
+                            rollupVersion = ImmersionStatsVersions.ROLLUP,
+                            repairCursor = "title-mutation:$operationId",
+                            updatedAtEpochMillis = appliedAtEpochMillis,
+                        )
+                    }
                     is ImmersionTitleMutationRequest.Split -> {
                         journalAndMoveTitleMutationRows(
                             operationId = operationId,
@@ -4077,6 +4092,9 @@ class SqlDelightImmersionRepository(
                     ImmersionTitleMutationType.MERGE -> {
                         rollbackMergeTitleMutation(operation, rolledBackAtEpochMillis)
                     }
+                    ImmersionTitleMutationType.RELINK -> {
+                        rollbackRelinkTitleMutation(operation, rolledBackAtEpochMillis)
+                    }
                     ImmersionTitleMutationType.SPLIT -> {
                         rollbackSplitTitleMutation(operation, rolledBackAtEpochMillis)
                     }
@@ -4116,8 +4134,10 @@ class SqlDelightImmersionRepository(
         if (source == null) blockers += ImmersionTitleMutationBlocker.SOURCE_NOT_FOUND
         when (request) {
             is ImmersionTitleMutationRequest.Rename -> Unit
-            is ImmersionTitleMutationRequest.Merge -> {
-                if (request.sourceTitleId == request.targetTitleId) {
+            is ImmersionTitleMutationRequest.Merge,
+            is ImmersionTitleMutationRequest.RelinkSession,
+            -> {
+                if (request.sourceTitleId == targetTitleId) {
                     blockers += ImmersionTitleMutationBlocker.SAME_TITLE
                 }
                 if (target == null) blockers += ImmersionTitleMutationBlocker.TARGET_NOT_FOUND
@@ -4148,6 +4168,13 @@ class SqlDelightImmersionRepository(
 
         val sessions = when {
             source == null -> emptyList()
+            request is ImmersionTitleMutationRequest.RelinkSession ->
+                immersionQueries.selectImmersionSessionForTitleRelink(
+                    sessionId = request.sessionId.value,
+                    sourceTitleId = source.id,
+                ).executeAsList().map {
+                    TitleMutationRow(it.id, it.title_id)
+                }
             request is ImmersionTitleMutationRequest.Split ->
                 immersionQueries.selectImmersionSessionsForTitleSplit(
                     titleId = source.id,
@@ -4181,21 +4208,26 @@ class SqlDelightImmersionRepository(
         if (request is ImmersionTitleMutationRequest.Split && sessions.isEmpty()) {
             blockers += ImmersionTitleMutationBlocker.EMPTY_SELECTION
         }
+        if (request is ImmersionTitleMutationRequest.RelinkSession && sessions.isEmpty()) {
+            blockers += ImmersionTitleMutationBlocker.SESSION_NOT_FOUND
+        }
 
         val sessionIds = sessions.map(TitleMutationRow::id)
+        val movesSessionSubset = request is ImmersionTitleMutationRequest.RelinkSession ||
+            request is ImmersionTitleMutationRequest.Split
         val sources = when {
             source == null -> emptyList()
-            request is ImmersionTitleMutationRequest.Split && sessionIds.isNotEmpty() ->
+            movesSessionSubset && sessionIds.isNotEmpty() ->
                 immersionQueries.selectImmersionSourcesForTitleSplit(sessionIds, source.id)
                     .executeAsList()
                     .map { TitleMutationRow(it.id, it.title_id) }
-            request is ImmersionTitleMutationRequest.Split -> emptyList()
+            movesSessionSubset -> emptyList()
             else -> immersionQueries.selectImmersionSourcesForTitleMutation(source.id)
                 .executeAsList()
                 .map { TitleMutationRow(it.id, it.title_id) }
         }
         val sharedSourceIds = if (
-            request is ImmersionTitleMutationRequest.Split &&
+            movesSessionSubset &&
             source != null &&
             sessionIds.isNotEmpty()
         ) {
@@ -4214,13 +4246,26 @@ class SqlDelightImmersionRepository(
         ) {
             immersionQueries.selectImmersionMergeSourceConflicts(source.id, target.id)
                 .executeAsList()
+        } else if (
+            request is ImmersionTitleMutationRequest.RelinkSession &&
+            target != null &&
+            sources.isNotEmpty()
+        ) {
+            immersionQueries.selectImmersionRelinkSourceConflicts(
+                sourceUnitIds = sources.map(TitleMutationRow::id),
+                targetTitleId = target.id,
+            ).executeAsList()
         } else {
             emptyList()
         }
         if (conflictSourceIds.isNotEmpty()) {
             blockers += ImmersionTitleMutationBlocker.SOURCE_IDENTITY_CONFLICT
         }
-        val goals = if (source == null || request is ImmersionTitleMutationRequest.Split) {
+        val goals = if (
+            source == null ||
+            request is ImmersionTitleMutationRequest.RelinkSession ||
+            request is ImmersionTitleMutationRequest.Split
+        ) {
             emptyList()
         } else {
             immersionQueries.selectImmersionGoalsForTitleMutation(source.id)
@@ -4457,6 +4502,50 @@ class SqlDelightImmersionRepository(
         )
     }
 
+    private fun Database.rollbackRelinkTitleMutation(
+        operation: Immersion_title_mutation,
+        rolledBackAtEpochMillis: Long,
+    ) {
+        val targetTitleId = checkNotNull(operation.target_title_id)
+        val sessions = immersionQueries.selectImmersionTitleMutationSessions(operation.id)
+            .executeAsList()
+        val sources = immersionQueries.selectImmersionTitleMutationSources(operation.id)
+            .executeAsList()
+        check(
+            sessions.size == 1 && sessions.all { row ->
+                immersionQueries.selectImmersionSessionById(row.session_id)
+                    .executeAsOne()
+                    .title_id == targetTitleId
+            },
+        ) {
+            "Relinked session was reassigned after the operation"
+        }
+        check(
+            sources.all { row ->
+                immersionQueries.selectImmersionSourceUnitById(row.source_unit_id)
+                    .executeAsOne()
+                    .title_id == targetTitleId
+            },
+        ) {
+            "Relinked source units were reassigned after the operation"
+        }
+        sessions.groupBy { it.previous_title_id }.forEach { (titleId, rows) ->
+            rows.map { it.session_id }.chunked(SQLITE_BIND_BATCH_SIZE).forEach { ids ->
+                immersionQueries.updateImmersionSessionTitles(titleId, ids)
+            }
+        }
+        sources.groupBy { it.previous_title_id }.forEach { (titleId, rows) ->
+            rows.map { it.source_unit_id }.chunked(SQLITE_BIND_BATCH_SIZE).forEach { ids ->
+                immersionQueries.updateImmersionSourceTitles(titleId, ids)
+            }
+        }
+        beginRollupRebuildInDatabase(
+            rollupVersion = ImmersionStatsVersions.ROLLUP,
+            repairCursor = "title-rollback:${operation.id}",
+            updatedAtEpochMillis = rolledBackAtEpochMillis,
+        )
+    }
+
     private fun Database.restoreTitleMutationGoals(
         operation: Immersion_title_mutation,
         rolledBackAtEpochMillis: Long,
@@ -4545,26 +4634,68 @@ class SqlDelightImmersionRepository(
 
     override suspend fun upsertGoal(goal: ImmersionGoal) {
         handler.await(inTransaction = true) {
-            immersionQueries.upsertImmersionGoal(
-                id = goal.id,
-                type = goal.type,
-                metric = goal.metric,
-                target = goal.target,
-                period = goal.period,
-                startDate = goal.startDate?.epochDay,
-                endDate = goal.endDate?.epochDay,
-                mediaKind = goal.mediaKind?.name,
-                profileId = goal.profileId,
-                languageTag = goal.languageTag?.value,
-                titleId = goal.titleId?.value,
-                weekdayMultipliers = goal.weekdayMultipliers,
-                restDayPolicy = goal.restDayPolicy,
-                state = goal.state,
-                createdAt = goal.createdAtEpochMillis,
-                updatedAt = goal.updatedAtEpochMillis,
-            )
+            upsertGoalInDatabase(goal)
             immersionQueries.incrementImmersionRevision(goal.updatedAtEpochMillis)
         }
+    }
+
+    override suspend fun restartGoal(
+        expectedGoal: ImmersionGoal,
+        replacementGoal: ImmersionGoal,
+        restartedAtEpochMillis: Long,
+    ): Boolean {
+        require(expectedGoal.id != replacementGoal.id) {
+            "Restarted goal must use a new identity"
+        }
+        require(restartedAtEpochMillis >= expectedGoal.updatedAtEpochMillis)
+        require(replacementGoal.createdAtEpochMillis == restartedAtEpochMillis)
+        require(replacementGoal.updatedAtEpochMillis == restartedAtEpochMillis)
+        require(replacementGoal.state == "ACTIVE")
+        return handler.await(inTransaction = true) {
+            val current = immersionQueries
+                .selectImmersionGoalById(expectedGoal.id)
+                .executeAsOneOrNull()
+                ?.toDomain()
+                ?: return@await false
+            if (current != expectedGoal) return@await false
+            if (
+                immersionQueries
+                    .selectImmersionGoalById(replacementGoal.id)
+                    .executeAsOneOrNull() != null
+            ) {
+                return@await false
+            }
+            upsertGoalInDatabase(
+                current.copy(
+                    state = "ARCHIVED",
+                    updatedAtEpochMillis = restartedAtEpochMillis,
+                ),
+            )
+            upsertGoalInDatabase(replacementGoal)
+            immersionQueries.incrementImmersionRevision(restartedAtEpochMillis)
+            true
+        }
+    }
+
+    private fun Database.upsertGoalInDatabase(goal: ImmersionGoal) {
+        immersionQueries.upsertImmersionGoal(
+            id = goal.id,
+            type = goal.type,
+            metric = goal.metric,
+            target = goal.target,
+            period = goal.period,
+            startDate = goal.startDate?.epochDay,
+            endDate = goal.endDate?.epochDay,
+            mediaKind = goal.mediaKind?.name,
+            profileId = goal.profileId,
+            languageTag = goal.languageTag?.value,
+            titleId = goal.titleId?.value,
+            weekdayMultipliers = goal.weekdayMultipliers,
+            restDayPolicy = goal.restDayPolicy,
+            state = goal.state,
+            createdAt = goal.createdAtEpochMillis,
+            updatedAt = goal.updatedAtEpochMillis,
+        )
     }
 
     override suspend fun getGoals(): List<ImmersionGoal> =
@@ -4731,42 +4862,72 @@ class SqlDelightImmersionRepository(
         normalizedReading: String,
     ): List<ImmersionAnkiItem> =
         handler.await {
-            immersionQueries.selectImmersionAnkiWordItems(
+            val items = immersionQueries.selectImmersionAnkiWordItems(
                 profileId = profileId,
                 languageTag = languageTag.value,
                 normalizedWord = normalizedWord,
                 normalizedReading = normalizedReading,
-            ).executeAsList().map { item ->
-                item.toDomain(
-                    immersionQueries.selectImmersionAnkiCharactersForCard(
-                        snapshotId = item.snapshot_id,
-                        cardId = item.card_id,
+            ).executeAsList()
+            val characters: Map<Pair<String, Long>, Set<UnicodeCodePoint>> = items
+                .map { it.card_id }
+                .distinct()
+                .chunked(ANKI_CHARACTER_QUERY_BATCH_SIZE)
+                .flatMap { cardIds ->
+                    immersionQueries.selectImmersionAnkiCharactersForCards(
+                        snapshotIds = items.map { it.snapshot_id }.distinct(),
+                        cardIds = cardIds,
                     ).executeAsList()
-                        .map { UnicodeCodePoint(it.toIntExact("Anki character")) }
-                        .toSet(),
+                }
+                .groupBy(
+                    keySelector = { it.snapshot_id to it.card_id },
+                    valueTransform = {
+                        UnicodeCodePoint(it.code_point.toIntExact("Anki character"))
+                    },
                 )
+                .mapValues { (_, values) -> values.toSet() }
+            items.map { item ->
+                item.toDomain(characters[item.snapshot_id to item.card_id].orEmpty())
             }
         }
 
     override suspend fun findCharacterItems(
         profileId: String,
         codePoint: UnicodeCodePoint,
-    ): List<ImmersionAnkiItem> =
-        handler.await {
-            immersionQueries.selectImmersionAnkiCharacterItems(
-                profileId = profileId,
+    ): List<ImmersionAnkiItem> = findCharacterItems(listOf(profileId), codePoint)
+
+    override suspend fun findCharacterItems(
+        profileIds: Collection<String>,
+        codePoint: UnicodeCodePoint,
+    ): List<ImmersionAnkiItem> {
+        val normalizedProfileIds = profileIds.filter(String::isNotBlank).distinct()
+        if (normalizedProfileIds.isEmpty()) return emptyList()
+        return handler.await {
+            val items = immersionQueries.selectImmersionAnkiCharacterItemsForProfiles(
+                profileIds = normalizedProfileIds,
                 codePoint = codePoint.value.toLong(),
-            ).executeAsList().map { item ->
-                item.toDomain(
-                    immersionQueries.selectImmersionAnkiCharactersForCard(
-                        snapshotId = item.snapshot_id,
-                        cardId = item.card_id,
+            ).executeAsList()
+            val characters: Map<Pair<String, Long>, Set<UnicodeCodePoint>> = items
+                .map { it.card_id }
+                .distinct()
+                .chunked(ANKI_CHARACTER_QUERY_BATCH_SIZE)
+                .flatMap { cardIds ->
+                    immersionQueries.selectImmersionAnkiCharactersForCards(
+                        snapshotIds = items.map { it.snapshot_id }.distinct(),
+                        cardIds = cardIds,
                     ).executeAsList()
-                        .map { UnicodeCodePoint(it.toIntExact("Anki character")) }
-                        .toSet(),
+                }
+                .groupBy(
+                    keySelector = { it.snapshot_id to it.card_id },
+                    valueTransform = {
+                        UnicodeCodePoint(it.code_point.toIntExact("Anki character"))
+                    },
                 )
+                .mapValues { (_, values) -> values.toSet() }
+            items.map { item ->
+                item.toDomain(characters[item.snapshot_id to item.card_id].orEmpty())
             }
         }
+    }
 
     override suspend fun getWordCoverage(
         profileId: String,
@@ -6125,6 +6286,7 @@ private fun ImmersionTitleMutationRequest.mutationType(): ImmersionTitleMutation
     when (this) {
         is ImmersionTitleMutationRequest.Rename -> ImmersionTitleMutationType.RENAME
         is ImmersionTitleMutationRequest.Merge -> ImmersionTitleMutationType.MERGE
+        is ImmersionTitleMutationRequest.RelinkSession -> ImmersionTitleMutationType.RELINK
         is ImmersionTitleMutationRequest.Split -> ImmersionTitleMutationType.SPLIT
     }
 
@@ -6132,6 +6294,7 @@ private fun ImmersionTitleMutationRequest.targetTitleIdOrNull(): TitleId? =
     when (this) {
         is ImmersionTitleMutationRequest.Rename -> null
         is ImmersionTitleMutationRequest.Merge -> targetTitleId
+        is ImmersionTitleMutationRequest.RelinkSession -> targetTitleId
         is ImmersionTitleMutationRequest.Split -> targetTitleId
     }
 
@@ -6154,6 +6317,9 @@ private fun titleMutationSelectionDigest(
     when (request) {
         is ImmersionTitleMutationRequest.Rename -> output.writeField(request.displayTitle.trim())
         is ImmersionTitleMutationRequest.Merge -> Unit
+        is ImmersionTitleMutationRequest.RelinkSession -> {
+            output.writeField(request.sessionId.value)
+        }
         is ImmersionTitleMutationRequest.Split -> {
             output.writeField(request.displayTitle.trim())
             output.writeLong(request.dateRange.start.epochDay)
@@ -8617,6 +8783,7 @@ private const val MIN_TIMEZONE_OFFSET_SECONDS = -18 * 60 * 60
 private const val MAX_TIMEZONE_OFFSET_SECONDS = 18 * 60 * 60
 private const val COMPLETION_UNIT_METADATA_VERSION = 2L
 private const val ANKI_REPAIR_EVENT_NAMESPACE = "chimahon-immersion-anki-repair-event"
+private const val ANKI_CHARACTER_QUERY_BATCH_SIZE = 500
 private const val TITLE_MUTATION_APPLIED = "APPLIED"
 private const val TITLE_MUTATION_DIGEST_DOMAIN = "chimahon:immersion:title-mutation:v1"
 

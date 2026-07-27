@@ -54,6 +54,7 @@ class ImmersionIndexJob(
                         return Result.retry()
                     }
                     ImmersionIndexBatchDecision.SUCCESS -> {
+                        diagnostics.recordIndexSuccess(System.currentTimeMillis())
                         ImmersionRollupJob.start(applicationContext)
                         return Result.success(
                             androidx.work.workDataOf(

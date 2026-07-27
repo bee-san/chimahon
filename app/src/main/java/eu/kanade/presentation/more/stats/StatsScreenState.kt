@@ -32,6 +32,7 @@ import tachiyomi.domain.immersion.model.ImmersionAnkiItem
 import tachiyomi.domain.immersion.model.ImmersionDeletionPreview
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
 import tachiyomi.domain.immersion.model.ImmersionSession
+import tachiyomi.domain.immersion.model.ImmersionTitleMutationPreview
 import tachiyomi.domain.immersion.model.MaturityTier
 import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.ProvenanceState
@@ -83,6 +84,22 @@ enum class StatsCharacterLayout {
     LIST,
 }
 
+enum class StatsSection {
+    OVERVIEW,
+    HEATMAP,
+    TRENDS,
+    TEMPORAL_ACTIVITY,
+    TITLE_TRENDS,
+    TITLES,
+    VOCABULARY,
+    VOCABULARY_GROWTH,
+    CHARACTERS,
+    CHARACTER_SUMMARY,
+    SESSIONS,
+    GOALS,
+    ANKI,
+}
+
 @Immutable
 data class StatsFilterState(
     val rangePreset: StatsRangePreset = StatsRangePreset.TODAY,
@@ -108,6 +125,30 @@ data class StatsLoadable<T>(
     fun refreshing(): StatsLoadable<T> = copy(refreshing = true, error = false)
 }
 
+internal enum class StatsCollectionLoadState(
+    val showLoading: Boolean,
+    val showError: Boolean,
+    val showContent: Boolean,
+    val showEmpty: Boolean,
+) {
+    LOADING(showLoading = true, showError = false, showContent = false, showEmpty = false),
+    EMPTY(showLoading = false, showError = false, showContent = false, showEmpty = true),
+    CONTENT(showLoading = false, showError = false, showContent = true, showEmpty = false),
+    REFRESHING_CONTENT(showLoading = true, showError = false, showContent = true, showEmpty = false),
+    ERROR(showLoading = false, showError = true, showContent = false, showEmpty = false),
+    STALE_ERROR(showLoading = false, showError = true, showContent = true, showEmpty = false),
+}
+
+internal fun StatsLoadable<*>.collectionLoadState(hasContent: Boolean): StatsCollectionLoadState =
+    when {
+        hasContent && error -> StatsCollectionLoadState.STALE_ERROR
+        hasContent && refreshing -> StatsCollectionLoadState.REFRESHING_CONTENT
+        hasContent -> StatsCollectionLoadState.CONTENT
+        error -> StatsCollectionLoadState.ERROR
+        refreshing -> StatsCollectionLoadState.LOADING
+        else -> StatsCollectionLoadState.EMPTY
+    }
+
 @Immutable
 data class StatsSections(
     val overview: StatsLoadable<AnalyticsResult<AnalyticsOverview>> = StatsLoadable(),
@@ -123,7 +164,39 @@ data class StatsSections(
     val sessions: StatsLoadable<AnalyticsResult<SessionPage>> = StatsLoadable(),
     val goals: StatsLoadable<AnalyticsResult<List<AnalyticsGoalProgress>>> = StatsLoadable(),
     val anki: StatsLoadable<AnalyticsResult<AnalyticsAnkiSummary>> = StatsLoadable(),
-)
+) {
+    internal fun isRefreshing(section: StatsSection): Boolean = when (section) {
+        StatsSection.OVERVIEW -> overview.refreshing
+        StatsSection.HEATMAP -> heatmap.refreshing
+        StatsSection.TRENDS -> trends.refreshing
+        StatsSection.TEMPORAL_ACTIVITY -> temporalActivity.refreshing
+        StatsSection.TITLE_TRENDS -> titleTrends.refreshing
+        StatsSection.TITLES -> titles.refreshing
+        StatsSection.VOCABULARY -> vocabulary.refreshing
+        StatsSection.VOCABULARY_GROWTH -> vocabularyGrowth.refreshing
+        StatsSection.CHARACTERS -> characters.refreshing
+        StatsSection.CHARACTER_SUMMARY -> characterSummary.refreshing
+        StatsSection.SESSIONS -> sessions.refreshing
+        StatsSection.GOALS -> goals.refreshing
+        StatsSection.ANKI -> anki.refreshing
+    }
+
+    internal fun retrying(section: StatsSection): StatsSections = when (section) {
+        StatsSection.OVERVIEW -> copy(overview = overview.refreshing())
+        StatsSection.HEATMAP -> copy(heatmap = heatmap.refreshing())
+        StatsSection.TRENDS -> copy(trends = trends.refreshing())
+        StatsSection.TEMPORAL_ACTIVITY -> copy(temporalActivity = temporalActivity.refreshing())
+        StatsSection.TITLE_TRENDS -> copy(titleTrends = titleTrends.refreshing())
+        StatsSection.TITLES -> copy(titles = titles.refreshing())
+        StatsSection.VOCABULARY -> copy(vocabulary = vocabulary.refreshing())
+        StatsSection.VOCABULARY_GROWTH -> copy(vocabularyGrowth = vocabularyGrowth.refreshing())
+        StatsSection.CHARACTERS -> copy(characters = characters.refreshing())
+        StatsSection.CHARACTER_SUMMARY -> copy(characterSummary = characterSummary.refreshing())
+        StatsSection.SESSIONS -> copy(sessions = sessions.refreshing())
+        StatsSection.GOALS -> copy(goals = goals.refreshing())
+        StatsSection.ANKI -> copy(anki = anki.refreshing())
+    }
+}
 
 @Immutable
 data class StatsSelection(
@@ -155,6 +228,7 @@ data class StatsDetails(
     val characterAnkiItems: StatsLoadable<List<ImmersionAnkiItem>> = StatsLoadable(),
     val session: StatsLoadable<AnalyticsResult<AnalyticsSessionDetail?>> = StatsLoadable(),
     val sessionDeletionPreview: StatsLoadable<ImmersionDeletionPreview> = StatsLoadable(),
+    val sessionRelinkPreview: StatsLoadable<ImmersionTitleMutationPreview> = StatsLoadable(),
     val sourceSearch: StatsLoadable<AnalyticsResult<AnalyticsPage<AnalyticsSourceOccurrence>>> =
         StatsLoadable(),
 )

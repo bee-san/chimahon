@@ -31,6 +31,7 @@ class ImmersionStatsPreferencesTest {
         preferences.uiEnabled().get() shouldBe false
         preferences.ankiSyncEnabled().get() shouldBe false
         preferences.goalsEnabled().get() shouldBe false
+        preferences.goalRemindersEnabled().get() shouldBe false
         preferences.legacyWritesEnabled().get() shouldBe true
         preferences.includeLegacyAggregates().get() shouldBe true
     }
@@ -66,6 +67,7 @@ class ImmersionStatsPreferencesTest {
         previousPreview.uiEnabled().set(true)
         previousPreview.ankiSyncEnabled().set(true)
         previousPreview.goalsEnabled().set(true)
+        previousPreview.goalRemindersEnabled().set(true)
         previousPreview.legacyWritesEnabled().set(false)
 
         previousPreview.applyReleaseRolloutDefaults()
@@ -73,6 +75,7 @@ class ImmersionStatsPreferencesTest {
         previousPreview.uiEnabled().get() shouldBe false
         previousPreview.ankiSyncEnabled().get() shouldBe false
         previousPreview.goalsEnabled().get() shouldBe false
+        previousPreview.goalRemindersEnabled().get() shouldBe false
         previousPreview.legacyWritesEnabled().get() shouldBe true
     }
 

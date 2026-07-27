@@ -21,6 +21,16 @@ sealed interface ImmersionTitleMutationRequest {
         val targetTitleId: TitleId,
     ) : ImmersionTitleMutationRequest
 
+    data class RelinkSession(
+        override val sourceTitleId: TitleId,
+        val targetTitleId: TitleId,
+        val sessionId: SessionId,
+    ) : ImmersionTitleMutationRequest {
+        init {
+            require(sourceTitleId != targetTitleId) { "Session relink target must differ" }
+        }
+    }
+
     data class Split(
         override val sourceTitleId: TitleId,
         val targetTitleId: TitleId,
@@ -51,6 +61,7 @@ sealed interface ImmersionTitleMutationRequest {
 enum class ImmersionTitleMutationType {
     RENAME,
     MERGE,
+    RELINK,
     SPLIT,
 }
 
@@ -67,6 +78,7 @@ enum class ImmersionTitleMutationBlocker {
     ACTIVE_ALIAS,
     ACTIVE_SESSION,
     EMPTY_SELECTION,
+    SESSION_NOT_FOUND,
 }
 
 data class ImmersionTitleMutationPreview(

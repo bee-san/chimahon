@@ -61,6 +61,7 @@ class StatsTitleMaintenanceScreen(
 ) : Screen() {
     @Composable
     override fun Content() {
+        StatsRecentsPrivacy()
         val navigator = LocalNavigator.currentOrThrow
         val parsedTitleId = remember(titleId) { TitleId(titleId) }
         val screenModel = rememberScreenModel {
@@ -496,11 +497,12 @@ private fun MutationHistoryRow(
 private fun titleMutationTypeLabel(type: ImmersionTitleMutationType): String = when (type) {
     ImmersionTitleMutationType.RENAME -> stringResource(KMR.strings.stats_title_operation_rename)
     ImmersionTitleMutationType.MERGE -> stringResource(KMR.strings.stats_title_operation_merge)
+    ImmersionTitleMutationType.RELINK -> stringResource(KMR.strings.stats_title_operation_relink)
     ImmersionTitleMutationType.SPLIT -> stringResource(KMR.strings.stats_title_operation_split)
 }
 
 @Composable
-private fun titleMutationBlockerLabel(blocker: ImmersionTitleMutationBlocker): String =
+internal fun titleMutationBlockerLabel(blocker: ImmersionTitleMutationBlocker): String =
     stringResource(
         when (blocker) {
             ImmersionTitleMutationBlocker.SOURCE_NOT_FOUND ->
@@ -527,6 +529,8 @@ private fun titleMutationBlockerLabel(blocker: ImmersionTitleMutationBlocker): S
                 KMR.strings.stats_title_block_active_session
             ImmersionTitleMutationBlocker.EMPTY_SELECTION ->
                 KMR.strings.stats_title_block_empty_selection
+            ImmersionTitleMutationBlocker.SESSION_NOT_FOUND ->
+                KMR.strings.stats_title_block_session_missing
         },
     )
 

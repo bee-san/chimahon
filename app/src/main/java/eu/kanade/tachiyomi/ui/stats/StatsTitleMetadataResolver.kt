@@ -6,11 +6,11 @@ import android.app.Application
 import androidx.compose.runtime.Immutable
 import com.canopus.chimareader.data.BookStorage
 import tachiyomi.core.common.util.lang.withIOContext
-import tachiyomi.domain.entries.anime.interactor.GetAnime
+import tachiyomi.domain.entries.anime.repository.AnimeRepository
 import tachiyomi.domain.immersion.model.AnalyticsTitleRow
 import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.TitleId
-import tachiyomi.domain.manga.interactor.GetManga
+import tachiyomi.domain.manga.repository.MangaRepository
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.io.File
@@ -93,20 +93,19 @@ class StatsTitleMetadataResolver internal constructor(
     companion object {
         fun create(
             application: Application = Injekt.get(),
-            getManga: GetManga = Injekt.get(),
-            getAnime: GetAnime = Injekt.get(),
+            mangaRepository: MangaRepository = Injekt.get(),
+            animeRepository: AnimeRepository = Injekt.get(),
         ) = StatsTitleMetadataResolver(
             mangaLookup = { ids ->
-                ids.mapNotNull { id ->
-                    getManga.await(id)?.let { manga ->
-                        id to StatsTitleLocalRecord(
+                mangaRepository.getMangaByIds(ids.toList())
+                    .associate { manga ->
+                        manga.id to StatsTitleLocalRecord(
                             displayTitle = manga.title,
                             author = manga.author,
                             coverLocation = manga.thumbnailUrl,
                             favorite = manga.favorite,
                         )
                     }
-                }.toMap()
             },
             novelLookup = { documentIds ->
                 BookStorage.loadAllBooks(application)
@@ -129,16 +128,15 @@ class StatsTitleMetadataResolver internal constructor(
                     }
             },
             videoLookup = { ids ->
-                ids.mapNotNull { id ->
-                    getAnime.await(id)?.let { anime ->
-                        id to StatsTitleLocalRecord(
+                animeRepository.getAnimeByIds(ids.toList())
+                    .associate { anime ->
+                        anime.id to StatsTitleLocalRecord(
                             displayTitle = anime.title,
                             author = anime.author,
                             coverLocation = anime.thumbnailUrl,
                             favorite = anime.favorite,
                         )
                     }
-                }.toMap()
             },
         )
     }

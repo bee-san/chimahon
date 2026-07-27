@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <plurals name="stats_goal_reminder_body">
+        <item quantity="one">%1$d goal still has progress due today.</item>
+        <item quantity="other">%1$d goals still have progress due today.</item>
+    </plurals>
     <plurals name="stats_duration_hours">
         <item quantity="one">%1$d hour</item>
         <item quantity="other">%1$d hours</item>

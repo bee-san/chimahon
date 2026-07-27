@@ -24,6 +24,10 @@ class ImmersionStatsPreferences(
     private val uiEnabledPreference = preferenceStore.getBoolean(UI_ENABLED, false)
     private val ankiSyncEnabledPreference = preferenceStore.getBoolean(ANKI_SYNC_ENABLED, false)
     private val goalsEnabledPreference = preferenceStore.getBoolean(GOALS_ENABLED, false)
+    private val goalRemindersEnabledPreference = preferenceStore.getBoolean(
+        GOAL_REMINDERS_ENABLED,
+        false,
+    )
     private val legacyWritesEnabledPreference = preferenceStore.getBoolean(LEGACY_WRITES_ENABLED, true)
     private val rolloutVersionPreference = preferenceStore.getInt(ROLLOUT_VERSION, 0)
     private val rawTextRetentionPreference = preferenceStore.getEnum(
@@ -44,6 +48,7 @@ class ImmersionStatsPreferences(
             uiEnabled().set(false)
             ankiSyncEnabled().set(false)
             goalsEnabled().set(false)
+            goalRemindersEnabled().set(false)
             legacyWritesEnabled().set(true)
         }
         if (
@@ -64,6 +69,10 @@ class ImmersionStatsPreferences(
     fun ankiSyncEnabled() = ankiSyncEnabledPreference
 
     fun goalsEnabled() = goalsEnabledPreference
+
+    fun goalRemindersEnabled() = goalRemindersEnabledPreference
+
+    fun lastGoalReminderEpochDay() = preferenceStore.getLong(LAST_GOAL_REMINDER_EPOCH_DAY, -1)
 
     fun legacyWritesEnabled() = legacyWritesEnabledPreference
 
@@ -238,6 +247,8 @@ class ImmersionStatsPreferences(
         const val UI_ENABLED = "immersion_stats_ui_enabled"
         const val ANKI_SYNC_ENABLED = "immersion_stats_anki_sync_enabled"
         const val GOALS_ENABLED = "immersion_stats_goals_enabled"
+        const val GOAL_REMINDERS_ENABLED = "immersion_stats_goal_reminders_enabled"
+        const val LAST_GOAL_REMINDER_EPOCH_DAY = "immersion_stats_last_goal_reminder_epoch_day"
         const val LEGACY_WRITES_ENABLED = "immersion_stats_legacy_writes_enabled"
         const val ROLLOUT_VERSION = "immersion_stats_rollout_version"
         const val INCLUDE_LEGACY_AGGREGATES = "immersion_stats_include_legacy_aggregates"

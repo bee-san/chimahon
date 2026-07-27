@@ -9,6 +9,7 @@ import eu.kanade.presentation.more.stats.StatsFilterState
 import eu.kanade.presentation.more.stats.StatsLoadable
 import eu.kanade.presentation.more.stats.StatsRangePreset
 import eu.kanade.presentation.more.stats.StatsScreenState
+import eu.kanade.presentation.more.stats.StatsSection
 import eu.kanade.presentation.more.stats.StatsSections
 import eu.kanade.presentation.more.stats.StatsSelection
 import eu.kanade.presentation.more.stats.StatsTab
@@ -49,6 +50,8 @@ import tachiyomi.domain.immersion.model.AnkiMaturityAggregation
 import tachiyomi.domain.immersion.model.CharacterMetric
 import tachiyomi.domain.immersion.model.ImmersionGoal
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
+import tachiyomi.domain.immersion.model.ImmersionSession
+import tachiyomi.domain.immersion.model.ImmersionTitleMutationRequest
 import tachiyomi.domain.immersion.model.LanguageTag
 import tachiyomi.domain.immersion.model.MaturityTier
 import tachiyomi.domain.immersion.model.MediaKind
@@ -95,6 +98,7 @@ class StatsScreenModel(
     private val characterPagingRequests = StatsPagingRequestTracker()
     private val sourcePagingRequests = StatsPagingRequestTracker()
     private val sessionDetailRequests = StatsPagingRequestTracker()
+    private val sessionRelinkPreviewRequests = StatsPagingRequestTracker()
     private val titleDetailRequests = StatsPagingRequestTracker()
     private val titleAcquisitionRequests = StatsPagingRequestTracker()
     private val titleSessionPagingRequests = StatsPagingRequestTracker()
@@ -307,6 +311,65 @@ class StatsScreenModel(
                         selectTitle(refreshed)
                     }
                 }
+            }
+        }
+    }
+
+    fun retrySection(section: StatsSection) {
+        val current = successState() ?: return
+        if (current.sections.isRefreshing(section)) return
+        if (section == StatsSection.GOALS && !current.goalsEnabled) return
+        if (section == StatsSection.ANKI && !current.ankiEnabled) return
+
+        val generation = refreshGeneration.get()
+        updateSuccess {
+            it.copy(sections = it.sections.retrying(section))
+        }
+        screenModelScope.launch {
+            val state = successState() ?: return@launch
+            if (refreshGeneration.get() != generation) return@launch
+            val filter = state.toStatsFilter()
+            when (section) {
+                StatsSection.OVERVIEW -> loadOverview(generation, filter)
+                StatsSection.HEATMAP -> loadHeatmap(generation, filter)
+                StatsSection.TRENDS -> loadTrends(generation, filter, state.trendScale)
+                StatsSection.TEMPORAL_ACTIVITY -> loadTemporalActivity(generation, filter)
+                StatsSection.TITLE_TRENDS -> loadTitleTrends(
+                    generation = generation,
+                    filter = filter,
+                    scale = state.trendScale,
+                    selection = state.titleTrendSelection,
+                )
+                StatsSection.TITLES -> loadTitles(
+                    generation = generation,
+                    filter = filter,
+                    titleFilter = state.titleFilter,
+                    sort = state.titleSort,
+                )
+                StatsSection.VOCABULARY -> loadVocabulary(
+                    generation,
+                    filter,
+                    state.vocabularySort,
+                )
+                StatsSection.VOCABULARY_GROWTH -> loadVocabularyGrowth(
+                    generation,
+                    filter,
+                    state.trendScale,
+                )
+                StatsSection.CHARACTERS -> loadCharacters(
+                    generation,
+                    filter,
+                    state.characterFilter,
+                    state.characterSort,
+                )
+                StatsSection.CHARACTER_SUMMARY -> loadCharacterSummary(
+                    generation,
+                    filter,
+                    state.characterFilter,
+                )
+                StatsSection.SESSIONS -> loadSessions(generation, filter)
+                StatsSection.GOALS -> loadGoals(generation, filter)
+                StatsSection.ANKI -> loadAnki(generation, filter)
             }
         }
     }
@@ -1229,6 +1292,7 @@ class StatsScreenModel(
 
     fun selectSession(session: tachiyomi.domain.immersion.model.ImmersionSession?) {
         val requestGeneration = sessionDetailRequests.invalidate()
+        sessionRelinkPreviewRequests.invalidate()
         preferences.dashboardSelectedSessionId().set(session?.id?.value.orEmpty())
         updateSuccess {
             it.copy(
@@ -1244,6 +1308,7 @@ class StatsScreenModel(
                     } else {
                         StatsLoadable(refreshing = true)
                     },
+                    sessionRelinkPreview = StatsLoadable(),
                 ),
             )
         }
@@ -1290,6 +1355,94 @@ class StatsScreenModel(
                     )
                 }
             }
+        }
+    }
+
+    fun previewSessionRelink(targetTitleId: TitleId) {
+        val session = successState()?.selection?.session ?: return
+        if (session.titleId == targetTitleId) return
+        val requestGeneration = sessionRelinkPreviewRequests.invalidate()
+        val request = ImmersionTitleMutationRequest.RelinkSession(
+            sourceTitleId = session.titleId,
+            targetTitleId = targetTitleId,
+            sessionId = session.id,
+        )
+        updateSuccess {
+            it.copy(
+                details = it.details.copy(
+                    sessionRelinkPreview = StatsLoadable(refreshing = true),
+                ),
+            )
+        }
+        screenModelScope.launch {
+            val result = runCatching {
+                maintenanceRepository.previewTitleMutation(request)
+            }
+            if (
+                !sessionRelinkPreviewRequests.isCurrent(requestGeneration) ||
+                successState()?.selection?.session?.id != session.id
+            ) {
+                return@launch
+            }
+            updateSuccess {
+                it.copy(
+                    details = it.details.copy(
+                        sessionRelinkPreview = result.fold(
+                            onSuccess = { preview -> StatsLoadable(preview) },
+                            onFailure = { StatsLoadable(error = true) },
+                        ),
+                    ),
+                )
+            }
+        }
+    }
+
+    fun clearSessionRelinkPreview() {
+        sessionRelinkPreviewRequests.invalidate()
+        updateSuccess {
+            it.copy(
+                details = it.details.copy(sessionRelinkPreview = StatsLoadable()),
+            )
+        }
+    }
+
+    fun applySessionRelink() {
+        val state = successState() ?: return
+        val session = state.selection.session ?: return
+        val preview = state.details.sessionRelinkPreview.value ?: return
+        if (!preview.canApply) return
+        sessionRelinkPreviewRequests.invalidate()
+        updateSuccess {
+            it.copy(
+                details = it.details.copy(
+                    sessionRelinkPreview = it.details.sessionRelinkPreview.refreshing(),
+                ),
+            )
+        }
+        screenModelScope.launch {
+            val result = runCatching {
+                maintenanceRepository.applyTitleMutation(
+                    expectedPreview = preview,
+                    appliedAtEpochMillis = System.currentTimeMillis(),
+                )
+                repairAllDirtyRollups()
+            }
+            if (successState()?.selection?.session?.id != session.id) return@launch
+            result.fold(
+                onSuccess = {
+                    selectSession(null)
+                    refresh()
+                },
+                onFailure = {
+                    updateSuccess { latest ->
+                        latest.copy(
+                            details = latest.details.copy(
+                                sessionRelinkPreview = StatsLoadable(error = true),
+                            ),
+                        )
+                    }
+                },
+            )
         }
     }
 
@@ -1938,8 +2091,8 @@ class StatsScreenModel(
         if (!state.goalsEnabled) return false
         val now = System.currentTimeMillis()
         val today = ImmersionLocalDate.from(today())
-        val goal = if (existing == null) {
-            createStatsGoal(
+        val goal = when {
+            existing == null -> createStatsGoal(
                 id = UUID.randomUUID().toString(),
                 values = values,
                 scope = StatsGoalScope(
@@ -1954,8 +2107,14 @@ class StatsScreenModel(
                 ),
                 nowEpochMillis = now,
             )
-        } else {
-            editStatsGoalProspectively(
+            values.editMode == StatsGoalEditMode.RESTART_HISTORY -> restartStatsGoalHistory(
+                existing = existing,
+                replacementId = UUID.randomUUID().toString(),
+                values = values,
+                restartDate = today,
+                nowEpochMillis = now,
+            )
+            else -> editStatsGoalProspectively(
                 existing = existing,
                 values = values,
                 prospectiveStartDate = today,
@@ -1963,7 +2122,15 @@ class StatsScreenModel(
             )
         } ?: return false
         screenModelScope.launch {
-            analyticsService.saveGoal(goal)
+            if (existing != null && values.editMode == StatsGoalEditMode.RESTART_HISTORY) {
+                analyticsService.restartGoal(
+                    expectedGoal = existing,
+                    replacementGoal = goal,
+                    restartedAtEpochMillis = now,
+                )
+            } else {
+                analyticsService.saveGoal(goal)
+            }
             refresh()
         }
         return true
@@ -1982,14 +2149,14 @@ class StatsScreenModel(
         }
     }
 
-    fun checkInGoal(goalId: String) {
+    fun checkInGoal(goalId: String, note: String?) {
         if (successState()?.goalsEnabled != true) return
         screenModelScope.launch {
             analyticsService.checkIn(
                 goalId = goalId,
                 date = ImmersionLocalDate.from(today()),
                 completed = true,
-                note = null,
+                note = note?.trim()?.takeIf(String::isNotEmpty),
             )
             refresh()
         }
@@ -2228,15 +2395,11 @@ class StatsScreenModel(
                 limit = PAGE_SIZE,
             )
         }
-        val optionResult = if (fixedTitleId == null) {
-            runCatching {
-                analyticsService.titles(
-                    filter.copy(titleIds = emptySet()),
-                    AnalyticsSort.ALPHABETICAL,
-                )
-            }
-        } else {
-            null
+        val optionResult = runCatching {
+            analyticsService.titles(
+                StatsFilter(),
+                AnalyticsSort.ALPHABETICAL,
+            )
         }
         val metadataResult = result.getOrNull()?.let { titles ->
             runCatching { titleMetadataResolver.resolve(titles.value.items) }
@@ -2250,7 +2413,7 @@ class StatsScreenModel(
             )
             state.copy(
                 sections = state.sections.copy(titles = next),
-                titleOptions = optionResult?.getOrNull()?.value ?: state.titleOptions,
+                titleOptions = optionResult.getOrNull()?.value ?: state.titleOptions,
                 titleMetadata = metadataResult?.getOrNull() ?: state.titleMetadata,
             )
         }
@@ -2434,6 +2597,30 @@ class StatsScreenModel(
         const val ROLLUP_REPAIR_BATCH_SIZE = 366
         const val CHARACTER_ALL_SCRIPTS_SENTINEL = "*"
     }
+}
+
+internal fun sessionRelinkTargets(
+    session: ImmersionSession,
+    titles: List<tachiyomi.domain.immersion.model.AnalyticsTitleRow>,
+    query: String,
+    limit: Int = 20,
+): List<tachiyomi.domain.immersion.model.AnalyticsTitleRow> {
+    require(limit > 0)
+    val normalizedQuery = query.trim()
+    return titles.asSequence()
+        .filter { title ->
+            title.titleId != session.titleId &&
+                title.mediaKind == session.mediaKind &&
+                title.profileId == session.profileId &&
+                title.languageTag == session.languageTag
+        }
+        .filter { title ->
+            normalizedQuery.isEmpty() ||
+                title.displayTitle.contains(normalizedQuery, ignoreCase = true) ||
+                title.sourceKey.contains(normalizedQuery, ignoreCase = true)
+        }
+        .take(limit)
+        .toList()
 }
 
 private fun StatsSections.refreshing(

@@ -112,6 +112,7 @@ import eu.kanade.tachiyomi.ui.stats.ACTIVE_TIME_GOAL_METRIC
 import eu.kanade.tachiyomi.ui.stats.SOURCE_UNITS_GOAL_METRIC
 import eu.kanade.tachiyomi.ui.stats.StatsComparisonDirection
 import eu.kanade.tachiyomi.ui.stats.StatsGoalDisplayKind
+import eu.kanade.tachiyomi.ui.stats.StatsGoalEditMode
 import eu.kanade.tachiyomi.ui.stats.StatsGoalEditorValues
 import eu.kanade.tachiyomi.ui.stats.StatsGoalForecastPresentation
 import eu.kanade.tachiyomi.ui.stats.StatsGoalKind
@@ -126,11 +127,13 @@ import eu.kanade.tachiyomi.ui.stats.characterFrequencyLevel
 import eu.kanade.tachiyomi.ui.stats.durationMillis
 import eu.kanade.tachiyomi.ui.stats.enabledStatsTabs
 import eu.kanade.tachiyomi.ui.stats.overviewIndexedGrowthMetricValue
+import eu.kanade.tachiyomi.ui.stats.sessionRelinkTargets
 import eu.kanade.tachiyomi.ui.stats.statsDurationParts
 import eu.kanade.tachiyomi.ui.stats.statsGoalDisplayValue
 import eu.kanade.tachiyomi.ui.stats.statsGoalForecastPresentation
 import eu.kanade.tachiyomi.ui.stats.statsOccurrenceKey
 import eu.kanade.tachiyomi.ui.stats.suggestedStatsGoalWeekdayMultipliers
+import eu.kanade.tachiyomi.ui.stats.titleMutationBlockerLabel
 import eu.kanade.tachiyomi.ui.stats.toStatsGoalEditorValues
 import eu.kanade.tachiyomi.util.system.toast
 import kotlinx.coroutines.launch
@@ -180,6 +183,7 @@ import tachiyomi.domain.immersion.model.ImmersionAnkiItem
 import tachiyomi.domain.immersion.model.ImmersionGoal
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
 import tachiyomi.domain.immersion.model.ImmersionSession
+import tachiyomi.domain.immersion.model.ImmersionTitleMutationPreview
 import tachiyomi.domain.immersion.model.MaturityTier
 import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.ProvenanceState
@@ -187,6 +191,7 @@ import tachiyomi.domain.immersion.model.ReadingMetrics
 import tachiyomi.domain.immersion.model.SessionPage
 import tachiyomi.domain.immersion.model.SessionStatus
 import tachiyomi.domain.immersion.model.SourceKind
+import tachiyomi.domain.immersion.model.TitleId
 import tachiyomi.domain.immersion.model.VocabularyCategory
 import tachiyomi.domain.immersion.model.VocabularyExclusion
 import tachiyomi.domain.immersion.model.VocabularyFilter
@@ -213,6 +218,7 @@ fun StatsScreenContent(
     state: StatsScreenState.Success,
     paddingValues: PaddingValues,
     onTabSelect: (StatsTab) -> Unit,
+    onSectionRetry: (StatsSection) -> Unit,
     onRangeSelect: (StatsRangePreset) -> Unit,
     onPeriodMove: (Int) -> Unit,
     onCustomRange: (String, String) -> Boolean,
@@ -260,6 +266,9 @@ fun StatsScreenContent(
     onCharacterSelect: (AnalyticsCharacterRow?) -> Unit,
     onSessionSelect: (ImmersionSession?) -> Unit,
     onSessionDelete: (ImmersionSession) -> Unit,
+    onSessionRelinkPreview: (TitleId) -> Unit,
+    onSessionRelinkPreviewClear: () -> Unit,
+    onSessionRelinkApply: () -> Unit,
     onLoadMoreVocabulary: () -> Unit,
     onLoadMoreTitles: () -> Unit,
     onLoadMoreTitleSessions: () -> Unit,
@@ -273,7 +282,7 @@ fun StatsScreenContent(
     onLoadMoreSessions: () -> Unit,
     onSaveGoal: (StatsGoalEditorValues, ImmersionGoal?) -> Boolean,
     onArchiveGoal: (ImmersionGoal) -> Unit,
-    onCheckInGoal: (String) -> Unit,
+    onCheckInGoal: (String, String?) -> Unit,
     onAnkiRefresh: () -> Unit,
     onAnkiWordCoverageTargetChange: (Int) -> Unit,
     onOpenMissingAnkiWords: () -> Unit,
@@ -321,12 +330,14 @@ fun StatsScreenContent(
                 state = state,
                 onTabSelect = onTabSelect,
                 onSessionSelect = onSessionSelect,
+                onSectionRetry = onSectionRetry,
             )
             StatsTab.ACTIVITY -> ActivityTab(
                 state,
                 onTrendScaleSelect,
                 onTrendMetricSelect,
                 onTitleTrendSelectionSelect,
+                onSectionRetry,
             )
             StatsTab.TITLES -> TitlesTab(
                 state,
@@ -349,6 +360,7 @@ fun StatsScreenContent(
                 onLoadMoreTitleSessions,
                 onLoadMoreTitleCompletedUnits,
                 onLoadMoreTitleSources,
+                onSectionRetry,
             )
             StatsTab.VOCABULARY -> VocabularyTab(
                 state,
@@ -362,6 +374,7 @@ fun StatsScreenContent(
                 onVocabularySelectionClear,
                 onVocabularyExclusionChange,
                 onVocabularyExport,
+                onSectionRetry,
             )
             StatsTab.CHARACTERS -> CharactersTab(
                 state,
@@ -382,24 +395,31 @@ fun StatsScreenContent(
                     onTabSelect(StatsTab.VOCABULARY)
                     onWordSelect(word)
                 },
+                onSectionRetry = onSectionRetry,
             )
             StatsTab.SESSIONS -> SessionsTab(
                 state,
                 onSessionSelect,
                 onSessionDelete,
+                onSessionRelinkPreview,
+                onSessionRelinkPreviewClear,
+                onSessionRelinkApply,
                 onSourceSearch,
                 onLoadMoreSourceSearch,
                 onLoadMoreSessions,
+                onSectionRetry,
             )
             StatsTab.GOALS -> GoalsTab(
                 state,
                 onSaveGoal,
                 onArchiveGoal,
                 onCheckInGoal,
+                onSectionRetry,
             )
             StatsTab.ANKI -> AnkiTab(
                 state = state,
                 onRefresh = onAnkiRefresh,
+                onSectionRetry = onSectionRetry,
                 onWordCoverageTargetChange = onAnkiWordCoverageTargetChange,
                 onOpenMissingWords = onOpenMissingAnkiWords,
                 onOpenMissingCharacters = onOpenMissingAnkiCharacters,
@@ -649,6 +669,7 @@ private fun OverviewTab(
     state: StatsScreenState.Success,
     onTabSelect: (StatsTab) -> Unit,
     onSessionSelect: (ImmersionSession?) -> Unit,
+    onSectionRetry: (StatsSection) -> Unit,
 ) {
     val section = state.sections.overview
     LazyColumn(
@@ -657,7 +678,10 @@ private fun OverviewTab(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            SectionFrame(section) { result ->
+            SectionFrame(
+                section = section,
+                onRetry = { onSectionRetry(StatsSection.OVERVIEW) },
+            ) { result ->
                 OverviewSummary(
                     result,
                     state.filter.characterMetric,
@@ -667,7 +691,10 @@ private fun OverviewTab(
             }
         }
         item {
-            SectionFrame(state.sections.heatmap) { result ->
+            SectionFrame(
+                section = state.sections.heatmap,
+                onRetry = { onSectionRetry(StatsSection.HEATMAP) },
+            ) { result ->
                 ActivityHeatmap(
                     trends = result.value,
                     metric = state.filter.characterMetric,
@@ -675,7 +702,10 @@ private fun OverviewTab(
             }
         }
         item {
-            SectionFrame(state.sections.sessions) { result ->
+            SectionFrame(
+                section = state.sections.sessions,
+                onRetry = { onSectionRetry(StatsSection.SESSIONS) },
+            ) { result ->
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     SectionTitle(stringResource(KMR.strings.stats_recent_sessions))
                     result.value.items.take(3).forEach { session ->
@@ -692,9 +722,100 @@ private fun OverviewTab(
                 }
             }
         }
+        if (state.goalsEnabled) {
+            item {
+                SectionFrame(
+                    section = state.sections.goals,
+                    onRetry = { onSectionRetry(StatsSection.GOALS) },
+                ) { result ->
+                    CompactTodayGoals(
+                        goals = result.value,
+                        onOpenGoals = { onTabSelect(StatsTab.GOALS) },
+                    )
+                }
+            }
+        }
         item {
             val quality = section.value?.quality
             if (quality != null) DataQualityCard(quality)
+        }
+    }
+}
+
+@Composable
+private fun CompactTodayGoals(
+    goals: List<AnalyticsGoalProgress>,
+    onOpenGoals: () -> Unit,
+) {
+    val today = remember { ImmersionLocalDate.from(LocalDate.now()) }
+    val activeToday = goals.filter { progress ->
+        val goal = progress.goal
+        val startDate = goal.startDate
+        val endDate = goal.endDate
+        (startDate == null || startDate <= today) &&
+            (endDate == null || endDate >= today)
+    }
+    if (activeToday.isEmpty()) return
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            SectionTitle(stringResource(KMR.strings.stats_goal_today))
+            TextButton(onClick = onOpenGoals) {
+                Text(stringResource(KMR.strings.stats_view_all))
+            }
+        }
+        activeToday.take(MAX_COMPACT_GOALS).forEach { goal ->
+            CompactTodayGoal(goal, onOpenGoals)
+        }
+    }
+}
+
+@Composable
+private fun CompactTodayGoal(
+    goal: AnalyticsGoalProgress,
+    onClick: () -> Unit,
+) {
+    val fraction = if (goal.todayTarget > 0.0) {
+        (goal.todayAchieved / goal.todayTarget).coerceIn(0.0, 1.0)
+    } else {
+        0.0
+    }
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(goalTypeLabel(goal.goal.type), style = MaterialTheme.typography.labelLarge)
+                Text(
+                    NumberFormat.getPercentInstance().format(fraction),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            }
+            LinearProgressIndicator(
+                progress = { fraction.toFloat() },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                stringResource(
+                    KMR.strings.stats_goal_progress,
+                    formatGoalValue(goal.goal.metric, goal.todayAchieved),
+                    formatGoalValue(goal.goal.metric, goal.todayTarget),
+                ),
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 }
@@ -1015,6 +1136,7 @@ private fun ActivityTab(
     onTrendScaleSelect: (AnalyticsBucketScale) -> Unit,
     onTrendMetricSelect: (StatsTrendMetric) -> Unit,
     onTitleTrendSelectionSelect: (AnalyticsTitleSeriesSelection) -> Unit,
+    onSectionRetry: (StatsSection) -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -1050,7 +1172,10 @@ private fun ActivityTab(
             }
         }
         item {
-            SectionFrame(state.sections.trends) { result ->
+            SectionFrame(
+                section = state.sections.trends,
+                onRetry = { onSectionRetry(StatsSection.TRENDS) },
+            ) { result ->
                 TrendsContent(
                     trends = result.value,
                     metric = state.filter.characterMetric,
@@ -1059,7 +1184,10 @@ private fun ActivityTab(
             }
         }
         item {
-            SectionFrame(state.sections.temporalActivity) { result ->
+            SectionFrame(
+                section = state.sections.temporalActivity,
+                onRetry = { onSectionRetry(StatsSection.TEMPORAL_ACTIVITY) },
+            ) { result ->
                 TemporalPatternsContent(
                     activity = result.value,
                     metric = state.filter.characterMetric,
@@ -1067,7 +1195,10 @@ private fun ActivityTab(
             }
         }
         item {
-            SectionFrame(state.sections.titleTrends) { result ->
+            SectionFrame(
+                section = state.sections.titleTrends,
+                onRetry = { onSectionRetry(StatsSection.TITLE_TRENDS) },
+            ) { result ->
                 TitleContributionsContent(
                     trends = result.value,
                     metric = state.filter.characterMetric,
@@ -1567,11 +1698,13 @@ private fun TitlesTab(
     onLoadMoreSessions: () -> Unit,
     onLoadMoreCompletedUnits: () -> Unit,
     onLoadMoreSources: () -> Unit,
+    onSectionRetry: (StatsSection) -> Unit,
 ) {
     val selected = state.selection.title
     var showUnlinkConfirmation by remember(selected?.titleId) { mutableStateOf(false) }
     val result = state.sections.titles.value
     val rows = result?.value?.items.orEmpty()
+    val loadState = state.sections.titles.collectionLoadState(rows.isNotEmpty())
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -1652,11 +1785,20 @@ private fun TitlesTab(
                 )
             }
         }
-        if (state.sections.titles.error && rows.isEmpty()) {
-            item { SectionError() }
-        } else if (rows.isEmpty() && !state.sections.titles.refreshing) {
+        if (loadState.showLoading) {
+            item { SectionLoading() }
+        }
+        if (loadState.showError) {
+            item {
+                SectionError {
+                    onSectionRetry(StatsSection.TITLES)
+                }
+            }
+        }
+        if (loadState.showEmpty) {
             item { EmptyState() }
-        } else {
+        }
+        if (loadState.showContent) {
             items(rows, key = { it.titleId.value }) { title ->
                 TitleRow(
                     title = title,
@@ -1708,9 +1850,11 @@ private fun VocabularyTab(
     onSelectionClear: () -> Unit,
     onExclusionChange: (Boolean) -> Unit,
     onExport: () -> Unit,
+    onSectionRetry: (StatsSection) -> Unit,
 ) {
     val result = state.sections.vocabulary.value
     val rows = result?.value?.items.orEmpty()
+    val loadState = state.sections.vocabulary.collectionLoadState(rows.isNotEmpty())
     val selectedRows = rows.filter { it.id in state.selectedVocabularyWordIds }
     var showFilters by remember { mutableStateOf(false) }
     var pendingExclusion by remember { mutableStateOf<Boolean?>(null) }
@@ -1764,7 +1908,10 @@ private fun VocabularyTab(
             }
         }
         item {
-            SectionFrame(state.sections.vocabularyGrowth) { result ->
+            SectionFrame(
+                section = state.sections.vocabularyGrowth,
+                onRetry = { onSectionRetry(StatsSection.VOCABULARY_GROWTH) },
+            ) { result ->
                 VocabularyGrowthContent(result.value)
             }
         }
@@ -1778,11 +1925,20 @@ private fun VocabularyTab(
                 )
             }
         }
-        if (state.sections.vocabulary.error && rows.isEmpty()) {
-            item { SectionError() }
-        } else if (rows.isEmpty() && !state.sections.vocabulary.refreshing) {
+        if (loadState.showLoading) {
+            item { SectionLoading() }
+        }
+        if (loadState.showError) {
+            item {
+                SectionError {
+                    onSectionRetry(StatsSection.VOCABULARY)
+                }
+            }
+        }
+        if (loadState.showEmpty) {
             item { EmptyState() }
-        } else {
+        }
+        if (loadState.showContent) {
             items(rows, key = { it.id }) { word ->
                 WordRow(
                     word = word,
@@ -2139,9 +2295,11 @@ private fun CharactersTab(
     onLoadMoreOccurrences: () -> Unit,
     onLoadMoreContainingWords: () -> Unit,
     onContainingWordSelect: (AnalyticsWordRow) -> Unit,
+    onSectionRetry: (StatsSection) -> Unit,
 ) {
     val result = state.sections.characters.value
     val rows = result?.value?.items.orEmpty()
+    val loadState = state.sections.characters.collectionLoadState(rows.isNotEmpty())
     val summary = state.sections.characterSummary.value?.value
     val selectedCodePoints = state.selectedCharacterCodePoints
     val selectedIndex = rows.indexOfFirst {
@@ -2164,6 +2322,7 @@ private fun CharactersTab(
                 state = state,
                 summary = summary,
                 onCoverageTargetChange = onCoverageTargetChange,
+                onSectionRetry = onSectionRetry,
             )
         }
         item(span = { GridItemSpan(maxLineSpan) }) {
@@ -2237,11 +2396,20 @@ private fun CharactersTab(
                 )
             }
         }
-        if (state.sections.characters.error && rows.isEmpty()) {
-            item(span = { GridItemSpan(maxLineSpan) }) { SectionError() }
-        } else if (rows.isEmpty() && !state.sections.characters.refreshing) {
+        if (loadState.showLoading) {
+            item(span = { GridItemSpan(maxLineSpan) }) { SectionLoading() }
+        }
+        if (loadState.showError) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                SectionError {
+                    onSectionRetry(StatsSection.CHARACTERS)
+                }
+            }
+        }
+        if (loadState.showEmpty) {
             item(span = { GridItemSpan(maxLineSpan) }) { EmptyState() }
-        } else {
+        }
+        if (loadState.showContent) {
             items(rows, key = { it.codePoint.value }) { character ->
                 CharacterCell(
                     character = character,
@@ -2267,10 +2435,14 @@ private fun CharacterOverview(
     state: StatsScreenState.Success,
     summary: AnalyticsCharacterSummary?,
     onCoverageTargetChange: (Int) -> Unit,
+    onSectionRetry: (StatsSection) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         SectionTitle(stringResource(KMR.strings.stats_character_overview))
-        SectionFrame(state.sections.characterSummary) { result ->
+        SectionFrame(
+            section = state.sections.characterSummary,
+            onRetry = { onSectionRetry(StatsSection.CHARACTER_SUMMARY) },
+        ) { result ->
             val value = result.value
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 MetricLine(
@@ -2344,7 +2516,10 @@ private fun CharacterOverview(
                 }
             }
         }
-        SectionFrame(state.sections.trends) { result ->
+        SectionFrame(
+            section = state.sections.trends,
+            onRetry = { onSectionRetry(StatsSection.TRENDS) },
+        ) { result ->
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 SectionTitle(stringResource(KMR.strings.stats_character_growth))
                 TrendsContent(
@@ -2472,12 +2647,19 @@ private fun SessionsTab(
     state: StatsScreenState.Success,
     onSelect: (ImmersionSession?) -> Unit,
     onDelete: (ImmersionSession) -> Unit,
+    onRelinkPreview: (TitleId) -> Unit,
+    onRelinkPreviewClear: () -> Unit,
+    onRelinkApply: () -> Unit,
     onSourceSearch: (String) -> Unit,
     onLoadMoreSourceSearch: () -> Unit,
     onLoadMore: () -> Unit,
+    onSectionRetry: (StatsSection) -> Unit,
 ) {
     val result = state.sections.sessions.value
     val sessions = result?.value?.items.orEmpty()
+    val loadState = state.sections.sessions.collectionLoadState(sessions.isNotEmpty())
+    val sourceResults = state.details.sourceSearch.value?.value?.items.orEmpty()
+    val sourceLoadState = state.details.sourceSearch.collectionLoadState(sourceResults.isNotEmpty())
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -2493,9 +2675,11 @@ private fun SessionsTab(
                 placeholder = { Text(stringResource(KMR.strings.stats_source_search)) },
             )
         }
-        val sourceResults = state.details.sourceSearch.value?.value?.items.orEmpty()
         if (state.sourceSearch.isNotBlank()) {
-            if (sourceResults.isNotEmpty()) {
+            if (sourceLoadState.showLoading) {
+                item { SectionLoading() }
+            }
+            if (sourceLoadState.showContent) {
                 items(sourceResults, key = { it.statsOccurrenceKey() }) {
                     SourceOccurrenceRow(it)
                 }
@@ -2505,12 +2689,15 @@ private fun SessionsTab(
                 ) {
                     item { LoadMoreButton(onLoadMoreSourceSearch) }
                 }
-                if (state.details.sourceSearch.error) {
-                    item { SectionError() }
+            }
+            if (sourceLoadState.showError) {
+                item {
+                    SectionError {
+                        onSourceSearch(state.sourceSearch)
+                    }
                 }
-            } else if (state.details.sourceSearch.error) {
-                item { SectionError() }
-            } else if (!state.details.sourceSearch.refreshing) {
+            }
+            if (sourceLoadState.showEmpty) {
                 item { EmptyState() }
             }
             item { HorizontalDivider() }
@@ -2521,16 +2708,30 @@ private fun SessionsTab(
                     fallback = session,
                     detail = state.details.session,
                     deletionPreview = state.details.sessionDeletionPreview,
+                    relinkPreview = state.details.sessionRelinkPreview,
+                    titleOptions = state.titleOptions,
                     onClose = { onSelect(null) },
                     onDelete = { onDelete(session) },
+                    onRelinkPreview = onRelinkPreview,
+                    onRelinkPreviewClear = onRelinkPreviewClear,
+                    onRelinkApply = onRelinkApply,
                 )
             }
         }
-        if (state.sections.sessions.error && sessions.isEmpty()) {
-            item { SectionError() }
-        } else if (sessions.isEmpty() && !state.sections.sessions.refreshing) {
+        if (loadState.showLoading) {
+            item { SectionLoading() }
+        }
+        if (loadState.showError) {
+            item {
+                SectionError {
+                    onSectionRetry(StatsSection.SESSIONS)
+                }
+            }
+        }
+        if (loadState.showEmpty) {
             item { EmptyState() }
-        } else {
+        }
+        if (loadState.showContent) {
             items(sessions, key = { it.id.value }) { session ->
                 SessionRow(session) { onSelect(session) }
             }
@@ -2546,11 +2747,14 @@ private fun GoalsTab(
     state: StatsScreenState.Success,
     onSave: (StatsGoalEditorValues, ImmersionGoal?) -> Boolean,
     onArchive: (ImmersionGoal) -> Unit,
-    onCheckIn: (String) -> Unit,
+    onCheckIn: (String, String?) -> Unit,
+    onSectionRetry: (StatsSection) -> Unit,
 ) {
     val goals = state.sections.goals.value?.value.orEmpty()
+    val loadState = state.sections.goals.collectionLoadState(goals.isNotEmpty())
     var showEditor by remember { mutableStateOf(false) }
     var editingGoal by remember { mutableStateOf<ImmersionGoal?>(null) }
+    var checkingInGoal by remember { mutableStateOf<ImmersionGoal?>(null) }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -2566,11 +2770,20 @@ private fun GoalsTab(
                 Text(stringResource(KMR.strings.stats_goal_create))
             }
         }
-        if (state.sections.goals.error && goals.isEmpty()) {
-            item { SectionError() }
-        } else if (goals.isEmpty() && !state.sections.goals.refreshing) {
+        if (loadState.showLoading) {
+            item { SectionLoading() }
+        }
+        if (loadState.showError) {
+            item {
+                SectionError {
+                    onSectionRetry(StatsSection.GOALS)
+                }
+            }
+        }
+        if (loadState.showEmpty) {
             item { Text(stringResource(KMR.strings.stats_no_goals)) }
-        } else {
+        }
+        if (loadState.showContent) {
             items(goals, key = { it.goal.id }) { goal ->
                 GoalCard(
                     goal = goal,
@@ -2579,7 +2792,7 @@ private fun GoalsTab(
                         showEditor = true
                     },
                     onArchive = { onArchive(goal.goal) },
-                    onCheckIn = { onCheckIn(goal.goal.id) },
+                    onCheckIn = { checkingInGoal = goal.goal },
                 )
             }
         }
@@ -2599,12 +2812,22 @@ private fun GoalsTab(
             },
         )
     }
+    checkingInGoal?.let { goal ->
+        GoalCheckInDialog(
+            onDismiss = { checkingInGoal = null },
+            onConfirm = { note ->
+                onCheckIn(goal.id, note)
+                checkingInGoal = null
+            },
+        )
+    }
 }
 
 @Composable
 private fun AnkiTab(
     state: StatsScreenState.Success,
     onRefresh: () -> Unit,
+    onSectionRetry: (StatsSection) -> Unit,
     onWordCoverageTargetChange: (Int) -> Unit,
     onOpenMissingWords: () -> Unit,
     onOpenMissingCharacters: () -> Unit,
@@ -2618,7 +2841,10 @@ private fun AnkiTab(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            SectionFrame(state.sections.anki) { result ->
+            SectionFrame(
+                section = state.sections.anki,
+                onRetry = { onSectionRetry(StatsSection.ANKI) },
+            ) { result ->
                 val summary = result.value
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     SectionTitle(stringResource(KMR.strings.stats_anki_snapshot))
@@ -4145,10 +4371,16 @@ private fun SessionDetail(
     fallback: ImmersionSession,
     detail: StatsLoadable<AnalyticsResult<AnalyticsSessionDetail?>>,
     deletionPreview: StatsLoadable<tachiyomi.domain.immersion.model.ImmersionDeletionPreview>,
+    relinkPreview: StatsLoadable<ImmersionTitleMutationPreview>,
+    titleOptions: List<AnalyticsTitleRow>,
     onClose: () -> Unit,
     onDelete: () -> Unit,
+    onRelinkPreview: (TitleId) -> Unit,
+    onRelinkPreviewClear: () -> Unit,
+    onRelinkApply: () -> Unit,
 ) {
     var confirmDelete by remember { mutableStateOf(false) }
+    var correctTitle by remember(fallback.id) { mutableStateOf(false) }
     val session = detail.value?.value?.session ?: fallback
     DetailCard(stringResource(KMR.strings.stats_session_detail), onClose) {
         detail.value?.value?.displayTitle?.let {
@@ -4165,6 +4397,11 @@ private fun SessionDetail(
         MetricLine(stringResource(KMR.strings.stats_source_units), formatCount(session.sourceUnitCount.value))
         TextButton(onClick = { confirmDelete = true }) {
             Text(stringResource(KMR.strings.stats_delete_session))
+        }
+        if (!session.legacyImport && session.status != SessionStatus.ACTIVE) {
+            TextButton(onClick = { correctTitle = true }) {
+                Text(stringResource(KMR.strings.stats_session_correct_title))
+            }
         }
         if (session.legacyImport) {
             NoticeCard(stringResource(KMR.strings.stats_legacy_session_detail))
@@ -4228,6 +4465,162 @@ private fun SessionDetail(
                 }
             },
         )
+    }
+    if (correctTitle) {
+        SessionTitleCorrectionDialog(
+            session = session,
+            titleOptions = titleOptions,
+            preview = relinkPreview,
+            onDismiss = {
+                correctTitle = false
+                onRelinkPreviewClear()
+            },
+            onPreview = onRelinkPreview,
+            onApply = onRelinkApply,
+            onClearPreview = onRelinkPreviewClear,
+        )
+    }
+}
+
+@Composable
+private fun SessionTitleCorrectionDialog(
+    session: ImmersionSession,
+    titleOptions: List<AnalyticsTitleRow>,
+    preview: StatsLoadable<ImmersionTitleMutationPreview>,
+    onDismiss: () -> Unit,
+    onPreview: (TitleId) -> Unit,
+    onApply: () -> Unit,
+    onClearPreview: () -> Unit,
+) {
+    var query by remember(session.id) { mutableStateOf("") }
+    var target by remember(session.id) { mutableStateOf<AnalyticsTitleRow?>(null) }
+    val targets = remember(session, titleOptions, query) {
+        sessionRelinkTargets(session, titleOptions, query, SESSION_RELINK_TARGET_LIMIT)
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(KMR.strings.stats_session_correct_title)) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 440.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(stringResource(KMR.strings.stats_session_correct_title_summary))
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = {
+                        query = it
+                        target = null
+                        onClearPreview()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
+                    label = { Text(stringResource(KMR.strings.stats_title_choose_target)) },
+                )
+                if (target == null) {
+                    targets.forEach { option ->
+                        TextButton(
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = {
+                                target = option
+                                query = option.displayTitle
+                                onClearPreview()
+                            },
+                        ) {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Text(
+                                    option.displayTitle,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    option.sourceKey,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                }
+                when {
+                    preview.value != null -> SessionRelinkPreview(preview.value)
+                    preview.error -> Text(
+                        stringResource(KMR.strings.stats_title_mutation_failed),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    preview.refreshing -> Text(stringResource(KMR.strings.stats_loading_section))
+                }
+            }
+        },
+        confirmButton = {
+            val exactPreview = preview.value
+            Button(
+                enabled = !preview.refreshing &&
+                    if (exactPreview == null) target != null else exactPreview.canApply,
+                onClick = {
+                    if (exactPreview == null) {
+                        target?.let { onPreview(it.titleId) }
+                    } else {
+                        onApply()
+                    }
+                },
+            ) {
+                Text(
+                    stringResource(
+                        if (exactPreview == null) {
+                            KMR.strings.stats_title_preview_change
+                        } else {
+                            KMR.strings.stats_title_apply_change
+                        },
+                    ),
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(KMR.strings.stats_close))
+            }
+        },
+    )
+}
+
+@Composable
+private fun SessionRelinkPreview(preview: ImmersionTitleMutationPreview) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            stringResource(KMR.strings.stats_title_mutation_preview),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        MetricLine(stringResource(KMR.strings.stats_sessions), formatCount(preview.sessions))
+        MetricLine(stringResource(KMR.strings.stats_title_mutation_events), formatCount(preview.events))
+        MetricLine(stringResource(KMR.strings.stats_source_units), formatCount(preview.sourceUnits))
+        MetricLine(stringResource(KMR.strings.stats_lookups), formatCount(preview.lookups))
+        MetricLine(
+            stringResource(KMR.strings.stats_title_mutation_anki_operations),
+            formatCount(preview.ankiOperations),
+        )
+        Text(
+            stringResource(
+                if (preview.canApply) {
+                    KMR.strings.stats_title_mutation_ready
+                } else {
+                    KMR.strings.stats_title_mutation_blocked
+                },
+            ),
+            color = if (preview.canApply) {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            } else {
+                MaterialTheme.colorScheme.error
+            },
+        )
+        preview.blockers.forEach { blocker ->
+            Text(titleMutationBlockerLabel(blocker), color = MaterialTheme.colorScheme.error)
+        }
     }
 }
 
@@ -4515,6 +4908,9 @@ private fun GoalEditorDialog(
             initial?.weekdayMultipliers ?: suggestedStatsGoalWeekdayMultipliers(),
         )
     }
+    var editMode by remember(original?.id, original?.updatedAtEpochMillis) {
+        mutableStateOf(StatsGoalEditMode.PROSPECTIVE)
+    }
     var invalid by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -4644,7 +5040,23 @@ private fun GoalEditorDialog(
                 )
                 if (original != null) {
                     Text(
-                        stringResource(KMR.strings.stats_goal_edit_prospective),
+                        stringResource(KMR.strings.stats_goal_edit_mode),
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                    FilterMenuChip(
+                        label = goalEditModeLabel(editMode),
+                        options = StatsGoalEditMode.entries,
+                        optionLabel = { goalEditModeLabel(it) },
+                        onSelect = { editMode = it },
+                    )
+                    Text(
+                        stringResource(
+                            if (editMode == StatsGoalEditMode.RESTART_HISTORY) {
+                                KMR.strings.stats_goal_edit_restart_summary
+                            } else {
+                                KMR.strings.stats_goal_edit_prospective
+                            },
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -4697,6 +5109,7 @@ private fun GoalEditorDialog(
                             startDate = it,
                             endDate = parsedEnd,
                             weekdayMultipliers = weekdayMultipliers,
+                            editMode = editMode,
                         )
                     }
                     invalid = values == null ||
@@ -4705,6 +5118,53 @@ private fun GoalEditorDialog(
                 },
             ) {
                 Text(stringResource(KMR.strings.stats_apply))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(KMR.strings.stats_close))
+            }
+        },
+    )
+}
+
+@Composable
+private fun GoalCheckInDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (String?) -> Unit,
+) {
+    var note by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(KMR.strings.stats_goal_check_in)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = note,
+                    onValueChange = { note = it.take(MAX_GOAL_CHECK_IN_NOTE_LENGTH) },
+                    label = { Text(stringResource(KMR.strings.stats_goal_check_in_note)) },
+                    supportingText = {
+                        Text(
+                            stringResource(
+                                KMR.strings.stats_goal_check_in_note_count,
+                                note.length,
+                                MAX_GOAL_CHECK_IN_NOTE_LENGTH,
+                            ),
+                        )
+                    },
+                    minLines = 2,
+                    maxLines = 4,
+                )
+                Text(
+                    stringResource(KMR.strings.stats_goal_check_in_privacy),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(note.trim().takeIf(String::isNotEmpty)) }) {
+                Text(stringResource(KMR.strings.stats_goal_check_in))
             }
         },
         dismissButton = {
@@ -4864,21 +5324,61 @@ private fun ToggleRow(text: String, checked: Boolean, onCheckedChange: (Boolean)
 }
 
 @Composable
-private fun <T> SectionFrame(section: StatsLoadable<T>, content: @Composable (T) -> Unit) {
+private fun <T> SectionFrame(
+    section: StatsLoadable<T>,
+    onRetry: (() -> Unit)? = null,
+    content: @Composable (T) -> Unit,
+) {
     when {
         section.value != null -> {
             content(section.value)
-            if (section.error) SectionError()
+            if (section.refreshing) SectionLoading()
+            if (section.error) SectionError(onRetry)
         }
-        section.refreshing -> Text(stringResource(KMR.strings.stats_loading_section))
-        section.error -> SectionError()
+        section.refreshing -> SectionLoading()
+        section.error -> SectionError(onRetry)
         else -> EmptyState()
     }
 }
 
 @Composable
-private fun SectionError() {
-    NoticeCard(stringResource(KMR.strings.stats_section_failed))
+private fun SectionLoading() {
+    Text(
+        text = stringResource(KMR.strings.stats_loading_section),
+        modifier = Modifier.padding(16.dp),
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+@Composable
+private fun SectionError(onRetry: (() -> Unit)? = null) {
+    if (onRetry == null) {
+        NoticeCard(stringResource(KMR.strings.stats_section_failed))
+        return
+    }
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = stringResource(KMR.strings.stats_section_failed),
+                modifier = Modifier.weight(1f),
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+            )
+            TextButton(onClick = onRetry) {
+                Icon(Icons.Outlined.Refresh, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text(stringResource(KMR.strings.stats_retry_section))
+            }
+        }
+    }
 }
 
 @Composable
@@ -5332,6 +5832,14 @@ private fun goalKindLabel(value: StatsGoalKind): String = when (value) {
 }
 
 @Composable
+private fun goalEditModeLabel(value: StatsGoalEditMode): String = when (value) {
+    StatsGoalEditMode.PROSPECTIVE ->
+        stringResource(KMR.strings.stats_goal_edit_mode_prospective)
+    StatsGoalEditMode.RESTART_HISTORY ->
+        stringResource(KMR.strings.stats_goal_edit_mode_restart)
+}
+
+@Composable
 private fun goalMultiplierLabel(value: Double): String =
     if (value == 0.0) {
         stringResource(KMR.strings.stats_goal_rest)
@@ -5603,3 +6111,6 @@ private fun String.optionalPositiveLong(): Long? {
 private val GOAL_MULTIPLIER_OPTIONS = listOf(0.0, 0.5, 1.0)
 private const val TITLE_ACQUISITION_VISIBLE_BUCKETS = 12
 private const val DEFAULT_GOAL_WINDOW_DAYS = 30L
+private const val MAX_COMPACT_GOALS = 3
+private const val MAX_GOAL_CHECK_IN_NOTE_LENGTH = 500
+private const val SESSION_RELINK_TARGET_LIMIT = 20

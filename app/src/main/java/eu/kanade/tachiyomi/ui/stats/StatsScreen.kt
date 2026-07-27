@@ -61,6 +61,7 @@ class StatsScreen(
 
     @Composable
     override fun Content() {
+        StatsRecentsPrivacy()
         val context = LocalContext.current
         val navigator = LocalNavigator.currentOrThrow
         val canonicalTitleId = remember(titleId) {
@@ -160,6 +161,7 @@ class StatsScreen(
                 state = success,
                 paddingValues = paddingValues,
                 onTabSelect = screenModel::selectTab,
+                onSectionRetry = screenModel::retrySection,
                 onRangeSelect = screenModel::selectRange,
                 onPeriodMove = screenModel::movePeriod,
                 onCustomRange = screenModel::setCustomRange,
@@ -245,6 +247,9 @@ class StatsScreen(
                 onCharacterSelect = screenModel::selectCharacter,
                 onSessionSelect = screenModel::selectSession,
                 onSessionDelete = screenModel::deleteSession,
+                onSessionRelinkPreview = screenModel::previewSessionRelink,
+                onSessionRelinkPreviewClear = screenModel::clearSessionRelinkPreview,
+                onSessionRelinkApply = screenModel::applySessionRelink,
                 onLoadMoreTitles = screenModel::loadMoreTitles,
                 onLoadMoreTitleSessions = screenModel::loadMoreTitleSessions,
                 onLoadMoreTitleCompletedUnits = screenModel::loadMoreTitleCompletedUnits,

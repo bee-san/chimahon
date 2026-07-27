@@ -54,7 +54,12 @@ class ImmersionRollupJob(
             if (results.isNotEmpty()) {
                 ImmersionWidgetSignals.notifyStatsChanged()
             }
-            if (remaining) Result.retry() else Result.success(output)
+            if (remaining) {
+                Result.retry()
+            } else {
+                diagnostics.recordRollupSuccess(System.currentTimeMillis())
+                Result.success(output)
+            }
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
