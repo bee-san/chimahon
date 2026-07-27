@@ -1,6 +1,6 @@
 # Immersion analytics and rollups
 
-Status: implemented in statistics schema/rollup version 2.
+Status: implemented in statistics schema/rollup version 3.
 
 ## Contract
 
@@ -42,6 +42,8 @@ Separating replay rows makes the reread/replay filter affect totals, rates, word
 
 Session counts are assigned to the start date. Event counters are assigned to the event date. Active time is split across midnight. Indexed word/character occurrences are joined to every retained exposure; globally-new values use canonical first-seen timestamps.
 
+Hourly activity uses a rebuildable `immersion_hourly_rollup` keyed by local date/hour and the same filter dimensions. Event counters and active-duration deltas remain assigned to the event's local occurrence hour; legacy aggregates remain assigned to their synthetic session-start hour. All-time hour-of-day queries therefore scan bounded derived rows rather than `immersion_event`.
+
 Every applied event is recorded with the rollup version. A date/title dirty queue is updated after session lifecycle changes, event/interaction writes, indexing, legacy import, deletion, and explicit rebuild. The battery-aware worker repairs bounded batches; manual date-range rebuild and cancellation are available.
 
 A failed rebuild transaction leaves both the previous rollups and dirty queue intact.
@@ -72,7 +74,7 @@ length.
 
 ## Performance verification
 
-The implementation avoids date-filtered raw event scans by using `immersion_event_local_date_scope_index`; the query-plan test asserts that index. Daily trends read bounded rollup rows, and detail lists use SQL `LIMIT`/`OFFSET` or keyset paging with stable tie-breakers.
+The implementation avoids date-filtered raw event scans by using `immersion_event_local_date_scope_index`; the query-plan test asserts that index. Hour-of-day and daily trends read bounded rollup rows, and detail lists use SQL `LIMIT`/`OFFSET` or keyset paging with stable tie-breakers.
 
 Release-device verification should record cold/warm p50 and p95 for:
 

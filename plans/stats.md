@@ -587,6 +587,13 @@ Columns include:
 - sessions, lookups, created/updated cards.
 - rollup version and last applied event sequence/time.
 
+#### `immersion_hourly_rollup`
+
+Rebuildable local-hour totals keyed by date, hour, profile, language, media kind,
+title, provenance, and replay state. This table preserves event-occurrence and
+legacy-session-start hour semantics while keeping all-time temporal filters off
+the raw event table.
+
 #### `immersion_lifetime_rollup`
 
 Global and per-title totals that remain after optional raw event/source retention cleanup. Include provenance-availability flags so the UI knows a drill-down cannot be reconstructed.
