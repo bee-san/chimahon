@@ -53,10 +53,14 @@ jobs:
       - name: Read distribution gates
         id: distribution_gate
         shell: bash
+        env:
+          GIT_REF_NAME: ${{ github.ref_name }}
+          GIT_REF_TYPE: ${{ github.ref_type }}
         run: |
           set -euo pipefail
           native_gate=$(jq -r '.releaseGate' docs/native-source-manifest.json)
           scene_gate=$(jq -r '.releaseGate' docs/animated-scene-device-validation.json)
+          application_tag=$(jq -r '.applicationSourceTag' docs/native-source-manifest.json)
 
           for gate in "$native_gate" "$scene_gate"; do
             if [[ "$gate" != "blocked" && "$gate" != "verified" ]]; then
@@ -65,11 +69,21 @@ jobs:
             fi
           done
 
-          if [[ "$native_gate" == "verified" && "$scene_gate" == "verified" ]]; then
+          if [[ -z "$application_tag" || "$application_tag" == "null" ]]; then
+            echo "::error::Native source manifest must identify the application source tag"
+            exit 1
+          fi
+
+          if [[
+            "$native_gate" == "verified" &&
+            "$scene_gate" == "verified" &&
+            "$GIT_REF_TYPE" == "tag" &&
+            "$GIT_REF_NAME" == "$application_tag"
+          ]]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Distributable builds remain disabled while a release gate is blocked"
+            echo "::notice::PR and untagged refs use non-distributable debug verification"
           fi
 
       - name: Validate preview client secret
@@ -122,7 +136,7 @@ jobs:
           github.repository != github.event.pull_request.head.repo.full_name
         run: ./gradlew assemblePreview
 
-      - name: Build debug app while distribution is blocked
+      - name: Build debug app for a non-distributable ref
         if: steps.distribution_gate.outputs.ready != 'true'
         run: ./gradlew assembleDebug
 
@@ -131,7 +145,7 @@ jobs:
         id: release_unit_tests
         run: ./gradlew testReleaseUnitTest
 
-      - name: Run debug unit tests while distribution is blocked
+      - name: Run debug unit tests for a non-distributable ref
         if: steps.distribution_gate.outputs.ready != 'true'
         id: debug_unit_tests
         run: ./gradlew testDebugUnitTest
