@@ -610,6 +610,10 @@
     <string name="stats_session_timeline">Session timeline</string>
     <string name="stats_timeline_summary">%1$d timeline buckets aggregating %2$s events.</string>
     <string name="stats_timeline_metrics">%1$s active · %2$s lookups · %3$s card changes · %4$s inactive-state buckets.</string>
+    <string name="stats_timeline_knownness">Knownness over time</string>
+    <string name="stats_timeline_knownness_summary">%1$s of %2$s source exposures indexed · %3$s of %4$s words known · %5$s mature.</string>
+    <string name="stats_timeline_knownness_unavailable">Knownness needs an indexed source exposure and a current Anki inventory.</string>
+    <string name="stats_timeline_knownness_empty">Indexed source exposures contained no eligible words.</string>
     <string name="stats_goal_create">Create goal</string>
     <string name="stats_goal_edit">Edit goal</string>
     <string name="stats_goal_target">Target</string>

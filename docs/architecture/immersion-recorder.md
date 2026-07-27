@@ -41,9 +41,12 @@ next interval.
 Periodic heartbeats are ordinary idempotent lifecycle events and advance the
 session's last durable active boundary. Process-death recovery ends an old
 active session at that boundary and derives elapsed duration from it. Heartbeat
-compaction is deliberately disabled for now: deleting them is not safe until a
-future rollup phase durably records every applied event and preserves replay and
-sync auditability.
+compaction runs later as bounded retention work, never in the finalization
+transaction. It combines at least three raw heartbeats in the same five-minute,
+local-date, and timezone-offset window, preserves their total active duration,
+writes tombstones for every replaced event, and marks affected rollups dirty.
+Compacted events carry a metadata version that excludes them from later
+compaction passes, so retries and delayed archive merges remain idempotent.
 
 ## Queue and failure isolation
 

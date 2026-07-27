@@ -46,6 +46,7 @@ import tachiyomi.domain.immersion.model.AnalyticsSort
 import tachiyomi.domain.immersion.model.AnalyticsSourceOccurrence
 import tachiyomi.domain.immersion.model.AnalyticsTemporalActivity
 import tachiyomi.domain.immersion.model.AnalyticsTimelineBucket
+import tachiyomi.domain.immersion.model.AnalyticsTimelineKnownness
 import tachiyomi.domain.immersion.model.AnalyticsTitleAcquisitionBucketSize
 import tachiyomi.domain.immersion.model.AnalyticsTitleCompletedUnit
 import tachiyomi.domain.immersion.model.AnalyticsTitleCoverage
@@ -1713,6 +1714,27 @@ class SqlDelightImmersionRepository(
                     eventTypes += EventType.valueOf(event.type)
                 }
             }
+            immersionQueries
+                .selectImmersionAnalyticsSessionKnownness(sessionId.value)
+                .executeAsList()
+                .forEach { row ->
+                    val bucketIndex = ((row.occurred_at - session.startedAtEpochMillis) / bucketWidth)
+                        .coerceIn(0, bucketCount.toLong() - 1)
+                    buckets.getOrPut(bucketIndex) { TimelineAccumulator() }.apply {
+                        knownnessSourceExposures++
+                        if (row.indexed_ready) {
+                            knownnessIndexedSourceExposures++
+                        }
+                        if (row.indexed_ready && row.anki_ready) {
+                            knownnessAnkiReadySourceExposures++
+                            unknownWords = Math.addExact(unknownWords, row.unknown_words ?: 0)
+                            newWords = Math.addExact(newWords, row.new_words ?: 0)
+                            learningWords = Math.addExact(learningWords, row.learning_words ?: 0)
+                            youngWords = Math.addExact(youngWords, row.young_words ?: 0)
+                            matureWords = Math.addExact(matureWords, row.mature_words ?: 0)
+                        }
+                    }
+                }
             val timeline = (0 until bucketCount).map { bucketIndex ->
                 val index = bucketIndex.toLong()
                 val bucketStart = session.startedAtEpochMillis + index * bucketWidth
@@ -2536,6 +2558,46 @@ class SqlDelightImmersionRepository(
                     "SELECT last_success_at FROM immersion_retention_state WHERE scope_key = 'raw_text'",
                 ),
             )
+        }
+    }
+
+    override suspend fun compactFinalizedHeartbeats(
+        limit: Int,
+        compactedAtEpochMillis: Long,
+    ): Long {
+        require(limit in 1..MAX_HEARTBEAT_COMPACTION_SESSIONS) {
+            "Heartbeat compaction limit must be between 1 and $MAX_HEARTBEAT_COMPACTION_SESSIONS"
+        }
+        require(compactedAtEpochMillis >= 0) { "Heartbeat compaction time cannot be negative" }
+        return handler.await(inTransaction = true) {
+            val sessionIds = immersionQueries
+                .selectImmersionFinalizedSessionsForHeartbeatCompaction(
+                    compactedMetadataVersion = HEARTBEAT_COMPACTION_METADATA_VERSION,
+                    windowMillis = HEARTBEAT_COMPACTION_WINDOW_MILLIS,
+                    minimumEvents = MIN_HEARTBEATS_PER_COMPACTION_WINDOW.toLong(),
+                    limit = limit.toLong(),
+                )
+                .executeAsList()
+            var removedEvents = 0L
+            sessionIds.forEach { compactedSessionId ->
+                val session = immersionQueries
+                    .selectImmersionSessionById(compactedSessionId)
+                    .executeAsOneOrNull()
+                    ?: return@forEach
+                removedEvents = Math.addExact(
+                    removedEvents,
+                    compactFinalizedSessionHeartbeats(
+                        sessionId = compactedSessionId,
+                        titleId = session.title_id,
+                        deviceId = session.device_id,
+                        compactedAtEpochMillis = compactedAtEpochMillis,
+                    ),
+                )
+            }
+            if (removedEvents > 0) {
+                immersionQueries.incrementImmersionRevision(compactedAtEpochMillis)
+            }
+            removedEvents
         }
     }
 
@@ -6255,6 +6317,96 @@ class SqlDelightImmersionRepository(
         )
     }
 
+    private fun Database.compactFinalizedSessionHeartbeats(
+        sessionId: String,
+        titleId: String,
+        deviceId: String,
+        compactedAtEpochMillis: Long,
+    ): Long {
+        val rows = immersionQueries
+            .selectImmersionHeartbeatEventsForCompaction(
+                sessionId = sessionId,
+                compactedMetadataVersion = HEARTBEAT_COMPACTION_METADATA_VERSION,
+            )
+            .executeAsList()
+        if (rows.size < MIN_HEARTBEATS_PER_COMPACTION_WINDOW) return 0
+
+        val groups = rows.groupBy { row ->
+            HeartbeatCompactionWindow(
+                localDate = row.local_date,
+                window = Math.floorDiv(row.occurred_at, HEARTBEAT_COMPACTION_WINDOW_MILLIS),
+                timezoneOffsetSeconds = row.timezone_offset_seconds,
+            )
+        }
+        var removedEvents = 0L
+        groups.values
+            .filter { it.size >= MIN_HEARTBEATS_PER_COMPACTION_WINDOW }
+            .forEach { group ->
+                check(
+                    group.all { row ->
+                        row.gross_character_delta == 0L &&
+                            row.unique_source_character_delta == 0L &&
+                            row.net_character_delta == 0L &&
+                            row.lookup_delta == 0L &&
+                            row.cards_created_delta == 0L &&
+                            row.cards_updated_delta == 0L
+                    },
+                ) {
+                    "Heartbeat compaction encountered a non-telemetry delta"
+                }
+                val first = group.first()
+                val last = group.last()
+                val compactedEvent = SessionEvent(
+                    id = EventId(compactedHeartbeatEventId(sessionId, first.local_date, first.sequence)),
+                    sessionId = SessionId(sessionId),
+                    sequence = first.sequence,
+                    occurredAtEpochMillis = last.occurred_at,
+                    timezoneOffsetSeconds = last.timezone_offset_seconds.toIntExact("heartbeat offset"),
+                    type = EventType.HEARTBEAT,
+                    activeDuration = MillisecondDuration(
+                        group.fold(0L) { total, row ->
+                            Math.addExact(total, row.active_duration_delta_ms)
+                        },
+                    ),
+                )
+                group.forEach { row ->
+                    immersionQueries.upsertImmersionTombstone(
+                        entityType = "EVENT",
+                        entityId = row.id,
+                        deletedAt = compactedAtEpochMillis,
+                        deviceId = deviceId,
+                    )
+                }
+                immersionQueries.deleteImmersionEventsByIds(group.map { it.id })
+                removedEvents = Math.addExact(removedEvents, group.size.toLong() - 1L)
+                immersionQueries.insertImmersionEvent(
+                    id = compactedEvent.id.value,
+                    sessionId = compactedEvent.sessionId.value,
+                    sequence = compactedEvent.sequence,
+                    occurredAt = compactedEvent.occurredAtEpochMillis,
+                    timezoneOffsetSeconds = compactedEvent.timezoneOffsetSeconds.toLong(),
+                    type = compactedEvent.type.name,
+                    sourceUnitId = null,
+                    activeDurationDeltaMs = compactedEvent.activeDuration.value,
+                    grossCharacterDelta = 0,
+                    uniqueSourceCharacterDelta = 0,
+                    netCharacterDelta = 0,
+                    metadataVersion = HEARTBEAT_COMPACTION_METADATA_VERSION,
+                    metadataPayload = null,
+                    payloadHash = compactedEvent.payloadHash(),
+                    localDate = first.local_date,
+                )
+                checkExactlyOneChange("inserting compacted heartbeat ${compactedEvent.id.value}")
+                immersionQueries.upsertImmersionRollupDirty(
+                    localDate = first.local_date,
+                    titleId = titleId,
+                    reason = "HEARTBEAT_COMPACTION",
+                    updatedAt = compactedAtEpochMillis,
+                )
+            }
+        return removedEvents
+    }
+
     private fun Database.checkExactlyOneChange(operation: String) {
         if (immersionQueries.selectImmersionChanges().executeAsOne() != 1L) {
             throw identityConflict("No row was found while $operation")
@@ -6506,6 +6658,12 @@ private data class ImmersionSourceExposureBounds(
     val lastEventAt: Long,
 )
 
+private data class HeartbeatCompactionWindow(
+    val localDate: Long,
+    val window: Long,
+    val timezoneOffsetSeconds: Long,
+)
+
 private data class AnalyticsSqlArgs(
     val filterMediaKinds: Long,
     val mediaKinds: Collection<String>,
@@ -6532,6 +6690,14 @@ private data class TimelineAccumulator(
     var cardsCreated: Long = 0,
     var cardsUpdated: Long = 0,
     val eventTypes: MutableSet<EventType> = linkedSetOf(),
+    var knownnessSourceExposures: Long = 0,
+    var knownnessIndexedSourceExposures: Long = 0,
+    var knownnessAnkiReadySourceExposures: Long = 0,
+    var unknownWords: Long = 0,
+    var newWords: Long = 0,
+    var learningWords: Long = 0,
+    var youngWords: Long = 0,
+    var matureWords: Long = 0,
 ) {
     fun toDomain(startEpochMillis: Long, endEpochMillis: Long) = AnalyticsTimelineBucket(
         startEpochMillis = startEpochMillis,
@@ -6545,6 +6711,18 @@ private data class TimelineAccumulator(
         cardsCreated = cardsCreated,
         cardsUpdated = cardsUpdated,
         eventTypes = eventTypes,
+        knownness = knownnessSourceExposures.takeIf { it > 0 }?.let {
+            AnalyticsTimelineKnownness(
+                sourceExposures = knownnessSourceExposures,
+                indexedSourceExposures = knownnessIndexedSourceExposures,
+                ankiReadySourceExposures = knownnessAnkiReadySourceExposures,
+                unknownWords = unknownWords,
+                newWords = newWords,
+                learningWords = learningWords,
+                youngWords = youngWords,
+                matureWords = matureWords,
+            )
+        },
     )
 }
 
@@ -8738,6 +8916,16 @@ private fun repairedAnkiEventId(operation: PendingAnkiOperation): EventId =
         ).toString(),
     )
 
+private fun compactedHeartbeatEventId(
+    sessionId: String,
+    localDate: Long,
+    sequence: Long,
+): String =
+    UUID.nameUUIDFromBytes(
+        "$HEARTBEAT_COMPACTION_EVENT_NAMESPACE\u0000$sessionId\u0000$localDate\u0000$sequence"
+            .toByteArray(StandardCharsets.UTF_8),
+    ).toString()
+
 private data class AnkiSummaryCacheKey(
     val filter: StatsFilter,
     val revision: Long,
@@ -8745,6 +8933,11 @@ private data class AnkiSummaryCacheKey(
 )
 
 private const val MAX_PAGE_SIZE = 500
+private const val MAX_HEARTBEAT_COMPACTION_SESSIONS = 500
+private const val MIN_HEARTBEATS_PER_COMPACTION_WINDOW = 3
+private const val HEARTBEAT_COMPACTION_WINDOW_MILLIS = 5 * 60 * 1_000L
+private const val HEARTBEAT_COMPACTION_METADATA_VERSION = 2L
+private const val HEARTBEAT_COMPACTION_EVENT_NAMESPACE = "chimahon:immersion:heartbeat-compaction:v1"
 private const val SQLITE_BIND_BATCH_SIZE = 400
 private const val MAX_TITLE_TREND_SERIES = 20
 private const val MAX_ANKI_TITLE_IMPACT_ROWS = 20

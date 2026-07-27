@@ -1670,6 +1670,94 @@ class SqlDelightImmersionRepositoryTest {
     }
 
     @Test
+    fun `maintenance compacts finalized heartbeats without changing counters and tombstones every original`() = runTest {
+        prepareSession()
+        val heartbeats = listOf(
+            SessionEvent(
+                id = eventId(201),
+                sessionId = SESSION_ID,
+                sequence = 1,
+                occurredAtEpochMillis = 15_000,
+                timezoneOffsetSeconds = 0,
+                type = EventType.HEARTBEAT,
+                activeDuration = MillisecondDuration(15_000),
+            ),
+            SessionEvent(
+                id = eventId(202),
+                sessionId = SESSION_ID,
+                sequence = 2,
+                occurredAtEpochMillis = 30_000,
+                timezoneOffsetSeconds = 0,
+                type = EventType.HEARTBEAT,
+                activeDuration = MillisecondDuration(15_000),
+            ),
+            SessionEvent(
+                id = eventId(203),
+                sessionId = SESSION_ID,
+                sequence = 3,
+                occurredAtEpochMillis = 45_000,
+                timezoneOffsetSeconds = 0,
+                type = EventType.HEARTBEAT,
+                activeDuration = MillisecondDuration(15_000),
+            ),
+            SessionEvent(
+                id = eventId(204),
+                sessionId = SESSION_ID,
+                sequence = 4,
+                occurredAtEpochMillis = 46_000,
+                timezoneOffsetSeconds = 0,
+                type = EventType.PROGRESS,
+                netCharacters = NetCharacterProgress(25),
+            ),
+        )
+        repository.appendEventBatch(heartbeats) shouldContainExactly
+            List(heartbeats.size) { PersistenceResult.Applied }
+        val countersBefore = repository.getSession(SESSION_ID)
+
+        repository.finalizeSession(
+            sessionId = SESSION_ID,
+            status = SessionStatus.COMPLETED,
+            endedAtEpochMillis = 60_000,
+            elapsedDuration = MillisecondDuration(59_000),
+        ) shouldBe PersistenceResult.Applied
+        queryLong(
+            "SELECT count(*) FROM immersion_event WHERE session_id = '${SESSION_ID.value}' " +
+                "AND type = 'HEARTBEAT'",
+        ) shouldBe 3
+
+        repository.compactFinalizedHeartbeats(
+            limit = 10,
+            compactedAtEpochMillis = 61_000,
+        ) shouldBe 2
+
+        repository.getSession(SESSION_ID)?.let { session ->
+            session.activeDuration shouldBe countersBefore?.activeDuration
+            session.netCharacters shouldBe countersBefore?.netCharacters
+            session.lastSequence shouldBe countersBefore?.lastSequence
+        } shouldNotBe null
+        queryLong(
+            "SELECT count(*) FROM immersion_event WHERE session_id = '${SESSION_ID.value}' " +
+                "AND type = 'HEARTBEAT'",
+        ) shouldBe 1
+        queryLong(
+            "SELECT sum(active_duration_delta_ms) FROM immersion_event " +
+                "WHERE session_id = '${SESSION_ID.value}'",
+        ) shouldBe 45_000
+        queryLong(
+            "SELECT count(*) FROM immersion_tombstone WHERE entity_type = 'EVENT' " +
+                "AND entity_id IN ('${eventId(201).value}', '${eventId(202).value}', '${eventId(203).value}')",
+        ) shouldBe 3
+        queryLong(
+            "SELECT count(*) FROM immersion_rollup_dirty WHERE reason = 'HEARTBEAT_COMPACTION'",
+        ) shouldBe 1
+        queryLong(
+            "SELECT metadata_version FROM immersion_event WHERE session_id = '${SESSION_ID.value}' " +
+                "AND type = 'HEARTBEAT'",
+        ) shouldBe 2
+        repository.compactFinalizedHeartbeats(limit = 10, compactedAtEpochMillis = 62_000) shouldBe 0
+    }
+
+    @Test
     fun `event identity conflict is typed and leaves totals unchanged`() = runTest {
         prepareSession()
         repository.appendExposure(exposure(sequence = 1, eventNumber = 1)) shouldBe PersistenceResult.Applied
@@ -2048,6 +2136,10 @@ class SqlDelightImmersionRepositoryTest {
             endedAtEpochMillis = 10_000,
             elapsedDuration = MillisecondDuration(9_000),
         ) shouldBe PersistenceResult.Applied
+        repository.compactFinalizedHeartbeats(
+            limit = 10,
+            compactedAtEpochMillis = 11_000,
+        ) shouldBe 0
 
         val timeline = repository.sessionDetail(SESSION_ID, maxTimelineBuckets = 3)?.timeline
         timeline shouldNotBe null
@@ -2065,6 +2157,66 @@ class SqlDelightImmersionRepositoryTest {
                 gap.cardsUpdated shouldBe 0
                 gap.eventTypes shouldBe emptySet()
             }
+        }
+    }
+
+    @Test
+    fun `session timeline joins indexed words to the current Anki snapshot`() = runTest {
+        repository.upsertTitle(title().copy(profileId = "profile")) shouldBe PersistenceResult.Applied
+        repository.createSession(sessionStart().copy(profileId = "profile")) shouldBe PersistenceResult.Applied
+        repository.appendExposure(
+            exposure(sequence = 1, eventNumber = 7_101).copy(
+                occurredAtEpochMillis = 2_000,
+                source = source(2_000),
+            ),
+        ) shouldBe PersistenceResult.Applied
+        storeClaimedIndexResult(
+            sourceUnitId = SOURCE_ID,
+            tokenizerId = "timeline-test",
+            tokenizerVersion = 1,
+            normalizationVersion = 1,
+            indexedVersion = 1,
+            indexedAtEpochMillis = 2_100,
+            tokenizationConfidence = 1.0,
+            terminalReason = null,
+            words = listOf(
+                indexedWord("timeline-mature", "猫語", "ねこご", ordinal = 0),
+                indexedWord("timeline-unknown", "未知", "みち", ordinal = 1),
+            ),
+            characters = emptyList(),
+        )
+        val snapshotId = "timeline-snapshot"
+        repository.activateSnapshot(
+            snapshot = ankiSnapshot(snapshotId, requestedAt = 2_200),
+            items = listOf(
+                ankiItem(
+                    snapshotId = snapshotId,
+                    intervalDays = 30,
+                    tier = MaturityTier.MATURE,
+                ),
+            ),
+        )
+        repository.finalizeSession(
+            sessionId = SESSION_ID,
+            status = SessionStatus.COMPLETED,
+            endedAtEpochMillis = 3_000,
+            elapsedDuration = MillisecondDuration(2_000),
+        ) shouldBe PersistenceResult.Applied
+
+        val knownness = repository
+            .sessionDetail(SESSION_ID, maxTimelineBuckets = 10)
+            ?.timeline
+            ?.mapNotNull { it.knownness }
+            ?.single()
+        knownness shouldNotBe null
+        checkNotNull(knownness).let {
+            it.sourceExposures shouldBe 1
+            it.indexedSourceExposures shouldBe 1
+            it.ankiReadySourceExposures shouldBe 1
+            it.unknownWords shouldBe 1
+            it.matureWords shouldBe 1
+            it.totalWords shouldBe 2
+            it.knownWords shouldBe 1
         }
     }
 

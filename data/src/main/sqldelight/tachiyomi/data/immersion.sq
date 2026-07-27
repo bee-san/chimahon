@@ -1769,6 +1769,52 @@ SELECT *
 FROM immersion_event
 WHERE session_id = :sessionId AND sequence = :sequence;
 
+selectImmersionFinalizedSessionsForHeartbeatCompaction:
+SELECT session.id
+FROM immersion_session AS session
+WHERE
+    session.status IN ('COMPLETED', 'ABANDONED')
+    AND EXISTS (
+        SELECT 1
+        FROM immersion_event AS event
+        WHERE
+            event.session_id = session.id
+            AND event.type = 'HEARTBEAT'
+            AND event.metadata_version != :compactedMetadataVersion
+        GROUP BY
+            event.local_date,
+            event.timezone_offset_seconds,
+            event.occurred_at / :windowMillis
+        HAVING count(*) >= :minimumEvents
+    )
+ORDER BY coalesce(session.ended_at, session.started_at), session.id
+LIMIT :limit;
+
+selectImmersionHeartbeatEventsForCompaction:
+SELECT
+    id,
+    sequence,
+    occurred_at,
+    timezone_offset_seconds,
+    active_duration_delta_ms,
+    gross_character_delta,
+    unique_source_character_delta,
+    net_character_delta,
+    lookup_delta,
+    cards_created_delta,
+    cards_updated_delta,
+    local_date
+FROM immersion_event
+WHERE
+    session_id = :sessionId
+    AND type = 'HEARTBEAT'
+    AND metadata_version != :compactedMetadataVersion
+ORDER BY occurred_at, sequence, id;
+
+deleteImmersionEventsByIds:
+DELETE FROM immersion_event
+WHERE id IN :eventIds;
+
 countImmersionSessionSourceExposure:
 SELECT count(*)
 FROM immersion_source_exposure
@@ -5243,6 +5289,107 @@ JOIN immersion_title AS title ON title.id = session.title_id
 LEFT JOIN immersion_source_unit AS source ON source.id = event.source_unit_id
 WHERE event.session_id = :sessionId
 ORDER BY event.occurred_at, event.sequence;
+
+selectImmersionAnalyticsSessionKnownness:
+WITH session_sources AS (
+    SELECT
+        event.id AS event_id,
+        event.occurred_at,
+        source.id AS source_unit_id,
+        source.indexed_version > 0
+            AND source.indexing_terminal_reason IS NULL AS indexed_ready,
+        session.profile_id
+    FROM immersion_event AS event
+    JOIN immersion_session AS session ON session.id = event.session_id
+    JOIN immersion_source_unit AS source ON source.id = event.source_unit_id
+    WHERE
+        event.session_id = :sessionId
+        AND event.type = 'EXPOSURE'
+),
+source_words AS (
+    SELECT DISTINCT
+        session_sources.event_id,
+        session_sources.profile_id,
+        occurrence.word_id
+    FROM session_sources
+    JOIN immersion_word_occurrence AS occurrence
+        ON occurrence.source_unit_id = session_sources.source_unit_id
+    WHERE session_sources.indexed_ready = 1
+),
+word_maturity AS (
+    SELECT
+        source_words.event_id,
+        source_words.word_id,
+        coalesce(
+            (
+                SELECT item.maturity_tier
+                FROM immersion_word AS word
+                JOIN immersion_anki_item AS item
+                    ON item.language_tag = word.language_tag
+                    AND item.normalized_word = word.normalized_headword
+                    AND (
+                        (
+                            item.match_confidence = 'READING_AWARE'
+                            AND item.normalized_reading = word.normalized_reading
+                        )
+                        OR (
+                            item.match_confidence = 'HEADWORD_ONLY'
+                            AND coalesce(item.normalized_reading, '') = ''
+                        )
+                    )
+                JOIN immersion_anki_snapshot AS snapshot
+                    ON snapshot.id = item.snapshot_id
+                    AND snapshot.is_current = 1
+                    AND snapshot.profile_id = source_words.profile_id
+                WHERE word.id = source_words.word_id
+                ORDER BY
+                    CASE item.match_confidence
+                        WHEN 'READING_AWARE' THEN 2
+                        ELSE 1
+                    END DESC,
+                    CASE item.maturity_tier
+                        WHEN 'MATURE' THEN 5
+                        WHEN 'YOUNG' THEN 4
+                        WHEN 'LEARNING' THEN 3
+                        WHEN 'NEW' THEN 2
+                        ELSE 1
+                    END DESC,
+                    item.card_id
+                LIMIT 1
+            ),
+            'UNKNOWN'
+        ) AS maturity_tier
+    FROM source_words
+)
+SELECT
+    session_sources.event_id,
+    session_sources.occurred_at,
+    session_sources.indexed_ready,
+    EXISTS (
+        SELECT 1
+        FROM immersion_anki_snapshot AS snapshot
+        WHERE
+            snapshot.profile_id = session_sources.profile_id
+            AND snapshot.is_current = 1
+    ) AS anki_ready,
+    sum(CASE WHEN word_maturity.maturity_tier = 'UNKNOWN' THEN 1 ELSE 0 END)
+        AS unknown_words,
+    sum(CASE WHEN word_maturity.maturity_tier = 'NEW' THEN 1 ELSE 0 END)
+        AS new_words,
+    sum(CASE WHEN word_maturity.maturity_tier = 'LEARNING' THEN 1 ELSE 0 END)
+        AS learning_words,
+    sum(CASE WHEN word_maturity.maturity_tier = 'YOUNG' THEN 1 ELSE 0 END)
+        AS young_words,
+    sum(CASE WHEN word_maturity.maturity_tier = 'MATURE' THEN 1 ELSE 0 END)
+        AS mature_words
+FROM session_sources
+LEFT JOIN word_maturity ON word_maturity.event_id = session_sources.event_id
+GROUP BY
+    session_sources.event_id,
+    session_sources.occurred_at,
+    session_sources.indexed_ready,
+    session_sources.profile_id
+ORDER BY session_sources.occurred_at, session_sources.event_id;
 
 selectImmersionAnalyticsSourceSearch:
 SELECT
