@@ -18,6 +18,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.onStart
@@ -38,8 +41,15 @@ import tachiyomi.domain.immersion.model.RawTextRetention
 import tachiyomi.domain.immersion.model.SessionPage
 import tachiyomi.domain.immersion.model.StatsFilter
 import tachiyomi.domain.immersion.model.TitleId
+import tachiyomi.domain.immersion.model.VocabularyCategory
+import tachiyomi.domain.immersion.model.VocabularyExclusion
+import tachiyomi.domain.immersion.model.VocabularyFilter
+import tachiyomi.domain.immersion.model.VocabularyKnownness
+import tachiyomi.domain.immersion.model.VocabularyScript
 import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
 import tachiyomi.domain.immersion.service.ImmersionAnalyticsService
+import tachiyomi.domain.immersion.service.ImmersionExportDocument
+import tachiyomi.domain.immersion.service.ImmersionExportService
 import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
@@ -53,6 +63,7 @@ class StatsScreenModel(
     private val preferences: ImmersionStatsPreferences = Injekt.get(),
     private val dictionaryPreferences: DictionaryPreferences = Injekt.get(),
     private val maintenanceRepository: ImmersionMaintenanceRepository = Injekt.get(),
+    private val exportService: ImmersionExportService = Injekt.get(),
     private val today: () -> LocalDate = LocalDate::now,
 ) : StateScreenModel<StatsScreenState>(StatsScreenState.Loading) {
 
@@ -69,6 +80,8 @@ class StatsScreenModel(
     private var sourceSearchJob: Job? = null
     private var titleTrendsJob: Job? = null
     private var restoreSelectionAfterRefresh = true
+    private val mutableExportDocuments = MutableSharedFlow<ImmersionExportDocument>()
+    val exportDocuments: SharedFlow<ImmersionExportDocument> = mutableExportDocuments.asSharedFlow()
 
     init {
         val profiles = dictionaryPreferences.profileStore.getProfiles()
@@ -115,6 +128,24 @@ class StatsScreenModel(
                 .enumOrDefault(StatsTrendMetric.CHARACTERS),
             titleSort = preferences.dashboardTitleSort().get(),
             vocabularySort = preferences.dashboardVocabularySort().get(),
+            vocabularyFilter = VocabularyFilter(
+                knownness = preferences.dashboardVocabularyKnownness().get()
+                    .enumOrDefault(VocabularyKnownness.ALL),
+                scripts = preferences.dashboardVocabularyScripts().get()
+                    .decodeEnums<VocabularyScript>(),
+                categories = preferences.dashboardVocabularyCategories().get()
+                    .decodeEnums<VocabularyCategory>(),
+                partOfSpeechQuery = preferences.dashboardVocabularyPartOfSpeech().get()
+                    .takeIf(String::isNotBlank),
+                minimumOccurrences = preferences.dashboardVocabularyMinimumOccurrences().get()
+                    .positiveOrNull(),
+                maximumOccurrences = preferences.dashboardVocabularyMaximumOccurrences().get()
+                    .positiveOrNull(),
+                maximumFrequencyRank = preferences.dashboardVocabularyMaximumFrequencyRank().get()
+                    .positiveOrNull(),
+                exclusion = preferences.dashboardVocabularyExclusion().get()
+                    .enumOrDefault(VocabularyExclusion.INCLUDED),
+            ),
             characterSort = preferences.dashboardCharacterSort().get(),
         )
         refresh()
@@ -203,7 +234,14 @@ class StatsScreenModel(
         }
         preferences.dashboardSelectedTab().set(tab.name)
         clearPersistedSelection()
-        updateSuccess { it.copy(selectedTab = tab, selection = StatsSelection()) }
+        updateSuccess {
+            it.copy(
+                selectedTab = tab,
+                selection = StatsSelection(),
+                selectedVocabularyWordIds = emptySet(),
+                vocabularyMutationError = false,
+            )
+        }
         loadOptionalSections(tab)
     }
 
@@ -321,8 +359,121 @@ class StatsScreenModel(
 
     fun selectVocabularySort(sort: AnalyticsSort) {
         preferences.dashboardVocabularySort().set(sort)
-        updateSuccess { it.copy(vocabularySort = sort) }
+        updateSuccess {
+            it.copy(
+                vocabularySort = sort,
+                selectedVocabularyWordIds = emptySet(),
+            )
+        }
         refresh()
+    }
+
+    fun updateVocabularyFilter(filter: VocabularyFilter) {
+        val normalized = filter.copy(
+            searchQuery = null,
+            partOfSpeechQuery = filter.partOfSpeechQuery
+                ?.trim()
+                ?.takeIf(String::isNotEmpty),
+        )
+        preferences.dashboardVocabularyKnownness().set(normalized.knownness.name)
+        preferences.dashboardVocabularyScripts().set(normalized.scripts.mapTo(linkedSetOf()) { it.name })
+        preferences.dashboardVocabularyCategories().set(
+            normalized.categories.mapTo(linkedSetOf()) { it.name },
+        )
+        preferences.dashboardVocabularyPartOfSpeech().set(normalized.partOfSpeechQuery.orEmpty())
+        preferences.dashboardVocabularyMinimumOccurrences().set(normalized.minimumOccurrences ?: -1)
+        preferences.dashboardVocabularyMaximumOccurrences().set(normalized.maximumOccurrences ?: -1)
+        preferences.dashboardVocabularyMaximumFrequencyRank().set(normalized.maximumFrequencyRank ?: -1)
+        preferences.dashboardVocabularyExclusion().set(normalized.exclusion.name)
+        wordPagingRequests.invalidate()
+        preferences.dashboardSelectedWordId().delete()
+        updateSuccess {
+            it.copy(
+                vocabularyFilter = normalized,
+                selectedVocabularyWordIds = emptySet(),
+                vocabularyMutationError = false,
+                selection = it.selection.copy(word = null),
+                details = it.details.copy(wordOccurrences = StatsLoadable()),
+            )
+        }
+        refresh()
+    }
+
+    fun setVocabularyWordSelected(wordId: String, selected: Boolean) {
+        updateSuccess { state ->
+            val selection = state.selectedVocabularyWordIds.toMutableSet().apply {
+                if (selected) add(wordId) else remove(wordId)
+            }
+            state.copy(
+                selectedVocabularyWordIds = selection,
+                vocabularyMutationError = false,
+            )
+        }
+    }
+
+    fun clearVocabularyWordSelection() {
+        updateSuccess {
+            it.copy(
+                selectedVocabularyWordIds = emptySet(),
+                vocabularyMutationError = false,
+            )
+        }
+    }
+
+    fun setSelectedVocabularyWordsExcluded(excluded: Boolean) {
+        val selected = successState()?.selectedVocabularyWordIds.orEmpty()
+        if (selected.isEmpty()) return
+        updateSuccess {
+            it.copy(
+                vocabularyMutationInProgress = true,
+                vocabularyMutationError = false,
+            )
+        }
+        screenModelScope.launch {
+            val result = runCatching {
+                maintenanceRepository.setWordExclusions(
+                    wordIds = selected,
+                    excluded = excluded,
+                    updatedAtEpochMillis = System.currentTimeMillis(),
+                )
+                repairAllDirtyRollups()
+            }
+            if (result.isSuccess) {
+                preferences.dashboardSelectedWordId().delete()
+                updateSuccess {
+                    it.copy(
+                        selectedVocabularyWordIds = emptySet(),
+                        vocabularyMutationInProgress = false,
+                        vocabularyMutationError = false,
+                        selection = it.selection.copy(word = null),
+                        details = it.details.copy(wordOccurrences = StatsLoadable()),
+                    )
+                }
+                refresh()
+            } else {
+                updateSuccess {
+                    it.copy(
+                        vocabularyMutationInProgress = false,
+                        vocabularyMutationError = true,
+                    )
+                }
+            }
+        }
+    }
+
+    fun exportVocabulary() {
+        val state = successState() ?: return
+        screenModelScope.launch {
+            mutableExportDocuments.emit(
+                exportService.vocabularyCsv(
+                    filter = state.toStatsFilter(),
+                    vocabularyFilter = state.vocabularyFilter.copy(
+                        searchQuery = state.vocabularySearch.takeIf(String::isNotBlank),
+                    ),
+                    sort = state.vocabularySort,
+                ),
+            )
+        }
     }
 
     fun selectCharacterSort(sort: AnalyticsSort) {
@@ -340,6 +491,8 @@ class StatsScreenModel(
         updateSuccess {
             it.copy(
                 vocabularySearch = query,
+                selectedVocabularyWordIds = emptySet(),
+                vocabularyMutationError = false,
                 sections = it.sections.copy(vocabulary = it.sections.vocabulary.refreshing()),
             )
         }
@@ -822,10 +975,12 @@ class StatsScreenModel(
             val result = runCatching {
                 analyticsService.vocabulary(
                     state.toStatsFilter(),
+                    state.vocabularyFilter.copy(
+                        searchQuery = state.vocabularySearch.takeIf(String::isNotBlank),
+                    ),
                     state.vocabularySort,
                     offset,
                     PAGE_SIZE,
-                    state.vocabularySearch.takeIf(String::isNotBlank),
                 )
             }
             if (!sectionPagingRequests.isCurrent(requestGeneration)) return@launch
@@ -1076,6 +1231,8 @@ class StatsScreenModel(
                 filter = transform(it.filter),
                 sourceSearch = "",
                 selection = StatsSelection(),
+                selectedVocabularyWordIds = emptySet(),
+                vocabularyMutationError = false,
                 details = StatsDetails(),
             )
         }
@@ -1321,10 +1478,14 @@ class StatsScreenModel(
     }) {
         analyticsService.vocabulary(
             filter,
+            successState()?.let { state ->
+                state.vocabularyFilter.copy(
+                    searchQuery = state.vocabularySearch.takeIf(String::isNotBlank),
+                )
+            } ?: VocabularyFilter(),
             sort,
             0,
             PAGE_SIZE,
-            successState()?.vocabularySearch?.takeIf(String::isNotBlank),
         )
     }
 
@@ -1511,6 +1672,13 @@ private inline fun <reified T : Enum<T>> String.enumOrNull(): T? =
 
 private inline fun <reified T : Enum<T>> String.enumOrDefault(default: T): T =
     enumOrNull() ?: default
+
+private inline fun <reified T : Enum<T>> Set<String>.decodeEnums(): Set<T> =
+    mapNotNullTo(linkedSetOf()) { value ->
+        runCatching { enumValueOf<T>(value) }.getOrNull()
+    }
+
+private fun Long.positiveOrNull(): Long? = takeIf { it > 0 }
 
 private fun String.toImmersionLocalDateOrNull(): ImmersionLocalDate? =
     takeIf(String::isNotBlank)

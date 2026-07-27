@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -27,15 +28,18 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
+import androidx.compose.material.icons.automirrored.outlined.Undo
 import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
@@ -47,6 +51,8 @@ import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Style
 import androidx.compose.material.icons.outlined.TextFields
 import androidx.compose.material.icons.outlined.Translate
+import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -82,6 +88,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import eu.kanade.tachiyomi.ui.dictionary.ProcessTextLookupActivity
@@ -138,6 +145,11 @@ import tachiyomi.domain.immersion.model.ProvenanceState
 import tachiyomi.domain.immersion.model.ReadingMetrics
 import tachiyomi.domain.immersion.model.SessionStatus
 import tachiyomi.domain.immersion.model.SourceKind
+import tachiyomi.domain.immersion.model.VocabularyCategory
+import tachiyomi.domain.immersion.model.VocabularyExclusion
+import tachiyomi.domain.immersion.model.VocabularyFilter
+import tachiyomi.domain.immersion.model.VocabularyKnownness
+import tachiyomi.domain.immersion.model.VocabularyScript
 import tachiyomi.i18n.kmk.KMR
 import tachiyomi.presentation.core.i18n.pluralStringResource
 import tachiyomi.presentation.core.i18n.stringResource
@@ -176,6 +188,11 @@ fun StatsScreenContent(
     onTitleTrendSelectionSelect: (AnalyticsTitleSeriesSelection) -> Unit,
     onTitleSortSelect: (AnalyticsSort) -> Unit,
     onVocabularySortSelect: (AnalyticsSort) -> Unit,
+    onVocabularyFilterChange: (VocabularyFilter) -> Unit,
+    onVocabularyWordSelectionChange: (String, Boolean) -> Unit,
+    onVocabularySelectionClear: () -> Unit,
+    onVocabularyExclusionChange: (Boolean) -> Unit,
+    onVocabularyExport: () -> Unit,
     onCharacterSortSelect: (AnalyticsSort) -> Unit,
     onTitleSearch: (String) -> Unit,
     onVocabularySearch: (String) -> Unit,
@@ -261,6 +278,11 @@ fun StatsScreenContent(
                 onWordSelect,
                 onLoadMoreVocabulary,
                 onLoadMoreWordOccurrences,
+                onVocabularyFilterChange,
+                onVocabularyWordSelectionChange,
+                onVocabularySelectionClear,
+                onVocabularyExclusionChange,
+                onVocabularyExport,
             )
             StatsTab.CHARACTERS -> CharactersTab(
                 state,
@@ -1473,9 +1495,17 @@ private fun VocabularyTab(
     onSelect: (AnalyticsWordRow?) -> Unit,
     onLoadMore: () -> Unit,
     onLoadMoreOccurrences: () -> Unit,
+    onFilterChange: (VocabularyFilter) -> Unit,
+    onWordSelectionChange: (String, Boolean) -> Unit,
+    onSelectionClear: () -> Unit,
+    onExclusionChange: (Boolean) -> Unit,
+    onExport: () -> Unit,
 ) {
     val result = state.sections.vocabulary.value
     val rows = result?.value?.items.orEmpty()
+    val selectedRows = rows.filter { it.id in state.selectedVocabularyWordIds }
+    var showFilters by remember { mutableStateOf(false) }
+    var pendingExclusion by remember { mutableStateOf<Boolean?>(null) }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -1495,6 +1525,21 @@ private fun VocabularyTab(
                     AnalyticsSort.ALPHABETICAL,
                 ),
             )
+        }
+        item {
+            VocabularyWorkbenchControls(
+                filter = state.vocabularyFilter,
+                selectedCount = state.selectedVocabularyWordIds.size,
+                mutationInProgress = state.vocabularyMutationInProgress,
+                onShowFilters = { showFilters = true },
+                onClearSelection = onSelectionClear,
+                onExclude = { pendingExclusion = true },
+                onInclude = { pendingExclusion = false },
+                onExport = onExport,
+            )
+        }
+        if (state.vocabularyMutationError) {
+            item { NoticeCard(stringResource(KMR.strings.stats_vocabulary_exclusion_error)) }
         }
         result?.let {
             item {
@@ -1530,13 +1575,342 @@ private fun VocabularyTab(
             item { EmptyState() }
         } else {
             items(rows, key = { it.id }) { word ->
-                WordRow(word) { onSelect(word) }
+                WordRow(
+                    word = word,
+                    selected = word.id in state.selectedVocabularyWordIds,
+                    onSelectedChange = { onWordSelectionChange(word.id, it) },
+                    onClick = { onSelect(word) },
+                )
             }
             if (result?.value?.nextOffset != null) {
                 item { LoadMoreButton(onLoadMore) }
             }
         }
     }
+    if (showFilters) {
+        VocabularyFilterDialog(
+            filter = state.vocabularyFilter,
+            onDismiss = { showFilters = false },
+            onApply = {
+                onFilterChange(it)
+                showFilters = false
+            },
+        )
+    }
+    pendingExclusion?.let { excluded ->
+        VocabularyBulkActionDialog(
+            excluded = excluded,
+            rows = selectedRows,
+            onDismiss = { pendingExclusion = null },
+            onConfirm = {
+                pendingExclusion = null
+                onExclusionChange(excluded)
+            },
+        )
+    }
+}
+
+@Composable
+private fun VocabularyWorkbenchControls(
+    filter: VocabularyFilter,
+    selectedCount: Int,
+    mutationInProgress: Boolean,
+    onShowFilters: () -> Unit,
+    onClearSelection: () -> Unit,
+    onExclude: () -> Unit,
+    onInclude: () -> Unit,
+    onExport: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FilterChip(
+                selected = filter.activeFilterCount() > 0,
+                onClick = onShowFilters,
+                leadingIcon = { Icon(Icons.Outlined.Tune, contentDescription = null) },
+                label = {
+                    Text(
+                        if (filter.activeFilterCount() == 0) {
+                            stringResource(KMR.strings.stats_vocabulary_filters)
+                        } else {
+                            stringResource(
+                                KMR.strings.stats_vocabulary_filters_active,
+                                filter.activeFilterCount(),
+                            )
+                        },
+                    )
+                },
+            )
+            TextButton(onClick = onExport) {
+                Icon(Icons.Outlined.Download, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text(stringResource(KMR.strings.stats_export_filtered_vocabulary))
+            }
+        }
+        if (selectedCount > 0) {
+            Surface(
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        stringResource(KMR.strings.stats_filter_selected_count, selectedCount),
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        TextButton(
+                            enabled = !mutationInProgress,
+                            onClick = onExclude,
+                        ) {
+                            Icon(Icons.Outlined.VisibilityOff, contentDescription = null)
+                            Spacer(Modifier.width(4.dp))
+                            Text(stringResource(KMR.strings.stats_vocabulary_exclude))
+                        }
+                        TextButton(
+                            enabled = !mutationInProgress,
+                            onClick = onInclude,
+                        ) {
+                            Icon(Icons.AutoMirrored.Outlined.Undo, contentDescription = null)
+                            Spacer(Modifier.width(4.dp))
+                            Text(stringResource(KMR.strings.stats_vocabulary_include))
+                        }
+                        TextButton(
+                            enabled = !mutationInProgress,
+                            onClick = onClearSelection,
+                        ) {
+                            Icon(Icons.Outlined.Close, contentDescription = null)
+                            Spacer(Modifier.width(4.dp))
+                            Text(stringResource(KMR.strings.stats_clear_selection))
+                        }
+                    }
+                    if (mutationInProgress) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VocabularyFilterDialog(
+    filter: VocabularyFilter,
+    onDismiss: () -> Unit,
+    onApply: (VocabularyFilter) -> Unit,
+) {
+    var knownness by remember(filter) { mutableStateOf(filter.knownness) }
+    var scripts by remember(filter) { mutableStateOf(filter.scripts) }
+    var categories by remember(filter) { mutableStateOf(filter.categories) }
+    var partOfSpeech by remember(filter) { mutableStateOf(filter.partOfSpeechQuery.orEmpty()) }
+    var minimumOccurrences by remember(filter) {
+        mutableStateOf(filter.minimumOccurrences?.toString().orEmpty())
+    }
+    var maximumOccurrences by remember(filter) {
+        mutableStateOf(filter.maximumOccurrences?.toString().orEmpty())
+    }
+    var maximumFrequencyRank by remember(filter) {
+        mutableStateOf(filter.maximumFrequencyRank?.toString().orEmpty())
+    }
+    var exclusion by remember(filter) { mutableStateOf(filter.exclusion) }
+    var invalid by remember(filter) { mutableStateOf(false) }
+
+    fun apply() {
+        val parsed = runCatching {
+            VocabularyFilter(
+                knownness = knownness,
+                scripts = scripts,
+                categories = categories,
+                partOfSpeechQuery = partOfSpeech.trim().takeIf(String::isNotEmpty),
+                minimumOccurrences = minimumOccurrences.optionalPositiveLong(),
+                maximumOccurrences = maximumOccurrences.optionalPositiveLong(),
+                maximumFrequencyRank = maximumFrequencyRank.optionalPositiveLong(),
+                exclusion = exclusion,
+            )
+        }.getOrNull()
+        if (parsed == null) {
+            invalid = true
+        } else {
+            onApply(parsed)
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(KMR.strings.stats_vocabulary_filters)) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                FilterMenuChip(
+                    label = stringResource(
+                        KMR.strings.stats_vocabulary_knownness_filter,
+                        vocabularyKnownnessLabel(knownness),
+                    ),
+                    options = VocabularyKnownness.entries,
+                    optionLabel = { vocabularyKnownnessLabel(it) },
+                    onSelect = { knownness = it },
+                )
+                MultiSelectFilterMenuChip(
+                    label = stringResource(
+                        KMR.strings.stats_vocabulary_script_filter,
+                        filterSelectionLabel(scripts) { vocabularyScriptLabel(it) },
+                    ),
+                    selected = scripts,
+                    options = VocabularyScript.entries,
+                    optionLabel = { vocabularyScriptLabel(it) },
+                    onSelectionChange = { scripts = it },
+                )
+                MultiSelectFilterMenuChip(
+                    label = stringResource(
+                        KMR.strings.stats_vocabulary_category_filter,
+                        filterSelectionLabel(categories) { vocabularyCategoryLabel(it) },
+                    ),
+                    selected = categories,
+                    options = VocabularyCategory.entries,
+                    optionLabel = { vocabularyCategoryLabel(it) },
+                    onSelectionChange = { categories = it },
+                )
+                FilterMenuChip(
+                    label = stringResource(
+                        KMR.strings.stats_vocabulary_inclusion_filter,
+                        vocabularyExclusionLabel(exclusion),
+                    ),
+                    options = VocabularyExclusion.entries,
+                    optionLabel = { vocabularyExclusionLabel(it) },
+                    onSelect = { exclusion = it },
+                )
+                OutlinedTextField(
+                    value = partOfSpeech,
+                    onValueChange = {
+                        partOfSpeech = it
+                        invalid = false
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text(stringResource(KMR.strings.stats_part_of_speech_filter)) },
+                )
+                OutlinedTextField(
+                    value = minimumOccurrences,
+                    onValueChange = {
+                        minimumOccurrences = it
+                        invalid = false
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    label = { Text(stringResource(KMR.strings.stats_minimum_occurrences)) },
+                )
+                OutlinedTextField(
+                    value = maximumOccurrences,
+                    onValueChange = {
+                        maximumOccurrences = it
+                        invalid = false
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    label = { Text(stringResource(KMR.strings.stats_maximum_occurrences)) },
+                )
+                OutlinedTextField(
+                    value = maximumFrequencyRank,
+                    onValueChange = {
+                        maximumFrequencyRank = it
+                        invalid = false
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    label = { Text(stringResource(KMR.strings.stats_maximum_frequency_rank)) },
+                )
+                if (invalid) {
+                    Text(
+                        stringResource(KMR.strings.stats_vocabulary_filter_invalid),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                TextButton(
+                    onClick = {
+                        knownness = VocabularyKnownness.ALL
+                        scripts = emptySet()
+                        categories = emptySet()
+                        partOfSpeech = ""
+                        minimumOccurrences = ""
+                        maximumOccurrences = ""
+                        maximumFrequencyRank = ""
+                        exclusion = VocabularyExclusion.INCLUDED
+                        invalid = false
+                    },
+                ) {
+                    Text(stringResource(KMR.strings.stats_reset_filters))
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = ::apply) {
+                Text(stringResource(KMR.strings.stats_apply))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(KMR.strings.stats_close))
+            }
+        },
+    )
+}
+
+@Composable
+private fun VocabularyBulkActionDialog(
+    excluded: Boolean,
+    rows: List<AnalyticsWordRow>,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    val occurrenceCount = rows.sumOf { it.occurrenceCount }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                stringResource(
+                    if (excluded) {
+                        KMR.strings.stats_vocabulary_exclude
+                    } else {
+                        KMR.strings.stats_vocabulary_include
+                    },
+                ),
+            )
+        },
+        text = {
+            Text(
+                stringResource(
+                    KMR.strings.stats_vocabulary_bulk_preview,
+                    rows.size,
+                    formatCount(occurrenceCount),
+                    rows.joinToString(limit = 6, truncated = "…") { it.headword },
+                ),
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(stringResource(KMR.strings.stats_confirm))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(KMR.strings.stats_close))
+            }
+        },
+    )
 }
 
 @Composable
@@ -1980,9 +2354,24 @@ private fun TitleDetail(
 }
 
 @Composable
-private fun WordRow(word: AnalyticsWordRow, onClick: () -> Unit) {
+private fun WordRow(
+    word: AnalyticsWordRow,
+    selected: Boolean? = null,
+    onSelectedChange: ((Boolean) -> Unit)? = null,
+    onClick: () -> Unit,
+) {
+    val description = stringResource(
+        KMR.strings.stats_word_row_description,
+        word.headword,
+        maturityLabel(word.maturity),
+        formatCount(word.occurrenceCount),
+        wordKnownnessLabel(word.maturity),
+    )
     Surface(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { contentDescription = description }
+            .clickable(onClick = onClick),
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surfaceVariant,
     ) {
@@ -1990,10 +2379,24 @@ private fun WordRow(word: AnalyticsWordRow, onClick: () -> Unit) {
             modifier = Modifier.padding(14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            if (selected != null && onSelectedChange != null) {
+                Checkbox(
+                    checked = selected,
+                    onCheckedChange = onSelectedChange,
+                )
+                Spacer(Modifier.width(8.dp))
+            }
             Column(modifier = Modifier.weight(1f)) {
                 Text(word.headword, style = MaterialTheme.typography.titleMedium)
                 word.reading?.let {
                     Text(it, style = MaterialTheme.typography.bodySmall)
+                }
+                if (word.excluded) {
+                    Text(
+                        stringResource(KMR.strings.stats_vocabulary_excluded),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
                 }
             }
             Column(horizontalAlignment = Alignment.End) {
@@ -2014,6 +2417,7 @@ private fun WordDetail(
     onClose: () -> Unit,
     onLoadMoreOccurrences: () -> Unit,
 ) {
+    val context = LocalContext.current
     DetailCard(stringResource(KMR.strings.stats_word_detail), onClose) {
         Text(word.headword, style = MaterialTheme.typography.headlineMedium)
         word.reading?.let { Text(stringResource(KMR.strings.stats_reading, it)) }
@@ -2026,6 +2430,41 @@ private fun WordDetail(
         Text(stringResource(KMR.strings.stats_first_seen, formatInstant(word.firstSeenAtEpochMillis)))
         Text(stringResource(KMR.strings.stats_last_seen, formatInstant(word.lastSeenAtEpochMillis)))
         Text(stringResource(KMR.strings.stats_maturity, maturityLabel(word.maturity)))
+        MetricLine(
+            stringResource(KMR.strings.stats_frequency_rank),
+            word.frequencyRank?.let(::formatCount) ?: stringResource(KMR.strings.stats_unavailable),
+        )
+        word.jlptLevel?.let {
+            MetricLine(stringResource(KMR.strings.stats_jlpt_level), "N$it")
+        }
+        word.gradeLevel?.let {
+            MetricLine(stringResource(KMR.strings.stats_grade_level), formatCount(it.toLong()))
+        }
+        MetricLine(
+            stringResource(KMR.strings.stats_vocabulary_script),
+            vocabularyScriptLabel(word.script),
+        )
+        MetricLine(
+            stringResource(KMR.strings.stats_vocabulary_category),
+            vocabularyCategoryLabel(word.category),
+        )
+        if (word.excluded) {
+            NoticeCard(stringResource(KMR.strings.stats_vocabulary_excluded_summary))
+        }
+        TextButton(
+            onClick = {
+                context.startActivity(
+                    Intent(context, ProcessTextLookupActivity::class.java).apply {
+                        action = Intent.ACTION_PROCESS_TEXT
+                        putExtra(Intent.EXTRA_PROCESS_TEXT, word.headword)
+                    },
+                )
+            },
+        ) {
+            Icon(Icons.Outlined.Search, contentDescription = null)
+            Spacer(Modifier.width(4.dp))
+            Text(stringResource(KMR.strings.stats_mine_again))
+        }
         word.matchConfidence?.let {
             Text(stringResource(KMR.strings.stats_match_confidence, matchConfidenceLabel(it)))
         }
@@ -2035,7 +2474,10 @@ private fun WordDetail(
                 EmptyState()
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    result.value.items.forEach { SourceOccurrenceRow(it) }
+                    result.value.items.groupBy { it.displayTitle }.forEach { (title, titleRows) ->
+                        Text(title, style = MaterialTheme.typography.titleSmall)
+                        titleRows.forEach { SourceOccurrenceRow(it) }
+                    }
                     if (result.value.nextOffset != null) {
                         LoadMoreButton(onLoadMoreOccurrences)
                     }
@@ -3130,6 +3572,43 @@ private fun sortLabel(value: AnalyticsSort): String = when (value) {
 }
 
 @Composable
+private fun vocabularyKnownnessLabel(value: VocabularyKnownness): String = when (value) {
+    VocabularyKnownness.ALL -> stringResource(KMR.strings.stats_filter_all)
+    VocabularyKnownness.UNKNOWN -> stringResource(KMR.strings.stats_vocabulary_unknown)
+    VocabularyKnownness.KNOWN -> stringResource(KMR.strings.stats_vocabulary_known)
+}
+
+@Composable
+private fun wordKnownnessLabel(value: MaturityTier): String = when (value) {
+    MaturityTier.UNKNOWN -> stringResource(KMR.strings.stats_vocabulary_unknown)
+    MaturityTier.UNAVAILABLE -> stringResource(KMR.strings.stats_unavailable)
+    else -> stringResource(KMR.strings.stats_vocabulary_known)
+}
+
+@Composable
+private fun vocabularyScriptLabel(value: VocabularyScript): String = when (value) {
+    VocabularyScript.KANJI -> stringResource(KMR.strings.stats_script_kanji)
+    VocabularyScript.KANA -> stringResource(KMR.strings.stats_script_kana)
+    VocabularyScript.LATIN -> stringResource(KMR.strings.stats_script_latin)
+    VocabularyScript.OTHER -> stringResource(KMR.strings.stats_script_other)
+}
+
+@Composable
+private fun vocabularyCategoryLabel(value: VocabularyCategory): String = when (value) {
+    VocabularyCategory.NAME -> stringResource(KMR.strings.stats_category_names)
+    VocabularyCategory.KANA_ONLY -> stringResource(KMR.strings.stats_category_kana_only)
+    VocabularyCategory.GRAMMAR -> stringResource(KMR.strings.stats_category_grammar)
+    VocabularyCategory.OTHER -> stringResource(KMR.strings.stats_category_other)
+}
+
+@Composable
+private fun vocabularyExclusionLabel(value: VocabularyExclusion): String = when (value) {
+    VocabularyExclusion.INCLUDED -> stringResource(KMR.strings.stats_vocabulary_included)
+    VocabularyExclusion.EXCLUDED -> stringResource(KMR.strings.stats_vocabulary_excluded)
+    VocabularyExclusion.ALL -> stringResource(KMR.strings.stats_filter_all)
+}
+
+@Composable
 private fun goalMetricLabel(value: String): String = when (value) {
     "active_time_ms" -> stringResource(KMR.strings.stats_active_time)
     "gross_characters" -> stringResource(KMR.strings.stats_basis_gross)
@@ -3365,6 +3844,24 @@ private fun formatLocalDate(date: tachiyomi.domain.immersion.model.ImmersionLoca
     DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM)
         .withLocale(Locale.getDefault())
         .format(date.toLocalDate())
+
+private fun VocabularyFilter.activeFilterCount(): Int =
+    listOf(
+        knownness != VocabularyKnownness.ALL,
+        scripts.isNotEmpty(),
+        categories.isNotEmpty(),
+        !partOfSpeechQuery.isNullOrBlank(),
+        minimumOccurrences != null,
+        maximumOccurrences != null,
+        maximumFrequencyRank != null,
+        exclusion != VocabularyExclusion.INCLUDED,
+    ).count { it }
+
+private fun String.optionalPositiveLong(): Long? {
+    if (isBlank()) return null
+    return toLongOrNull()?.takeIf { it > 0 }
+        ?: throw IllegalArgumentException("Expected a positive integer")
+}
 
 private val GOAL_MULTIPLIER_OPTIONS = listOf(0.0, 0.5, 1.0)
 private const val DEFAULT_GOAL_WINDOW_DAYS = 30L

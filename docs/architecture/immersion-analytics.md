@@ -56,6 +56,40 @@ Filters cover date/comparison range, media, profile, language, title, legacy inc
 
 Legacy aggregates remain visible when requested but never manufacture word, character, source, lookup, or review-history detail. Anki review-history analytics stay unavailable unless the active snapshot explicitly reports that provider capability.
 
+### Vocabulary workbench
+
+`VocabularyFilter` extends the shared filter without coupling word-only choices
+to the other tabs. The repository applies search, knownness, script, word
+category, part of speech, occurrence bounds, frequency rank, and inclusion
+state before stable paging. Date, title, media, profile, language, maturity,
+provenance, and replay choices continue to come from `StatsFilter`.
+
+Script and category are deterministic query projections of the retained word
+identity and POS metadata. Kanji takes precedence over kana and Latin for mixed
+display forms. Name and grammar POS markers take precedence over the
+orthographic kana-only category. Missing metadata remains `OTHER`; it is never
+guessed from reading speed or Anki state.
+
+User exclusions are keyed by the stable normalized word ID. Applying one:
+
+1. toggles `immersion_word.excluded`;
+2. writes or removes the global `WORD` row in `immersion_exclusion`, so future
+   indexing honors the same choice;
+3. marks every affected date/title rollup dirty; and
+4. leaves source occurrences and retained text untouched so the choice is
+   reversible.
+
+Excluded words do not contribute to vocabulary growth, unique-word coverage,
+or Anki word denominators. Character encounters are unaffected. The
+maintenance screen documents this policy, and the Vocabulary tab can show
+included, excluded, or both sets. Bulk changes show the selected identities
+and filtered occurrence count before confirmation.
+
+Vocabulary CSV export receives the same shared and word-specific filters and
+sort as the visible list. It pages through the repository, includes a schema
+version plus frequency/JLPT/grade/script/category/inclusion metadata, applies
+spreadsheet-formula protection, and never includes raw source text.
+
 ## Goal calendar and edit policy
 
 Goal history follows the same event calendar contract: completed activity remains

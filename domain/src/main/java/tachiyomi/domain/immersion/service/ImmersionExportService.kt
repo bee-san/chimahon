@@ -13,6 +13,7 @@ import tachiyomi.domain.immersion.model.AnalyticsSort
 import tachiyomi.domain.immersion.model.AnalyticsTitleRow
 import tachiyomi.domain.immersion.model.AnalyticsTrends
 import tachiyomi.domain.immersion.model.StatsFilter
+import tachiyomi.domain.immersion.model.VocabularyFilter
 import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
 
 class ImmersionExportService(
@@ -107,7 +108,11 @@ class ImmersionExportService(
         return document("chimahon-stats-events.json", JSON_MIME_TYPE, json.encodeToString(archive))
     }
 
-    suspend fun vocabularyCsv(filter: StatsFilter): ImmersionExportDocument {
+    suspend fun vocabularyCsv(
+        filter: StatsFilter,
+        vocabularyFilter: VocabularyFilter = VocabularyFilter(),
+        sort: AnalyticsSort = AnalyticsSort.MOST_OCCURRENCES,
+    ): ImmersionExportDocument {
         val rows = mutableListOf(
             listOf(
                 "schema_version",
@@ -121,6 +126,11 @@ class ImmersionExportService(
                 "first_seen_at_ms",
                 "last_seen_at_ms",
                 "frequency_rank",
+                "jlpt_level",
+                "grade_level",
+                "script",
+                "category",
+                "excluded",
                 "maturity",
                 "match_confidence",
             ),
@@ -129,7 +139,8 @@ class ImmersionExportService(
         do {
             val page = analytics.vocabulary(
                 filter = filter,
-                sort = AnalyticsSort.MOST_OCCURRENCES,
+                vocabularyFilter = vocabularyFilter,
+                sort = sort,
                 offset = offset,
                 limit = EXPORT_PAGE_SIZE,
             ).value
@@ -146,6 +157,11 @@ class ImmersionExportService(
                     word.firstSeenAtEpochMillis.toString(),
                     word.lastSeenAtEpochMillis.toString(),
                     word.frequencyRank?.toString().orEmpty(),
+                    word.jlptLevel?.toString().orEmpty(),
+                    word.gradeLevel?.toString().orEmpty(),
+                    word.script.name,
+                    word.category.name,
+                    word.excluded.toString(),
                     word.maturity.name,
                     word.matchConfidence?.name.orEmpty(),
                 )

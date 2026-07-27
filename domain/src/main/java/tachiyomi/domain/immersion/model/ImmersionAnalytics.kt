@@ -29,6 +29,60 @@ enum class AnalyticsSort {
 }
 
 @Serializable
+enum class VocabularyKnownness {
+    ALL,
+    UNKNOWN,
+    KNOWN,
+}
+
+@Serializable
+enum class VocabularyScript {
+    KANJI,
+    KANA,
+    LATIN,
+    OTHER,
+}
+
+@Serializable
+enum class VocabularyCategory {
+    NAME,
+    KANA_ONLY,
+    GRAMMAR,
+    OTHER,
+}
+
+@Serializable
+enum class VocabularyExclusion {
+    INCLUDED,
+    EXCLUDED,
+    ALL,
+}
+
+@Serializable
+data class VocabularyFilter(
+    val searchQuery: String? = null,
+    val knownness: VocabularyKnownness = VocabularyKnownness.ALL,
+    val scripts: Set<VocabularyScript> = emptySet(),
+    val categories: Set<VocabularyCategory> = emptySet(),
+    val partOfSpeechQuery: String? = null,
+    val minimumOccurrences: Long? = null,
+    val maximumOccurrences: Long? = null,
+    val maximumFrequencyRank: Long? = null,
+    val exclusion: VocabularyExclusion = VocabularyExclusion.INCLUDED,
+) {
+    init {
+        require(minimumOccurrences == null || minimumOccurrences > 0)
+        require(maximumOccurrences == null || maximumOccurrences > 0)
+        require(
+            minimumOccurrences == null ||
+                maximumOccurrences == null ||
+                minimumOccurrences <= maximumOccurrences,
+        )
+        require(maximumFrequencyRank == null || maximumFrequencyRank > 0)
+    }
+}
+
+@Serializable
 enum class AnalyticsQueryFamily {
     OVERVIEW,
     TRENDS,
@@ -327,6 +381,11 @@ data class AnalyticsWordRow(
     val frequencyRank: Long?,
     val maturity: MaturityTier,
     val matchConfidence: AnkiMatchConfidence?,
+    val jlptLevel: Int? = null,
+    val gradeLevel: Int? = null,
+    val script: VocabularyScript = VocabularyScript.OTHER,
+    val category: VocabularyCategory = VocabularyCategory.OTHER,
+    val excluded: Boolean = false,
 ) {
     init {
         require(id.isNotBlank())
@@ -336,6 +395,8 @@ data class AnalyticsWordRow(
         require(firstSeenAtEpochMillis >= 0)
         require(lastSeenAtEpochMillis >= firstSeenAtEpochMillis)
         require(frequencyRank == null || frequencyRank > 0)
+        require(jlptLevel == null || jlptLevel > 0)
+        require(gradeLevel == null || gradeLevel > 0)
     }
 }
 

@@ -14,6 +14,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -31,7 +32,11 @@ import eu.kanade.presentation.components.AppBarActions
 import eu.kanade.presentation.more.stats.StatsScreenContent
 import eu.kanade.presentation.more.stats.StatsScreenState
 import eu.kanade.presentation.util.Screen
+import eu.kanade.tachiyomi.util.storage.getUriCompat
+import eu.kanade.tachiyomi.util.system.toShareIntent
 import kotlinx.collections.immutable.persistentListOf
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import mihon.feature.stats.retention.ImmersionRetentionJob
 import tachiyomi.domain.immersion.model.RawTextRetention
 import tachiyomi.domain.immersion.model.TitleId
@@ -42,6 +47,7 @@ import tachiyomi.presentation.core.i18n.stringResource
 import tachiyomi.presentation.core.screens.LoadingScreen
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
+import java.io.File
 
 class StatsScreen(
     private val titleId: String? = null,
@@ -92,6 +98,17 @@ class StatsScreen(
         val state by screenModel.state.collectAsState()
         var showRawTextDisclosure by remember(screenModel) {
             mutableStateOf(screenModel.rawTextDisclosureRequired())
+        }
+
+        LaunchedEffect(screenModel) {
+            screenModel.exportDocuments.collect { document ->
+                val file = withContext(Dispatchers.IO) {
+                    File(context.cacheDir, "stats_exports").also(File::mkdirs)
+                        .resolve(document.fileName)
+                        .also { it.writeBytes(document.bytes) }
+                }
+                context.startActivity(file.getUriCompat(context).toShareIntent(context, document.mimeType))
+            }
         }
 
         Scaffold(
@@ -156,6 +173,11 @@ class StatsScreen(
                 onTitleTrendSelectionSelect = screenModel::selectTitleTrendSelection,
                 onTitleSortSelect = screenModel::selectTitleSort,
                 onVocabularySortSelect = screenModel::selectVocabularySort,
+                onVocabularyFilterChange = screenModel::updateVocabularyFilter,
+                onVocabularyWordSelectionChange = screenModel::setVocabularyWordSelected,
+                onVocabularySelectionClear = screenModel::clearVocabularyWordSelection,
+                onVocabularyExclusionChange = screenModel::setSelectedVocabularyWordsExcluded,
+                onVocabularyExport = screenModel::exportVocabulary,
                 onCharacterSortSelect = screenModel::selectCharacterSort,
                 onTitleSearch = screenModel::searchTitles,
                 onVocabularySearch = screenModel::searchVocabulary,

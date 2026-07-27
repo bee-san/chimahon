@@ -49,6 +49,7 @@ import tachiyomi.domain.immersion.model.SessionId
 import tachiyomi.domain.immersion.model.SessionPage
 import tachiyomi.domain.immersion.model.StatsFilter
 import tachiyomi.domain.immersion.model.UnicodeCodePoint
+import tachiyomi.domain.immersion.model.VocabularyFilter
 import tachiyomi.domain.immersion.repository.ImmersionAnalyticsRepository
 import tachiyomi.domain.immersion.repository.ImmersionGoalRepository
 import java.nio.charset.StandardCharsets
@@ -263,13 +264,19 @@ class ImmersionAnalyticsService(
 
     suspend fun vocabulary(
         filter: StatsFilter,
+        vocabularyFilter: VocabularyFilter,
         sort: AnalyticsSort,
         offset: Long,
         limit: Int,
-        searchQuery: String? = null,
     ): AnalyticsResult<AnalyticsPage<AnalyticsWordRow>> =
         measured(AnalyticsQueryFamily.VOCABULARY, filter) {
-            analyticsRepository.vocabularyPage(filter, sort, offset, limit, searchQuery).let {
+            analyticsRepository.vocabularyPage(
+                filter,
+                vocabularyFilter,
+                sort,
+                offset,
+                limit,
+            ).let {
                 it to it.items.size
             }
         }
@@ -437,6 +444,7 @@ class ImmersionAnalyticsService(
             val missingWords = if (summary.snapshot?.hasUsableInventory == true) {
                 analyticsRepository.vocabularyPage(
                     missingFilter,
+                    VocabularyFilter(),
                     AnalyticsSort.FREQUENCY_RANK,
                     0,
                     20,

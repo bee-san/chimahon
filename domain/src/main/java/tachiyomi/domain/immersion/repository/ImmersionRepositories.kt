@@ -57,6 +57,7 @@ import tachiyomi.domain.immersion.model.SourceUnitId
 import tachiyomi.domain.immersion.model.StatsFilter
 import tachiyomi.domain.immersion.model.TitleId
 import tachiyomi.domain.immersion.model.UnicodeCodePoint
+import tachiyomi.domain.immersion.model.VocabularyFilter
 import tachiyomi.domain.immersion.service.AnkiCoverage
 
 interface ImmersionRecorderRepository {
@@ -189,10 +190,10 @@ interface ImmersionAnalyticsRepository {
 
     suspend fun vocabularyPage(
         filter: StatsFilter,
+        vocabularyFilter: VocabularyFilter,
         sort: AnalyticsSort,
         offset: Long,
         limit: Int,
-        searchQuery: String? = null,
     ): AnalyticsPage<AnalyticsWordRow>
 
     suspend fun characterPage(
@@ -318,6 +319,12 @@ interface ImmersionMaintenanceRepository {
         excluded: Boolean,
         updatedAtEpochMillis: Long,
     )
+
+    suspend fun setWordExclusions(
+        wordIds: Set<String>,
+        excluded: Boolean,
+        updatedAtEpochMillis: Long,
+    ): Long = error("Word exclusions are unavailable")
 
     suspend fun resolveMergeConflictsKeepingLocal(): Long
 }

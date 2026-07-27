@@ -26,6 +26,7 @@ import tachiyomi.domain.immersion.model.MaturityTier
 import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.ProvenanceState
 import tachiyomi.domain.immersion.model.SessionPage
+import tachiyomi.domain.immersion.model.VocabularyFilter
 
 enum class StatsTab {
     OVERVIEW,
@@ -138,6 +139,10 @@ sealed interface StatsScreenState {
             AnalyticsTitleSeriesSelection.TOP_CHARACTERS,
         val titleSort: AnalyticsSort = AnalyticsSort.MOST_TIME,
         val vocabularySort: AnalyticsSort = AnalyticsSort.MOST_OCCURRENCES,
+        val vocabularyFilter: VocabularyFilter = VocabularyFilter(),
+        val selectedVocabularyWordIds: Set<String> = emptySet(),
+        val vocabularyMutationInProgress: Boolean = false,
+        val vocabularyMutationError: Boolean = false,
         val characterSort: AnalyticsSort = AnalyticsSort.MOST_OCCURRENCES,
         val vocabularySearch: String = "",
         val characterSearch: String = "",

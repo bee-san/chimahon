@@ -47,6 +47,7 @@ import tachiyomi.domain.immersion.model.ReadingMetrics
 import tachiyomi.domain.immersion.model.StatsFilter
 import tachiyomi.domain.immersion.model.TitleId
 import tachiyomi.domain.immersion.model.UnicodeCodePoint
+import tachiyomi.domain.immersion.model.VocabularyFilter
 import tachiyomi.domain.immersion.repository.ImmersionAnalyticsRepository
 import tachiyomi.domain.immersion.repository.ImmersionGoalRepository
 import java.time.Instant
@@ -753,10 +754,10 @@ class ImmersionAnalyticsServiceTest {
         coEvery {
             repository.vocabularyPage(
                 missingFilter,
+                VocabularyFilter(),
                 AnalyticsSort.FREQUENCY_RANK,
                 0,
                 20,
-                null,
             )
         } returns AnalyticsPage(listOf(word), null)
         coEvery {
@@ -776,10 +777,10 @@ class ImmersionAnalyticsServiceTest {
         coVerify(exactly = 1) {
             repository.vocabularyPage(
                 missingFilter,
+                VocabularyFilter(),
                 AnalyticsSort.FREQUENCY_RANK,
                 0,
                 20,
-                null,
             )
         }
         coVerify(exactly = 1) {

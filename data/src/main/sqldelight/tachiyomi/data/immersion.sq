@@ -1698,6 +1698,28 @@ WHERE
     occurrence.word_id IN :wordIds
     AND session.status != 'DELETED';
 
+selectImmersionWordIdsByIds:
+SELECT id, excluded
+FROM immersion_word
+WHERE id IN :wordIds;
+
+selectImmersionWordRollupScopes:
+SELECT DISTINCT event.local_date, session.title_id
+FROM immersion_word_occurrence AS occurrence
+JOIN immersion_source_exposure AS exposure
+    ON exposure.source_unit_id = occurrence.source_unit_id
+JOIN immersion_event AS event ON event.id = exposure.event_id
+JOIN immersion_session AS session ON session.id = event.session_id
+WHERE
+    occurrence.word_id IN :wordIds
+    AND session.status != 'DELETED';
+
+updateImmersionWordsExcluded:
+UPDATE immersion_word
+SET excluded = :excluded
+WHERE id IN :wordIds
+    AND excluded != :excluded;
+
 selectImmersionExposureDatesForCharacters:
 SELECT DISTINCT event.local_date
 FROM immersion_character_occurrence AS occurrence
@@ -3513,210 +3535,230 @@ GROUP BY event.local_date
 ORDER BY event.local_date;
 
 selectImmersionAnalyticsWords:
-SELECT
-    word.id,
-    word.language_tag,
-    word.display_headword,
-    word.display_reading,
-    word.part_of_speech,
-    count(*) AS occurrence_count,
-    count(DISTINCT session.title_id) AS title_count,
-    word.first_seen_at,
-    word.last_seen_at,
-    word.frequency_rank,
-    coalesce(
-        (
-            SELECT item.maturity_tier
-            FROM immersion_anki_item AS item
-            JOIN immersion_anki_snapshot AS snapshot ON snapshot.id = item.snapshot_id
-            WHERE
-                snapshot.is_current = 1
-                AND (:filterProfileIds = 0 OR snapshot.profile_id IN :profileIds)
-                AND item.language_tag = word.language_tag
-                AND item.normalized_word = word.normalized_headword
-                AND (
-                    (
-                        item.match_confidence = 'READING_AWARE'
-                        AND item.normalized_reading = word.normalized_reading
-                    )
-                    OR (
-                        item.match_confidence = 'HEADWORD_ONLY'
-                        AND coalesce(item.normalized_reading, '') = ''
-                    )
-                )
-            ORDER BY
-                CASE item.match_confidence
-                    WHEN 'READING_AWARE' THEN 2
-                    ELSE 1
-                END DESC,
-                CASE WHEN :maturityAggregation = 'MAX_INTERVAL' THEN
-                    CASE item.maturity_tier
-                        WHEN 'MATURE' THEN 5
-                        WHEN 'YOUNG' THEN 4
-                        WHEN 'LEARNING' THEN 3
-                        WHEN 'NEW' THEN 2
-                        ELSE 1
-                    END
-                END DESC,
-                CASE WHEN :maturityAggregation = 'MIN_INTERVAL' THEN
-                    CASE item.maturity_tier
-                        WHEN 'MATURE' THEN 5
-                        WHEN 'YOUNG' THEN 4
-                        WHEN 'LEARNING' THEN 3
-                        WHEN 'NEW' THEN 2
-                        ELSE 1
-                    END
-                END,
-                item.card_id
-            LIMIT 1
-        ),
-        'UNKNOWN'
-    ) AS maturity_tier,
-    coalesce(
-        (
-            SELECT item.match_confidence
-            FROM immersion_anki_item AS item
-            JOIN immersion_anki_snapshot AS snapshot ON snapshot.id = item.snapshot_id
-            WHERE
-                snapshot.is_current = 1
-                AND (:filterProfileIds = 0 OR snapshot.profile_id IN :profileIds)
-                AND item.language_tag = word.language_tag
-                AND item.normalized_word = word.normalized_headword
-                AND (
-                    (
-                        item.match_confidence = 'READING_AWARE'
-                        AND item.normalized_reading = word.normalized_reading
-                    )
-                    OR (
-                        item.match_confidence = 'HEADWORD_ONLY'
-                        AND coalesce(item.normalized_reading, '') = ''
-                    )
-                )
-            ORDER BY
-                CASE item.match_confidence
-                    WHEN 'READING_AWARE' THEN 2
-                    ELSE 1
-                END DESC,
-                CASE WHEN :maturityAggregation = 'MAX_INTERVAL' THEN
-                    CASE item.maturity_tier
-                        WHEN 'MATURE' THEN 5
-                        WHEN 'YOUNG' THEN 4
-                        WHEN 'LEARNING' THEN 3
-                        WHEN 'NEW' THEN 2
-                        ELSE 1
-                    END
-                END DESC,
-                CASE WHEN :maturityAggregation = 'MIN_INTERVAL' THEN
-                    CASE item.maturity_tier
-                        WHEN 'MATURE' THEN 5
-                        WHEN 'YOUNG' THEN 4
-                        WHEN 'LEARNING' THEN 3
-                        WHEN 'NEW' THEN 2
-                        ELSE 1
-                    END
-                END,
-                item.card_id
-            LIMIT 1
-        ),
-        ''
-    ) AS match_confidence
-FROM immersion_word AS word
-JOIN immersion_word_occurrence AS occurrence ON occurrence.word_id = word.id
-JOIN immersion_source_exposure AS exposure ON exposure.source_unit_id = occurrence.source_unit_id
-JOIN immersion_event AS event ON event.id = exposure.event_id
-JOIN immersion_session AS session ON session.id = event.session_id
-WHERE
-    session.status != 'DELETED'
-    AND word.excluded = 0
-    AND (
-        :searchQuery = ''
-        OR word.display_headword LIKE '%' || :searchQuery || '%' COLLATE NOCASE
-        OR coalesce(word.display_reading, '') LIKE '%' || :searchQuery || '%' COLLATE NOCASE
-        OR coalesce(word.part_of_speech, '') LIKE '%' || :searchQuery || '%' COLLATE NOCASE
-    )
-    AND (
-        :filterDate = 0 OR
-        event.local_date BETWEEN :startDate AND :endDate
-    )
-    AND (:filterMediaKinds = 0 OR session.media_kind IN :mediaKinds)
-    AND (:filterProfileIds = 0 OR session.profile_id IN :profileIds)
-    AND (:filterLanguageTags = 0 OR word.language_tag IN :languageTags)
-    AND (:filterTitleIds = 0 OR session.title_id IN :titleIds)
-    AND (:includeRereads = 1 OR exposure.replay_ordinal = 0)
-    AND (:includeLegacy = 1 OR session.legacy_import = 0)
-    AND (
-        :filterProvenance = 0
-        OR (
-            session.legacy_import = 1
-            AND 'LEGACY_AGGREGATE' IN :provenanceStates
+WITH word_candidates AS (
+    SELECT
+        word.id,
+        word.language_tag,
+        word.normalized_headword,
+        word.normalized_reading,
+        word.display_headword,
+        word.display_reading,
+        word.part_of_speech,
+        count(*) AS occurrence_count,
+        count(DISTINCT session.title_id) AS title_count,
+        word.first_seen_at,
+        word.last_seen_at,
+        word.frequency_rank,
+        word.jlpt_level,
+        word.grade_level,
+        word.excluded,
+        CASE
+            WHEN word.display_headword GLOB '*[一-龯々〆ヵヶ]*' THEN 'KANJI'
+            WHEN word.display_headword != ''
+                AND word.display_headword NOT GLOB '*[^ぁ-ゖァ-ヺー]*'
+                THEN 'KANA'
+            WHEN lower(word.display_headword) GLOB '*[a-z]*' THEN 'LATIN'
+            ELSE 'OTHER'
+        END AS word_script
+    FROM immersion_word AS word
+    JOIN immersion_word_occurrence AS occurrence ON occurrence.word_id = word.id
+    JOIN immersion_source_exposure AS exposure
+        ON exposure.source_unit_id = occurrence.source_unit_id
+    JOIN immersion_event AS event ON event.id = exposure.event_id
+    JOIN immersion_session AS session ON session.id = event.session_id
+    WHERE
+        session.status != 'DELETED'
+        AND (
+            :exclusion = 'ALL'
+            OR (:exclusion = 'INCLUDED' AND word.excluded = 0)
+            OR (:exclusion = 'EXCLUDED' AND word.excluded = 1)
         )
-        OR (
-            session.legacy_import = 0
-            AND 'AVAILABLE' IN :provenanceStates
+        AND (
+            :filterDate = 0 OR
+            event.local_date BETWEEN :startDate AND :endDate
         )
-    )
-    AND (
-        :filterMaturity = 0
-        OR coalesce(
+        AND (:filterMediaKinds = 0 OR session.media_kind IN :mediaKinds)
+        AND (:filterProfileIds = 0 OR session.profile_id IN :profileIds)
+        AND (:filterLanguageTags = 0 OR word.language_tag IN :languageTags)
+        AND (:filterTitleIds = 0 OR session.title_id IN :titleIds)
+        AND (:includeRereads = 1 OR exposure.replay_ordinal = 0)
+        AND (:includeLegacy = 1 OR session.legacy_import = 0)
+        AND (
+            :filterProvenance = 0
+            OR (
+                session.legacy_import = 1
+                AND 'LEGACY_AGGREGATE' IN :provenanceStates
+            )
+            OR (
+                session.legacy_import = 0
+                AND 'AVAILABLE' IN :provenanceStates
+            )
+        )
+    GROUP BY word.id
+),
+word_rows AS (
+    SELECT
+        candidate.*,
+        coalesce(
             (
-            SELECT maturity_item.maturity_tier
-            FROM immersion_anki_item AS maturity_item
-            JOIN immersion_anki_snapshot AS maturity_snapshot
-                ON maturity_snapshot.id = maturity_item.snapshot_id
-            WHERE
-                maturity_snapshot.is_current = 1
-                AND (:filterProfileIds = 0 OR maturity_snapshot.profile_id IN :profileIds)
-                AND maturity_item.language_tag = word.language_tag
-                AND maturity_item.normalized_word = word.normalized_headword
-                AND (
-                    (
-                        maturity_item.match_confidence = 'READING_AWARE'
-                        AND maturity_item.normalized_reading = word.normalized_reading
+                SELECT item.maturity_tier
+                FROM immersion_anki_item AS item
+                JOIN immersion_anki_snapshot AS snapshot ON snapshot.id = item.snapshot_id
+                WHERE
+                    snapshot.is_current = 1
+                    AND (:filterProfileIds = 0 OR snapshot.profile_id IN :profileIds)
+                    AND item.language_tag = candidate.language_tag
+                    AND item.normalized_word = candidate.normalized_headword
+                    AND (
+                        (
+                            item.match_confidence = 'READING_AWARE'
+                            AND item.normalized_reading = candidate.normalized_reading
+                        )
+                        OR (
+                            item.match_confidence = 'HEADWORD_ONLY'
+                            AND coalesce(item.normalized_reading, '') = ''
+                        )
                     )
-                    OR (
-                        maturity_item.match_confidence = 'HEADWORD_ONLY'
-                        AND coalesce(maturity_item.normalized_reading, '') = ''
-                    )
-                )
-            ORDER BY
-                CASE maturity_item.match_confidence
-                    WHEN 'READING_AWARE' THEN 2
-                    ELSE 1
-                END DESC,
-                CASE WHEN :maturityAggregation = 'MAX_INTERVAL' THEN
-                    CASE maturity_item.maturity_tier
-                        WHEN 'MATURE' THEN 5
-                        WHEN 'YOUNG' THEN 4
-                        WHEN 'LEARNING' THEN 3
-                        WHEN 'NEW' THEN 2
+                ORDER BY
+                    CASE item.match_confidence
+                        WHEN 'READING_AWARE' THEN 2
                         ELSE 1
-                    END
-                END DESC,
-                CASE WHEN :maturityAggregation = 'MIN_INTERVAL' THEN
-                    CASE maturity_item.maturity_tier
-                        WHEN 'MATURE' THEN 5
-                        WHEN 'YOUNG' THEN 4
-                        WHEN 'LEARNING' THEN 3
-                        WHEN 'NEW' THEN 2
-                        ELSE 1
-                    END
-                END,
-                maturity_item.card_id
-            LIMIT 1
+                    END DESC,
+                    CASE WHEN :maturityAggregation = 'MAX_INTERVAL' THEN
+                        CASE item.maturity_tier
+                            WHEN 'MATURE' THEN 5
+                            WHEN 'YOUNG' THEN 4
+                            WHEN 'LEARNING' THEN 3
+                            WHEN 'NEW' THEN 2
+                            ELSE 1
+                        END
+                    END DESC,
+                    CASE WHEN :maturityAggregation = 'MIN_INTERVAL' THEN
+                        CASE item.maturity_tier
+                            WHEN 'MATURE' THEN 5
+                            WHEN 'YOUNG' THEN 4
+                            WHEN 'LEARNING' THEN 3
+                            WHEN 'NEW' THEN 2
+                            ELSE 1
+                        END
+                    END,
+                    item.card_id
+                LIMIT 1
             ),
             'UNKNOWN'
-        ) IN :maturityTiers
+        ) AS maturity_tier,
+        coalesce(
+            (
+                SELECT item.match_confidence
+                FROM immersion_anki_item AS item
+                JOIN immersion_anki_snapshot AS snapshot ON snapshot.id = item.snapshot_id
+                WHERE
+                    snapshot.is_current = 1
+                    AND (:filterProfileIds = 0 OR snapshot.profile_id IN :profileIds)
+                    AND item.language_tag = candidate.language_tag
+                    AND item.normalized_word = candidate.normalized_headword
+                    AND (
+                        (
+                            item.match_confidence = 'READING_AWARE'
+                            AND item.normalized_reading = candidate.normalized_reading
+                        )
+                        OR (
+                            item.match_confidence = 'HEADWORD_ONLY'
+                            AND coalesce(item.normalized_reading, '') = ''
+                        )
+                    )
+                ORDER BY
+                    CASE item.match_confidence
+                        WHEN 'READING_AWARE' THEN 2
+                        ELSE 1
+                    END DESC,
+                    CASE WHEN :maturityAggregation = 'MAX_INTERVAL' THEN
+                        CASE item.maturity_tier
+                            WHEN 'MATURE' THEN 5
+                            WHEN 'YOUNG' THEN 4
+                            WHEN 'LEARNING' THEN 3
+                            WHEN 'NEW' THEN 2
+                            ELSE 1
+                        END
+                    END DESC,
+                    CASE WHEN :maturityAggregation = 'MIN_INTERVAL' THEN
+                        CASE item.maturity_tier
+                            WHEN 'MATURE' THEN 5
+                            WHEN 'YOUNG' THEN 4
+                            WHEN 'LEARNING' THEN 3
+                            WHEN 'NEW' THEN 2
+                            ELSE 1
+                        END
+                    END,
+                    item.card_id
+                LIMIT 1
+            ),
+            ''
+        ) AS match_confidence,
+        CASE
+            WHEN lower(coalesce(candidate.part_of_speech, '')) LIKE '%proper%'
+                OR lower(coalesce(candidate.part_of_speech, '')) LIKE '%name%'
+                THEN 'NAME'
+            WHEN lower(coalesce(candidate.part_of_speech, '')) LIKE '%particle%'
+                OR lower(coalesce(candidate.part_of_speech, '')) LIKE '%auxiliary%'
+                OR lower(coalesce(candidate.part_of_speech, '')) LIKE '%grammar%'
+                OR lower(coalesce(candidate.part_of_speech, '')) LIKE '%conjunction%'
+                THEN 'GRAMMAR'
+            WHEN candidate.word_script = 'KANA' THEN 'KANA_ONLY'
+            ELSE 'OTHER'
+        END AS word_category
+    FROM word_candidates AS candidate
+)
+SELECT
+    id,
+    language_tag,
+    display_headword,
+    display_reading,
+    part_of_speech,
+    occurrence_count,
+    title_count,
+    first_seen_at,
+    last_seen_at,
+    frequency_rank,
+    jlpt_level,
+    grade_level,
+    excluded,
+    word_script,
+    maturity_tier,
+    match_confidence,
+    word_category
+FROM word_rows
+WHERE
+    (
+        :searchQuery = ''
+        OR display_headword LIKE '%' || :searchQuery || '%' COLLATE NOCASE
+        OR coalesce(display_reading, '') LIKE '%' || :searchQuery || '%' COLLATE NOCASE
+        OR coalesce(part_of_speech, '') LIKE '%' || :searchQuery || '%' COLLATE NOCASE
     )
-GROUP BY word.id
+    AND (
+        :partOfSpeechQuery = ''
+        OR coalesce(part_of_speech, '') LIKE '%' || :partOfSpeechQuery || '%' COLLATE NOCASE
+    )
+    AND (:filterMaturity = 0 OR maturity_tier IN :maturityTiers)
+    AND (
+        :knownness = 'ALL'
+        OR (:knownness = 'UNKNOWN' AND maturity_tier IN ('UNKNOWN', 'UNAVAILABLE'))
+        OR (:knownness = 'KNOWN' AND maturity_tier NOT IN ('UNKNOWN', 'UNAVAILABLE'))
+    )
+    AND (:filterScripts = 0 OR word_script IN :scripts)
+    AND (:filterCategories = 0 OR word_category IN :categories)
+    AND (:minimumOccurrences IS NULL OR occurrence_count >= :minimumOccurrences)
+    AND (:maximumOccurrences IS NULL OR occurrence_count <= :maximumOccurrences)
+    AND (:maximumFrequencyRank IS NULL OR frequency_rank <= :maximumFrequencyRank)
 ORDER BY
     CASE WHEN :sort = 'MOST_OCCURRENCES' THEN occurrence_count END DESC,
-    CASE WHEN :sort = 'MOST_RECENT' THEN word.last_seen_at END DESC,
-    CASE WHEN :sort = 'FIRST_SEEN' THEN word.first_seen_at END,
-    CASE WHEN :sort = 'ALPHABETICAL' THEN word.display_headword END,
-    CASE WHEN :sort = 'FREQUENCY_RANK' THEN word.frequency_rank IS NULL END,
-    CASE WHEN :sort = 'FREQUENCY_RANK' THEN word.frequency_rank END,
-    CASE WHEN :sort = 'MOST_CHARACTERS' THEN length(word.display_headword) END DESC,
-    word.id
+    CASE WHEN :sort = 'MOST_RECENT' THEN last_seen_at END DESC,
+    CASE WHEN :sort = 'FIRST_SEEN' THEN first_seen_at END,
+    CASE WHEN :sort = 'ALPHABETICAL' THEN display_headword END,
+    CASE WHEN :sort = 'FREQUENCY_RANK' THEN frequency_rank IS NULL END,
+    CASE WHEN :sort = 'FREQUENCY_RANK' THEN frequency_rank END,
+    CASE WHEN :sort = 'MOST_CHARACTERS' THEN length(display_headword) END DESC,
+    id
 LIMIT :limit
 OFFSET :offset;
 
