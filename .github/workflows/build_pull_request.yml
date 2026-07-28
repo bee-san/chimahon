@@ -27,6 +27,8 @@ jobs:
   build:
     name: Build app
     runs-on: 'ubuntu-24.04'
+    env:
+      HAS_GOOGLE_CLIENT_SECRETS: ${{ secrets.GOOGLE_CLIENT_SECRETS_JSON != '' }}
 
     steps:
       - name: Clone repo
@@ -47,7 +49,7 @@ jobs:
           distribution: temurin
 
       - name: Write client_secrets.json
-        if: github.repository == github.event.pull_request.head.repo.full_name
+        if: github.repository == github.event.pull_request.head.repo.full_name && env.HAS_GOOGLE_CLIENT_SECRETS == 'true'
         uses: DamianReeves/write-file-action@6929a9a6d1807689191dcc8bbe62b54d70a32b42 # v1.3
         with:
           path: app/src/main/assets/client_secrets.json
@@ -61,11 +63,11 @@ jobs:
         run: ./gradlew spotlessCheck
 
       - name: Build app
-        if: github.repository == github.event.pull_request.head.repo.full_name
+        if: github.repository == github.event.pull_request.head.repo.full_name && env.HAS_GOOGLE_CLIENT_SECRETS == 'true'
         run: ./gradlew assemblePreview -Pinclude-telemetry -Penable-updater
 
       - name: Build app
-        if: github.repository != github.event.pull_request.head.repo.full_name
+        if: github.repository != github.event.pull_request.head.repo.full_name || env.HAS_GOOGLE_CLIENT_SECRETS != 'true'
         run: ./gradlew assemblePreview
 
       - name: Run unit tests
