@@ -205,12 +205,18 @@ Artifacts and checksums: `docs/implementation/evidence/2026-07-28-api26/`.
 8. Run the repository gates in order:
    `./gradlew spotlessApply`, `./gradlew spotlessCheck`, then
    `./gradlew assembleDebug`, followed by the targeted statistics,
-   instrumentation, migration, and release tests.
-9. Commit and push the evidence branch, open a PR, publish evidence artifacts
-   at immutable URLs, and update only genuinely passing rows in
+   instrumentation, migration, and release tests. When touching the validation
+   manifest, also run the CI compliance set:
+   `:app:verifyNativeSourceCompliance`,
+   `:app:verifyImmersionStatsReleaseValidationMetadata`, and
+   `:app:verifyReleaseComplianceTaskWiring`.
+9. Publish accepted evidence artifacts at immutable HTTPS URLs and only then
+   move their objects from `unacceptedRuns` into `evidence` with `covers`,
+   `result: "pass"`, and a reviewer, flipping only genuinely passing rows in
    `docs/immersion-stats-release-validation.json`.
-10. Merge the evidence PR only after review and hosted CI. Create and push an
-    annotated `v2.5.0` tag at that final reviewed commit.
+10. Merge the evidence PR ([#9](https://github.com/bee-san/chimahon/pull/9))
+    only after human review and hosted CI. Create and push an annotated
+    `v2.5.0` tag at that final reviewed commit.
 11. Monitor the tag-triggered release workflow. Verify checksums, APK signing
     certificate, package/version identity, native corresponding-source
     archive, source revision, and all release attestations.
@@ -225,10 +231,17 @@ Artifacts and checksums: `docs/implementation/evidence/2026-07-28-api26/`.
 - Three API 26 instrumentation runs passed and their artifacts are stored under
   `docs/implementation/evidence/2026-07-28-api26/` with a `SHA256SUMS` file.
 - `docs/immersion-stats-release-validation.json` still has all 17 matrix rows
-  `false` and `releaseGate: blocked`. It now also carries three evidence
-  objects explicitly marked not accepted.
-- The `chimahon_api26` emulator may still be running on port 5556. The
-  unrelated `emulator-5554` from another task was left untouched.
+  `false` and `releaseGate: blocked`. Its `evidence` array is empty; the three
+  runs live under `unacceptedRuns`.
+- Local gates all pass: `spotlessApply`, `spotlessCheck`, `assembleDebug`,
+  `:domain:test`, `:data:test`, `testReleaseUnitTest`, and the three CI
+  compliance verification tasks.
+- The task-owned `chimahon_api26` emulator was stopped after its identity was
+  confirmed via `adb -s emulator-5556 emu avd name`. The unrelated
+  `emulator-5554` from another task was verified still running and was never
+  installed to, instrumented, or stopped.
+- The evidence branch `test/release-device-evidence` is committed and pushed;
+  PR [#9](https://github.com/bee-san/chimahon/pull/9) is open and unmerged.
 - The draft release remains unpublished with no tag and no assets.
 - `v2.5.0` must not be tagged or published from this state.
 
