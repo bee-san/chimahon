@@ -93,9 +93,9 @@ jobs:
           heap-size: 512M
           disk-size: 6G
           emulator-boot-timeout: 900
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -no-metrics -camera-back none
           script: |
-            set -euo pipefail
+            set -eu
             evidence_dir="build/device-validation/api-$API_LEVEL"
             {
               echo "device_serial=$(adb get-serialno)"
