@@ -77,6 +77,7 @@ import tachiyomi.core.common.util.lang.withIOContext
 import tachiyomi.core.common.util.lang.withUIContext
 import tachiyomi.domain.chapter.model.Chapter
 import tachiyomi.domain.episode.model.Episode
+import tachiyomi.domain.history.model.SearchHistory
 import tachiyomi.i18n.MR
 import tachiyomi.i18n.kmk.KMR
 import tachiyomi.presentation.core.components.material.Scaffold
@@ -152,6 +153,7 @@ data object HistoryTab : Tab {
                                 else -> screenModel.updateSearchQuery(it)
                             }
                         },
+                        searchHistoryScope = SearchHistory.SCOPE_ANIME_MANGA,
                         actions = {
                             val actions = when (selectedTab) {
                                 TAB_ANIME -> listOf(

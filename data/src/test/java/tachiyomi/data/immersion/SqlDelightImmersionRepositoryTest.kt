@@ -258,6 +258,14 @@ class SqlDelightImmersionRepositoryTest {
                 migrationDriver,
                 "SELECT count(*) FROM pragma_table_info('immersion_event') WHERE name = 'local_date'",
             ) shouldBe 1
+            queryLong(
+                migrationDriver,
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'search_history'",
+            ) shouldBe 1
+            queryLong(
+                migrationDriver,
+                "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'search_history_scope_time_idx'",
+            ) shouldBe 1
             queryImmersionSchema(migrationDriver) shouldContainExactly queryImmersionSchema(driver)
             assertLegacySessionConstraints(migrationDriver)
         } finally {

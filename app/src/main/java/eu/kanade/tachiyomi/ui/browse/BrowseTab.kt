@@ -77,6 +77,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import tachiyomi.core.common.util.lang.launchIO
+import tachiyomi.domain.history.model.SearchHistory
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.components.material.Scaffold
 import tachiyomi.presentation.core.components.material.TabText
@@ -257,6 +258,7 @@ data object BrowseTab : Tab {
                         searchEnabled = searchEnabled,
                         searchQuery = if (searchEnabled) searchQuery else null,
                         onChangeSearchQuery = onChangeSearchQuery,
+                        searchHistoryScope = if (currentTab?.titleRes == MR.strings.label_extensions || currentTab?.titleRes == MR.strings.label_migration) SearchHistory.SCOPE_EXTENSION_MIGRATE else SearchHistory.SCOPE_ANIME_MANGA,
                         actions = {
                             AppBarActions(currentTab?.actions ?: persistentListOf())
                         },

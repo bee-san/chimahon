@@ -26,6 +26,7 @@ import eu.kanade.tachiyomi.data.backup.models.BackupFeed
 import eu.kanade.tachiyomi.data.backup.models.BackupManga
 import eu.kanade.tachiyomi.data.backup.models.BackupPreference
 import eu.kanade.tachiyomi.data.backup.models.BackupSavedSearch
+import eu.kanade.tachiyomi.data.backup.models.BackupSearchHistory
 import eu.kanade.tachiyomi.data.backup.models.BackupSource
 import eu.kanade.tachiyomi.data.backup.models.BackupSourcePreferences
 import kotlinx.serialization.protobuf.ProtoBuf
@@ -40,6 +41,7 @@ import tachiyomi.domain.entries.anime.interactor.GetAnimeSeasonsByParentId
 import tachiyomi.domain.entries.anime.interactor.GetFavoriteAnime
 import tachiyomi.domain.entries.anime.model.Anime
 import tachiyomi.domain.entries.anime.repository.AnimeRepository
+import tachiyomi.domain.history.interactor.GetSearchHistory
 import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
 import tachiyomi.domain.manga.interactor.GetFavorites
 import tachiyomi.domain.manga.interactor.GetMergedManga
@@ -81,6 +83,7 @@ class BackupCreator(
     // KMK <--
     // Chimahon -->
     private val novelBackupCreator: eu.kanade.tachiyomi.data.backup.create.creators.NovelBackupCreator = eu.kanade.tachiyomi.data.backup.create.creators.NovelBackupCreator(context),
+    private val getSearchHistory: GetSearchHistory = Injekt.get(),
     // Chimahon <--
     // SY -->
     private val savedSearchBackupCreator: SavedSearchBackupCreator = SavedSearchBackupCreator(),
@@ -146,6 +149,7 @@ class BackupCreator(
                 backupMangaStats = backupMangaStats(options),
                 backupAnkiStats = backupAnkiStats(options),
                 backupImmersionStats = backupImmersionStats(options),
+                backupSearchHistory = backupSearchHistory(options),
                 // Chimahon <--
             )
 
@@ -295,6 +299,18 @@ class BackupCreator(
             includeRawText = options.immersionRawText,
             createdAtEpochMillis = System.currentTimeMillis(),
         )
+    }
+
+    suspend fun backupSearchHistory(options: BackupOptions): List<BackupSearchHistory> {
+        if (!options.history) return emptyList()
+
+        return getSearchHistory.awaitAll().map {
+            BackupSearchHistory(
+                scope = it.scope,
+                query = it.query,
+                lastSearchedAt = it.lastSearchedAt,
+            )
+        }
     }
     // Chimahon <--
 

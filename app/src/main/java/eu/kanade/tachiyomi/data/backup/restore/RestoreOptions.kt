@@ -17,6 +17,7 @@ data class RestoreOptions(
     // Chimahon -->
     val novels: Boolean = true,
     val immersionStats: Boolean = true,
+    val history: Boolean = true,
     // Chimahon <--
     val animeEntries: Boolean = true,
 ) {
@@ -36,6 +37,7 @@ data class RestoreOptions(
         animeEntries,
         // Chimahon -->
         immersionStats,
+        history,
         // Chimahon <--
     )
 
@@ -48,6 +50,7 @@ data class RestoreOptions(
             savedSearchesFeeds /* SY <-- */ ||
             novels ||
             immersionStats ||
+            history ||
             animeEntries
 
     companion object {
@@ -117,6 +120,7 @@ data class RestoreOptions(
             // Chimahon -->
             novels = array.getOrElse(6) { true },
             immersionStats = array.getOrElse(8) { true },
+            history = array.getOrElse(9) { true },
             // Chimahon <--
             animeEntries = array.getOrElse(7) { true },
         )

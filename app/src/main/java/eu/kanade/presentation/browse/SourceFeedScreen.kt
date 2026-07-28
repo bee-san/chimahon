@@ -29,6 +29,7 @@ import eu.kanade.presentation.components.SearchToolbar
 import eu.kanade.tachiyomi.ui.browse.BulkFavoriteScreenModel
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
+import tachiyomi.domain.history.model.SearchHistory
 import tachiyomi.domain.manga.model.Manga
 import tachiyomi.domain.source.model.FeedSavedSearch
 import tachiyomi.domain.source.model.SavedSearch
@@ -333,6 +334,7 @@ fun SourceFeedToolbar(
         // KMK <--
         scrollBehavior = scrollBehavior,
         placeholderText = stringResource(MR.strings.action_search_hint),
+        searchHistoryScope = SearchHistory.SCOPE_ANIME_MANGA,
         // KMK -->
         actions = {
             AppBarActions(

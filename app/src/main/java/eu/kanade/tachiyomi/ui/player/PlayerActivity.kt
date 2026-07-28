@@ -173,6 +173,9 @@ class PlayerActivity : BaseActivity() {
         private const val EXTRA_STANDALONE_VIDEO_TITLE = "standaloneVideoTitle"
         private const val EXTRA_START_POSITION_MILLIS = "startPositionMillis"
 
+        private const val EXTRA_YOUTUBE_VIDEO = "youtubeVideo"
+        private const val EXTRA_YOUTUBE_VIDEO_URL = "youtubeVideoUrl"
+
         fun newIntent(
             context: Context,
             animeId: Long?,
@@ -214,6 +217,17 @@ class PlayerActivity : BaseActivity() {
                 }
             }
         }
+
+        fun newYoutubeIntent(
+            context: Context,
+            videoUrl: String,
+        ): Intent {
+            return Intent(context, PlayerActivity::class.java).apply {
+                putExtra(EXTRA_YOUTUBE_VIDEO, true)
+                putExtra(EXTRA_YOUTUBE_VIDEO_URL, videoUrl)
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+        }
     }
 
     private var requestedStartPositionMillis: Long? = null
@@ -221,6 +235,22 @@ class PlayerActivity : BaseActivity() {
     @SuppressLint("MissingSuperCall")
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+
+        if (intent.isYoutubeVideoIntent()) {
+            player.isExiting = false
+            val videoUrl = intent.getStringExtra(EXTRA_YOUTUBE_VIDEO_URL)
+            if (videoUrl != null) {
+                // Create anime and episodes
+                viewModel.loadYoutubeVideo(videoUrl)
+                setIntent(intent)
+                return
+            } else {
+                toast("Failed to get youtube url")
+                logcat(LogPriority.ERROR) { "Failed to get youtube url" }
+                finish()
+                return
+            }
+        }
 
         if (intent.isStandaloneVideoIntent()) {
             player.isExiting = false
@@ -289,6 +319,12 @@ class PlayerActivity : BaseActivity() {
         setIntent(intent)
     }
 
+    private fun Intent.isYoutubeVideoIntent(): Boolean {
+        if (getBooleanExtra(EXTRA_YOUTUBE_VIDEO, false)) return true
+        if (hasExtra(EXTRA_YOUTUBE_VIDEO_URL)) return true
+        return false
+    }
+
     private fun Intent.isStandaloneVideoIntent(): Boolean {
         if (getBooleanExtra(EXTRA_STANDALONE_VIDEO, false)) return true
         if (hasExtra(EXTRA_STANDALONE_VIDEO_URL)) return true
@@ -310,7 +346,6 @@ class PlayerActivity : BaseActivity() {
             videoUrl = uriString,
             videoTitle = title,
             initialized = true,
-            videoPageUrl = getStringExtra("youtube_page_url") ?: "",
         )
     }
 
