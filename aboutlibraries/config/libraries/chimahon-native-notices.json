@@ -1,0 +1,14 @@
+{
+  "uniqueId": "app.chimahon:native-notices",
+  "name": "Chimahon native multimedia notices",
+  "description": "Notices and distribution information for native multimedia payloads packaged in Chimahon. This entry is generated into the app license database and is not removed by META-INF packaging exclusions.",
+  "licenses": [
+    "Chimahon-Native-Notices"
+  ],
+  "funding": [
+    {
+      "platform": "Application Corresponding Source",
+      "url": "https://github.com/bee-san/chimahon/releases/download/v2.5.0/chimahon-source-v2.5.0.tar.gz"
+    }
+  ]
+}

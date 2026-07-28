@@ -25,6 +25,20 @@ if (includeTelemetry) {
     }
 }
 
+aboutLibraries {
+    collect {
+        configPath = file("../aboutlibraries/config")
+    }
+    license {
+        additionalLicenses.addAll(
+            "LGPL-3.0-or-later",
+            "GPL-3.0-or-later",
+        )
+    }
+}
+
+apply(from = rootProject.file("gradle/native-release-compliance.gradle.kts"))
+
 android {
     namespace = "eu.kanade.tachiyomi"
 

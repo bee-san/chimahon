@@ -1,0 +1,17 @@
+{
+  "uniqueId": "com.github.bee-san:ffmpeg-kit",
+  "artifactVersion": "1.18-chimahon.2",
+  "name": "FFmpegKit Android wrapper and native FFmpeg payload",
+  "description": "The Java and JNI wrapper source grants LGPL-3.0-or-later terms. The bundled native FFmpeg payload was built with GPL and version-3 features enabled and is GPL-3.0-or-later. Its release archive contains the exact wrapper, patched FFmpeg tree, transitive native sources, and build configuration.",
+  "website": "https://github.com/bee-san/ffmpeg-kit/tree/6a937c79cea09748385215891b68bf7d78215f81",
+  "licenses": [
+    "LGPL-3.0-or-later",
+    "GPL-3.0-or-later"
+  ],
+  "funding": [
+    {
+      "platform": "Corresponding Source",
+      "url": "https://github.com/bee-san/ffmpeg-kit/releases/download/1.18-chimahon.2/ffmpeg-kit-source-1.18-chimahon.2.tar.gz"
+    }
+  ]
+}
