@@ -53,81 +53,94 @@ private fun buildResultEntryJson(result: LookupResult, index: Int, priorityMap: 
         put("deinflected", result.deinflected)
         putJsonArray("process") {
             for (p in result.process) {
-                add(buildJsonObject {
-                    put("name", p.name)
-                    put("description", p.description)
-                })
+                add(
+                    buildJsonObject {
+                        put("name", p.name)
+                        put("description", p.description)
+                    },
+                )
             }
         }
-        put("term", buildJsonObject {
-            put("expression", result.term.expression)
-            put("reading", result.term.reading)
-            put("rules", result.term.rules)
-            putJsonArray("ruleTags") {
-                for (tag in ruleTags) add(JsonPrimitive(tag))
-            }
-            putJsonArray("glossaries") {
-                for (g in glossaries) {
-                    add(buildGlossaryPayload(g))
+        put(
+            "term",
+            buildJsonObject {
+                put("expression", result.term.expression)
+                put("reading", result.term.reading)
+                put("rules", result.term.rules)
+                putJsonArray("ruleTags") {
+                    for (tag in ruleTags) add(JsonPrimitive(tag))
                 }
-            }
-            putJsonArray("frequencies") {
-                for (group in frequencies) {
-                    add(buildJsonObject {
-                        put("dictName", group.dictName)
-                        put("displayValueText", frequencyDisplayText(group))
-                        putJsonArray("frequencies") {
-                            for (item in group.frequencies) {
-                                add(buildJsonObject {
-                                    put("value", item.value)
-                                    put("displayValue", item.displayValue)
-                                })
-                            }
-                        }
-                    })
-                }
-            }
-            harmonicRank(frequencies)?.let { put("frequencyHarmonicRank", it) }
-            averageRank(frequencies)?.let { put("frequencyAverageRank", it) }
-            putJsonArray("pitches") {
-                val allPitches = pitches.toTypedArray()
-                val priorityTitles = priorityMap.entries.sortedBy { it.value }.map { it.key }
-                if (groupPitches) {
-                    val orderedPitches = LinkedHashSet<Int>()
-                    for (title in priorityTitles) {
-                        allPitches.filter { it.dictName == title }
-                            .forEach { group -> orderedPitches.addAll(group.pitchPositions.toList()) }
-                    }
-                    for (group in allPitches) {
-                        if (group.dictName !in priorityTitles) {
-                            orderedPitches.addAll(group.pitchPositions.toList())
-                        }
-                    }
-                    val allDictIds = allPitches.map { it.dictName }.distinct()
-                    if (orderedPitches.isNotEmpty()) {
-                        val sortedTitles = allDictIds.sortedBy {
-                            val idx = priorityTitles.indexOf(it)
-                            if (idx == -1) Int.MAX_VALUE else idx
-                        }
-                        add(buildJsonObject {
-                            put("dictName", sortedTitles.joinToString(", "))
-                            putJsonArray("pitchPositions") {
-                                for (pos in orderedPitches) add(JsonPrimitive(pos))
-                            }
-                        })
-                    }
-                } else {
-                    for (group in allPitches) {
-                        add(buildJsonObject {
-                            put("dictName", group.dictName)
-                            putJsonArray("pitchPositions") {
-                                for (pos in group.pitchPositions.distinct()) add(JsonPrimitive(pos))
-                            }
-                        })
+                putJsonArray("glossaries") {
+                    for (g in glossaries) {
+                        add(buildGlossaryPayload(g))
                     }
                 }
-            }
-        })
+                putJsonArray("frequencies") {
+                    for (group in frequencies) {
+                        add(
+                            buildJsonObject {
+                                put("dictName", group.dictName)
+                                put("displayValueText", frequencyDisplayText(group))
+                                putJsonArray("frequencies") {
+                                    for (item in group.frequencies) {
+                                        add(
+                                            buildJsonObject {
+                                                put("value", item.value)
+                                                put("displayValue", item.displayValue)
+                                            },
+                                        )
+                                    }
+                                }
+                            },
+                        )
+                    }
+                }
+                harmonicRank(frequencies)?.let { put("frequencyHarmonicRank", it) }
+                averageRank(frequencies)?.let { put("frequencyAverageRank", it) }
+                putJsonArray("pitches") {
+                    val allPitches = pitches.toTypedArray()
+                    val priorityTitles = priorityMap.entries.sortedBy { it.value }.map { it.key }
+                    if (groupPitches) {
+                        val orderedPitches = LinkedHashSet<Int>()
+                        for (title in priorityTitles) {
+                            allPitches.filter { it.dictName == title }
+                                .forEach { group -> orderedPitches.addAll(group.pitchPositions.toList()) }
+                        }
+                        for (group in allPitches) {
+                            if (group.dictName !in priorityTitles) {
+                                orderedPitches.addAll(group.pitchPositions.toList())
+                            }
+                        }
+                        val allDictIds = allPitches.map { it.dictName }.distinct()
+                        if (orderedPitches.isNotEmpty()) {
+                            val sortedTitles = allDictIds.sortedBy {
+                                val idx = priorityTitles.indexOf(it)
+                                if (idx == -1) Int.MAX_VALUE else idx
+                            }
+                            add(
+                                buildJsonObject {
+                                    put("dictName", sortedTitles.joinToString(", "))
+                                    putJsonArray("pitchPositions") {
+                                        for (pos in orderedPitches) add(JsonPrimitive(pos))
+                                    }
+                                },
+                            )
+                        }
+                    } else {
+                        for (group in allPitches) {
+                            add(
+                                buildJsonObject {
+                                    put("dictName", group.dictName)
+                                    putJsonArray("pitchPositions") {
+                                        for (pos in group.pitchPositions.distinct()) add(JsonPrimitive(pos))
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
+            },
+        )
     }
 }
 
@@ -184,9 +197,12 @@ internal fun buildConfigPayload(
     put("ankiEnabled", activeProfile.ankiEnabled)
     put("ankiDupAction", activeProfile.ankiDupAction)
     put("dictionaryCollapseMode", activeProfile.dictionaryCollapseMode)
-    put("dictionaryDisplayModes", buildJsonObject {
-        for ((title, mode) in displayModesByTitle) put(title, mode)
-    })
+    put(
+        "dictionaryDisplayModes",
+        buildJsonObject {
+            for ((title, mode) in displayModesByTitle) put(title, mode)
+        },
+    )
     put("placeholder", placeholder)
     put("isDark", isDark)
     put("showFrequencyHarmonic", showFrequencyHarmonic)
@@ -201,11 +217,25 @@ internal fun buildConfigPayload(
     put("renderRecursiveChrome", renderRecursiveChrome)
     put("showNavigationButtons", showNavigationButtons)
     putJsonArray("tabs") {
-        for (tab in tabs) add(buildJsonObject { put("label", tab.label); put("active", tab.active) })
+        for (tab in tabs) {
+            add(
+                buildJsonObject {
+                    put("label", tab.label)
+                    put("active", tab.active)
+                },
+            )
+        }
     }
     putJsonArray("existingExpressions") { for (expr in existingExpressions) add(JsonPrimitive(expr)) }
     putJsonArray("styles") {
-        for (style in styles) add(buildJsonObject { put("dictName", style.dictName); put("styles", style.styles) })
+        for (style in styles) {
+            add(
+                buildJsonObject {
+                    put("dictName", style.dictName)
+                    put("styles", style.styles)
+                },
+            )
+        }
     }
     put("mediaDataUris", buildJsonObject { for ((key, value) in mediaDataUris) put(key, value) })
     putJsonArray("results") {}
@@ -343,27 +373,33 @@ private inline fun <T> Array<T>.sortedByDictionaryPriority(
 internal fun buildKanjiEntryJson(character: String, entry: KanjiEntry): JsonObject = buildJsonObject {
     put("matched", character)
     put("deinflected", character)
-    put("kanji", buildJsonObject {
-        put("character", character)
-        put("dictName", entry.dictName)
-        putJsonArray("onyomi") {
-            for (reading in entry.onyomi.split(",").map { it.trim() }.filter { it.isNotEmpty() }) {
-                add(JsonPrimitive(reading))
+    put(
+        "kanji",
+        buildJsonObject {
+            put("character", character)
+            put("dictName", entry.dictName)
+            putJsonArray("onyomi") {
+                for (reading in entry.onyomi.split(",").map { it.trim() }.filter { it.isNotEmpty() }) {
+                    add(JsonPrimitive(reading))
+                }
             }
-        }
-        putJsonArray("kunyomi") {
-            for (reading in entry.kunyomi.split(",").map { it.trim() }.filter { it.isNotEmpty() }) {
-                add(JsonPrimitive(reading))
+            putJsonArray("kunyomi") {
+                for (reading in entry.kunyomi.split(",").map { it.trim() }.filter { it.isNotEmpty() }) {
+                    add(JsonPrimitive(reading))
+                }
             }
-        }
-        put("tags", entry.tags)
-        putJsonArray("definitions") {
-            for (def in entry.definitions) {
-                add(JsonPrimitive(def))
+            put("tags", entry.tags)
+            putJsonArray("definitions") {
+                for (def in entry.definitions) {
+                    add(JsonPrimitive(def))
+                }
             }
-        }
-        put("stats", buildJsonObject {
-            for ((key, value) in entry.stats) put(key, value)
-        })
-    })
+            put(
+                "stats",
+                buildJsonObject {
+                    for ((key, value) in entry.stats) put(key, value)
+                },
+            )
+        },
+    )
 }

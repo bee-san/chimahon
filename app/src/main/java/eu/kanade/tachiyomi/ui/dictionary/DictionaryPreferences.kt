@@ -164,17 +164,20 @@ class DictionaryPreferences(
             profileStore = profileStore,
             readMangaOverride = { mangaId ->
                 preferenceStore.getString(
-                    chimahon.dictionary.DictionaryProfileResolver.mangaOverrideKey(mangaId), "",
+                    chimahon.dictionary.DictionaryProfileResolver.mangaOverrideKey(mangaId),
+                    "",
                 ).get()
             },
             readSourceOverride = { sourceId ->
                 preferenceStore.getString(
-                    chimahon.dictionary.DictionaryProfileResolver.sourceOverrideKey(sourceId), "",
+                    chimahon.dictionary.DictionaryProfileResolver.sourceOverrideKey(sourceId),
+                    "",
                 ).get()
             },
             readNovelOverride = { novelId ->
                 preferenceStore.getString(
-                    chimahon.dictionary.DictionaryProfileResolver.novelOverrideKey(novelId), "",
+                    chimahon.dictionary.DictionaryProfileResolver.novelOverrideKey(novelId),
+                    "",
                 ).get()
             },
         )
@@ -240,8 +243,11 @@ class DictionaryPreferences(
     fun setDisplayName(dirName: String, displayName: String?) {
         val json = displayNames().get()
         val obj = try {
-            if (json.isBlank() || json == "{}") org.json.JSONObject()
-            else org.json.JSONObject(json)
+            if (json.isBlank() || json == "{}") {
+                org.json.JSONObject()
+            } else {
+                org.json.JSONObject(json)
+            }
         } catch (_: Exception) {
             org.json.JSONObject()
         }
@@ -294,10 +300,10 @@ class DictionaryPreferences(
 
     override fun wordAudioEnabled() = preferenceStore.getBoolean("pref_word_audio_enabled", true)
     override fun wordAudioAutoplay() = preferenceStore.getBoolean("pref_word_audio_autoplay", false)
-    
+
     /** JSON list of WordAudioSource */
     override fun wordAudioSources() = preferenceStore.getString("pref_word_audio_sources", "[]")
-    
+
     /** Local android.db file path */
     override fun wordAudioLocalPath() = preferenceStore.getString("pref_word_audio_local_path", "")
 

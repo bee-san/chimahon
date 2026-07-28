@@ -1,11 +1,11 @@
 package tachiyomi.domain.category.interactor
 
 import logcat.LogPriority
+import tachiyomi.core.common.util.lang.withNonCancellableContext
+import tachiyomi.core.common.util.system.logcat
 import tachiyomi.domain.category.model.AnimeCategory
 import tachiyomi.domain.category.model.AnimeCategoryUpdate
 import tachiyomi.domain.category.repository.AnimeCategoryRepository
-import tachiyomi.core.common.util.lang.withNonCancellableContext
-import tachiyomi.core.common.util.system.logcat
 
 class RenameAnimeCategory(
     private val animeCategoryRepository: AnimeCategoryRepository,

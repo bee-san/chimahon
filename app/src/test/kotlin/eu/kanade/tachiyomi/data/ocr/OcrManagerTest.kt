@@ -1,31 +1,36 @@
 package eu.kanade.tachiyomi.data.ocr
 
 import android.content.Context
+import chimahon.ocr.LensClient
+import chimahon.ocr.OcrCacheManager
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.data.download.DownloadProvider
 import eu.kanade.tachiyomi.ui.dictionary.DictionaryPreferences
-import io.mockk.*
+import io.mockk.coEvery
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.spyk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
-import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.runTest
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.Assertions.*
+import tachiyomi.core.common.preference.Preference
+import tachiyomi.domain.chapter.model.Chapter
+import tachiyomi.domain.chapter.repository.ChapterRepository
+import tachiyomi.domain.manga.model.Manga
+import tachiyomi.domain.manga.repository.MangaRepository
+import tachiyomi.domain.source.service.SourceManager
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.addSingletonFactory
-import chimahon.ocr.OcrCacheManager
-import chimahon.ocr.LensClient
-import tachiyomi.domain.manga.repository.MangaRepository
-import tachiyomi.domain.chapter.repository.ChapterRepository
-import tachiyomi.domain.source.service.SourceManager
-import tachiyomi.domain.manga.model.Manga
-import tachiyomi.domain.chapter.model.Chapter
-import tachiyomi.core.common.preference.Preference
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class OcrManagerTest {
@@ -47,7 +52,7 @@ class OcrManagerTest {
             }
             every { dictionaryPreferences.parallelOcrLimit() } returns parallelOcrLimitPref
             every { parallelOcrLimitPref.changes() } returns changesFlow
-            
+
             Injekt.addSingletonFactory<DictionaryPreferences> { dictionaryPreferences }
             Injekt.addSingletonFactory<OcrCacheManager> { mockk(relaxed = true) }
             Injekt.addSingletonFactory<LensClient> { mockk(relaxed = true) }
@@ -79,7 +84,7 @@ class OcrManagerTest {
 
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val manager = spyk(OcrManager(mockk(relaxed = true), null, null, mangaRepository, chapterRepository, sourceManager, ocrStore, testDispatcher))
-        
+
         var maxActiveJobs = 0
         var activeJobs = 0
         coEvery { manager.processTask(any(), any(), any(), any()) } coAnswers {
@@ -125,7 +130,7 @@ class OcrManagerTest {
 
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val manager = spyk(OcrManager(mockk(relaxed = true), null, null, mangaRepository, chapterRepository, sourceManager, ocrStore, testDispatcher))
-        
+
         var activeJobs = 0
         coEvery { manager.processTask(any(), any(), any(), any()) } coAnswers {
             activeJobs++
@@ -185,7 +190,7 @@ class OcrManagerTest {
 
         val testDispatcher = StandardTestDispatcher(testScheduler)
         val manager = spyk(OcrManager(mockk(relaxed = true), null, null, mangaRepository, chapterRepository, sourceManager, ocrStore, testDispatcher))
-        
+
         var isCancelled = false
         coEvery { manager.processTask(any(), any(), any(), any()) } coAnswers {
             try {
@@ -208,10 +213,10 @@ class OcrManagerTest {
         runCurrent()
         advanceTimeBy(500)
         assertTrue(isCancelled)
-        
+
         // Verify no resurrection: Task is permanently removed from the map
         assertNull(storeMap[101L])
-        
+
         queueJob.cancel()
     }
 

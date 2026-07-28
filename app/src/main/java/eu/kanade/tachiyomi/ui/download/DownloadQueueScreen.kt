@@ -296,7 +296,7 @@ object DownloadQueueScreen : Screen() {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .nestedScroll(nestedScrollConnection)
+                    .nestedScroll(nestedScrollConnection),
             ) {
                 if (ocrQueue.isNotEmpty()) {
                     val maxOcrHeight = LocalConfiguration.current.screenHeightDp.dp / 2
@@ -305,8 +305,11 @@ object DownloadQueueScreen : Screen() {
                         onCancelClick = { screenModel.cancelOcr(it) },
                         modifier = Modifier
                             .then(
-                                if (downloadList.isEmpty()) Modifier.weight(1f)
-                                else Modifier.heightIn(max = maxOcrHeight)
+                                if (downloadList.isEmpty()) {
+                                    Modifier.weight(1f)
+                                } else {
+                                    Modifier.heightIn(max = maxOcrHeight)
+                                },
                             )
                             .padding(
                                 start = with(density) { left.toDp() },
@@ -346,8 +349,11 @@ object DownloadQueueScreen : Screen() {
                     modifier = Modifier
                         .fillMaxWidth()
                         .then(
-                            if (downloadList.isNotEmpty()) Modifier.weight(1f).clipToBounds()
-                            else Modifier.height(0.dp)
+                            if (downloadList.isNotEmpty()) {
+                                Modifier.weight(1f).clipToBounds()
+                            } else {
+                                Modifier.height(0.dp)
+                            },
                         ),
                     factory = { context ->
                         screenModel.controllerBinding = DownloadListBinding.inflate(LayoutInflater.from(context))

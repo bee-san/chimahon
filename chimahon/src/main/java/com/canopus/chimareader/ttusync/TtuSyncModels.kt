@@ -43,12 +43,16 @@ data class TtuAudioBook(
 )
 
 enum class SyncDirection {
-    IMPORT, EXPORT, AUTO, SYNCED
+    IMPORT,
+    EXPORT,
+    AUTO,
+    SYNCED,
 }
 
 enum class SyncMode(val rawValue: String) {
     Auto("Auto"),
-    Manual("Manual");
+    Manual("Manual"),
+    ;
 
     companion object {
         fun fromRawValue(rawValue: String?): SyncMode =
@@ -58,7 +62,8 @@ enum class SyncMode(val rawValue: String) {
 
 enum class StatisticsSyncMode(val rawValue: String) {
     Merge("Merge"),
-    Replace("Replace");
+    Replace("Replace"),
+    ;
 
     companion object {
         fun fromRawValue(rawValue: String?): StatisticsSyncMode =

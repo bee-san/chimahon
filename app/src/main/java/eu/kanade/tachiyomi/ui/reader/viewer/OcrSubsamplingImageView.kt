@@ -14,12 +14,12 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
-import java.util.Locale
-import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
-import chimahon.ocr.OcrTextOverlayPainter
 import chimahon.ocr.OcrHitTester
 import chimahon.ocr.OcrNormalizedBounds
+import chimahon.ocr.OcrTextOverlayPainter
+import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
 import eu.kanade.tachiyomi.ui.reader.viewer.pager.Pager
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -395,8 +395,11 @@ class OcrSubsamplingImageView(
     }
 
     private fun verticalCenter(rowTop: Float, i: Int, rowStep: Float, ch: Char): Float =
-        if (ch in JP_VERTICAL_PUNCT) rowTop + rowStep * (i + 1f) - rowStep * 0.15f
-        else rowTop + rowStep * (i + 0.5f)
+        if (ch in JP_VERTICAL_PUNCT) {
+            rowTop + rowStep * (i + 1f) - rowStep * 0.15f
+        } else {
+            rowTop + rowStep * (i + 0.5f)
+        }
 
     private fun drawVerticalOcrText(
         canvas: Canvas,
@@ -442,7 +445,7 @@ class OcrSubsamplingImageView(
                         contentTop + rowStep * charIndex,
                         x + columnWidth / 2f,
                         contentTop + rowStep * (charIndex + 1),
-                        highlightPaint
+                        highlightPaint,
                     )
                 }
 
@@ -569,7 +572,7 @@ class OcrSubsamplingImageView(
             downX = event.x
             downY = event.y
             downOnOcrBox = cachedHitBlock != null
-            
+
             // Dismiss active block immediately when touching outside it.
             if (cachedHitBlock == null && host?.activeOcrBlock != null) {
                 host.dismissActiveOcrBlock()

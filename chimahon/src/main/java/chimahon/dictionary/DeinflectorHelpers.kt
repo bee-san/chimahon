@@ -194,10 +194,12 @@ private class IndexedRules(rules: List<Rule>) {
     }
 
     fun forText(text: String, conditions: Set<String>): Sequence<Rule> {
-        return (suffixRules.match(text, conditions) +
-            prefixRules.match(text, conditions) +
-            wholeWordRules.match(text, conditions) +
-            customRules.forConditions(conditions))
+        return (
+            suffixRules.match(text, conditions) +
+                prefixRules.match(text, conditions) +
+                wholeWordRules.match(text, conditions) +
+                customRules.forConditions(conditions)
+            )
             .sortedBy { it.index }
             .map { it.rule }
     }

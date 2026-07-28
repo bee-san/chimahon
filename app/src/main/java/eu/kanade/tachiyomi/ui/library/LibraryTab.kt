@@ -2,10 +2,10 @@ package eu.kanade.tachiyomi.ui.library
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.graphics.res.animatedVectorResource
-import dev.icerock.moko.resources.StringResource
 import androidx.compose.animation.graphics.res.rememberAnimatedVectorPainter
 import androidx.compose.animation.graphics.vector.AnimatedImageVector
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
@@ -28,7 +28,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,7 +35,6 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalUriHandler
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -49,6 +47,8 @@ import cafe.adriel.voyager.navigator.Navigator
 import cafe.adriel.voyager.navigator.currentOrThrow
 import cafe.adriel.voyager.navigator.tab.LocalTabNavigator
 import cafe.adriel.voyager.navigator.tab.TabOptions
+import dev.icerock.moko.resources.StringResource
+import eu.kanade.domain.ui.UiPreferences
 import eu.kanade.presentation.category.components.ChangeCategoryDialog
 import eu.kanade.presentation.library.DeleteLibraryMangaDialog
 import eu.kanade.presentation.library.LibrarySettingsDialog
@@ -57,9 +57,9 @@ import eu.kanade.presentation.library.components.LibraryPagerBoundary
 import eu.kanade.presentation.library.components.LibraryToolbar
 import eu.kanade.presentation.library.components.LibraryToolbarTitle
 import eu.kanade.presentation.library.components.SyncFavoritesConfirmDialog
-import eu.kanade.presentation.library.components.libraryModeBoundarySwipe
 import eu.kanade.presentation.library.components.SyncFavoritesProgressDialog
 import eu.kanade.presentation.library.components.SyncFavoritesWarningDialog
+import eu.kanade.presentation.library.components.libraryModeBoundarySwipe
 import eu.kanade.presentation.manga.components.LibraryBottomActionMenu
 import eu.kanade.presentation.more.onboarding.GETTING_STARTED_URL
 import eu.kanade.presentation.util.Tab
@@ -69,10 +69,11 @@ import eu.kanade.tachiyomi.data.connections.discord.DiscordScreen
 import eu.kanade.tachiyomi.data.download.DownloadCache
 import eu.kanade.tachiyomi.data.library.LibraryUpdateJob
 import eu.kanade.tachiyomi.data.sync.SyncDataJob
+import eu.kanade.tachiyomi.data.track.EnhancedTracker
+import eu.kanade.tachiyomi.data.track.TrackerManager
 import eu.kanade.tachiyomi.ui.browse.source.SourcesScreen
 import eu.kanade.tachiyomi.ui.browse.source.globalsearch.GlobalSearchScreen
 import eu.kanade.tachiyomi.ui.category.CategoryScreen
-import eu.kanade.domain.ui.UiPreferences
 import eu.kanade.tachiyomi.ui.entries.anime.AnimeLibraryPanel
 import eu.kanade.tachiyomi.ui.home.HomeScreen
 import eu.kanade.tachiyomi.ui.library.novels.NovelLibraryScreen
@@ -88,13 +89,10 @@ import exh.recs.batch.SearchStatus
 import exh.source.MERGED_SOURCE_ID
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toPersistentList
-import kotlin.jvm.Volatile
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
-import eu.kanade.tachiyomi.data.track.EnhancedTracker
-import eu.kanade.tachiyomi.data.track.TrackerManager
 import mihon.feature.migration.config.MigrationConfigScreen
 import mihon.feature.trackadd.TrackAddScreen
 import mihon.feature.trackadd.components.TrackAddTrackerPicker
@@ -117,6 +115,7 @@ import tachiyomi.presentation.core.screens.LoadingScreen
 import tachiyomi.source.local.isLocal
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
+import kotlin.jvm.Volatile
 
 enum class LibraryViewMode(val labelRes: StringResource) {
     Manga(MR.strings.manga_singular),

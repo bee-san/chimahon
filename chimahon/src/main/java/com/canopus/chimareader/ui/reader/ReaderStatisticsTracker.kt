@@ -33,7 +33,7 @@ class ReaderStatisticsTracker(
             session = defaultStatistic(),
             today = statisticForDate(currentDateKey()),
             allTime = allTimeStatistic(statistics),
-        )
+        ),
     )
         private set
 

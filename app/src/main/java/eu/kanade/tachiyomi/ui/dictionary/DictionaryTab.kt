@@ -3,6 +3,7 @@ package eu.kanade.tachiyomi.ui.dictionary
 import android.os.SystemClock
 import android.util.Base64
 import android.webkit.WebView
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,7 +11,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -32,7 +32,6 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import eu.kanade.presentation.components.SearchHistoryRow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -51,6 +50,7 @@ import chimahon.LookupResult
 import chimahon.anki.AnkiCardCreator
 import chimahon.anki.AnkiDroidBridge
 import chimahon.anki.AnkiResult
+import eu.kanade.presentation.components.SearchHistoryRow
 import eu.kanade.presentation.util.Tab
 import eu.kanade.tachiyomi.ui.dictionary.DictionaryPreferences
 import eu.kanade.tachiyomi.ui.dictionary.TabInfo
@@ -93,7 +93,6 @@ private data class TabLookupFrame(
     val entryJsons: List<String>? = null,
 )
 
-
 private var cachedDictionaryPaths: chimahon.DictionaryPaths? = null
 private var lastProfileHash: Int? = null
 private var lastDictDirModified: Long = 0L
@@ -105,7 +104,11 @@ fun getDictionaryPaths(context: android.content.Context, activeProfileOverride: 
     val currentModified = dictionariesDir.lastModified()
     if (cachedDictionaryPaths != null && lastDictDirModified == currentModified) {
         val activeProfile = activeProfileOverride ?: run {
-            try { Injekt.get<DictionaryPreferences>().profileStore.getActiveProfile() } catch (_: Exception) { null }
+            try {
+                Injekt.get<DictionaryPreferences>().profileStore.getActiveProfile()
+            } catch (_: Exception) {
+                null
+            }
         }
         if (activeProfile != null && lastProfileHash == activeProfile.hashCode()) {
             return cachedDictionaryPaths!!
@@ -120,8 +123,11 @@ fun getDictionaryPaths(context: android.content.Context, activeProfileOverride: 
     )
 
     val allDictNames = typeDirs.values.flatMap { dir ->
-        if (!dir.isDirectory) emptyList()
-        else dir.listFiles()?.filter { it.isDirectory }?.map { it.name }.orEmpty()
+        if (!dir.isDirectory) {
+            emptyList()
+        } else {
+            dir.listFiles()?.filter { it.isDirectory }?.map { it.name }.orEmpty()
+        }
     }.distinct()
 
     if (allDictNames.isEmpty()) return chimahon.DictionaryPaths()
@@ -543,7 +549,8 @@ data object DictionaryTab : Tab {
                     onValueChange = { newValue ->
                         if (autoKanaConversion && newValue.composition == null && activeProfile.languageCode == "ja" && newValue.text.any { it in 'a'..'z' || it in 'A'..'Z' }) {
                             val (convertedText, newCursor) = KanaConverter.toKanaIME(
-                                newValue.text, newValue.selection.start
+                                newValue.text,
+                                newValue.selection.start,
                             )
                             if (convertedText != newValue.text) {
                                 textFieldValue = newValue.copy(
@@ -840,7 +847,9 @@ data object DictionaryTab : Tab {
             val activeSession = session ?: HoshiDicts.createLookupObject().also { session = it }
             return try {
                 HoshiDicts.queryKanji(activeSession, char)
-            } catch (_: Exception) { null }
+            } catch (_: Exception) {
+                null
+            }
         }
 
         @Synchronized

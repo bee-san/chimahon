@@ -80,9 +80,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.supervisorScope
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
@@ -99,11 +96,12 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlin.math.min
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import logcat.LogPriority
-
 import mihon.core.archive.archiveReader
 import mihon.core.archive.epubReader
 import mihon.feature.stats.capture.LegacyMangaSessionSnapshot
@@ -149,8 +147,8 @@ import tachiyomi.domain.manga.interactor.GetMergedMangaById
 import tachiyomi.domain.manga.interactor.GetMergedReferencesById
 import tachiyomi.domain.manga.model.Manga
 import tachiyomi.domain.source.service.SourceManager
-import tachiyomi.source.local.isLocal
 import tachiyomi.source.local.io.Archive
+import tachiyomi.source.local.isLocal
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.io.File
@@ -159,6 +157,7 @@ import java.util.Collections
 import java.util.Collections.emptyList
 import java.util.Date
 import java.util.LinkedHashMap
+import kotlin.math.min
 
 data class VisibleReaderPage(
     val page: ReaderPage,
@@ -2086,7 +2085,7 @@ class ReaderViewModel @JvmOverloads constructor(
             val isArchive = !chapterFile.isDirectory && (
                 chapterName.endsWith(".epub", ignoreCase = true) ||
                     Archive.isSupported(chapterFile)
-            )
+                )
             val content = readMokuroContent(chapterFile, chapterName, baseDir, isArchive)
                 ?: return@withLock null
 
@@ -2384,8 +2383,9 @@ class ReaderViewModel @JvmOverloads constructor(
                 null
             }
 
-            if (archiveContent != null)
+            if (archiveContent != null) {
                 return archiveContent
+            }
         }
 
         logcat { "Mokuro: no .mokuro file found for $chapterName (tried inside folder, inside archive and siblings)" }

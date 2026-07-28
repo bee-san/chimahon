@@ -47,7 +47,23 @@ class BackupChapter(
 }
 
 val backupChapterMapper: (
-    Long, Long, String, String, String?, Boolean, Boolean, Long, Double, Long, Long, Long, Long, Long, Long, JsonObject, Boolean,
+    Long,
+    Long,
+    String,
+    String,
+    String?,
+    Boolean,
+    Boolean,
+    Long,
+    Double,
+    Long,
+    Long,
+    Long,
+    Long,
+    Long,
+    Long,
+    JsonObject,
+    Boolean,
 ) -> BackupChapter = { _, _, url, name, scanlator, read, bookmark, lastPageRead, chapterNumber, sourceOrder, dateFetch, dateUpload, lastModifiedAt, version, _, memo, _ ->
     BackupChapter(
         url = url,

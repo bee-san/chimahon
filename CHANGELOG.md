@@ -39,7 +39,6 @@ The format follows a Keep a Changelog style and uses Semantic Versioning.
 - Searchable retained source context with validated historical reopen and lookup actions
 - Versioned statistics backup/merge, tombstones, privacy-scoped exports, retention, and repair tools
 - Home-screen statistics parity and local integrity/reconciliation diagnostics
-- Animated WebP scene mining for video Anki cards
 
 ### Changed
 - Event-backed capture and indexing now run in a safe-shadow rollout, while the new dashboard, Anki inventory, and goals remain opt-in previews

@@ -29,10 +29,10 @@ import eu.kanade.presentation.components.SearchToolbar
 import eu.kanade.tachiyomi.ui.browse.BulkFavoriteScreenModel
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
+import tachiyomi.domain.history.model.SearchHistory
 import tachiyomi.domain.manga.model.Manga
 import tachiyomi.domain.source.model.FeedSavedSearch
 import tachiyomi.domain.source.model.SavedSearch
-import tachiyomi.domain.history.model.SearchHistory
 import tachiyomi.i18n.MR
 import tachiyomi.i18n.kmk.KMR
 import tachiyomi.i18n.sy.SYMR

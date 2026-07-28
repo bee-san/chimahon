@@ -23,8 +23,6 @@ class DictionaryRepository(
     /** ID of the profile that was last used to call [warmUp].  Prevents redundant engine rebuilds. */
     private var lastWarmedProfileId: String = ""
 
-
-
     /**
      * Warm up the query engine for [paths].
      * An engine rebuild is only triggered when [paths] or [profileId] differ
@@ -116,7 +114,7 @@ class DictionaryRepository(
         return LookupResult2(
             results = results,
             styles = cachedStyles,
-            mediaDataUris = emptyMap(),  // Empty on critical path
+            mediaDataUris = emptyMap(), // Empty on critical path
             error = null,
         )
     }

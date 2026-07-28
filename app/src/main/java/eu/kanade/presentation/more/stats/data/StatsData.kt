@@ -35,10 +35,10 @@ sealed interface StatsData {
         val meanScore: Double,
         val trackerCount: Int,
     ) : StatsData
-
 }
 
-
 enum class StatsType {
-    All, Manga, Novels
+    All,
+    Manga,
+    Novels,
 }

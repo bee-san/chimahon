@@ -19,8 +19,8 @@ import eu.kanade.presentation.components.SearchToolbar
 import eu.kanade.tachiyomi.animesource.AnimeSource
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import kotlinx.collections.immutable.persistentListOf
-import tachiyomi.domain.library.model.LibraryDisplayMode
 import tachiyomi.domain.history.model.SearchHistory
+import tachiyomi.domain.library.model.LibraryDisplayMode
 import tachiyomi.i18n.MR
 import tachiyomi.i18n.kmk.KMR
 import tachiyomi.presentation.core.i18n.stringResource

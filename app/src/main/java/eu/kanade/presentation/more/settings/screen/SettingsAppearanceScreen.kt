@@ -338,7 +338,9 @@ object SettingsAppearanceScreen : SearchableSettings {
                 .let { keys ->
                     if (Injekt.get<UiPreferences>().useConsolidatedLibrary().get()) {
                         keys.filter { it != eu.kanade.domain.ui.model.NavTabLayout.KEY_NOVELS && it != eu.kanade.domain.ui.model.NavTabLayout.KEY_ANIME }
-                    } else keys
+                    } else {
+                        keys
+                    }
                 }
                 .associateWith { key ->
                     when (key) {

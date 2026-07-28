@@ -272,7 +272,9 @@ class PagerPageHolder(
 
                         val cropRect = if (!isAnimated && viewer.config.imageCropBorders) {
                             OcrCoordinateMapper.detectCropRect(itemSource)
-                        } else null
+                        } else {
+                            null
+                        }
 
                         Triple(itemSource, isAnimated, background).also { pageCropRect = cropRect }
                     }
@@ -672,9 +674,9 @@ class PagerPageHolder(
                 }
                 if (isSplitPage) {
                     val keepLeft = when {
-                        viewer is L2RPagerViewer && page is InsertPage -> false  // InsertPage = right half in L2R
-                        viewer !is L2RPagerViewer && page is InsertPage -> true  // InsertPage = left half in R2L
-                        viewer is L2RPagerViewer && page !is InsertPage -> true  // Original = left half in L2R
+                        viewer is L2RPagerViewer && page is InsertPage -> false // InsertPage = right half in L2R
+                        viewer !is L2RPagerViewer && page is InsertPage -> true // InsertPage = left half in R2L
+                        viewer is L2RPagerViewer && page !is InsertPage -> true // Original = left half in L2R
                         else -> false
                     }.let { side -> if (viewer.config.dualPageInvert) !side else side }
 

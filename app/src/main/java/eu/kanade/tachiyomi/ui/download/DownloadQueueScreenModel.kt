@@ -202,7 +202,7 @@ class DownloadQueueScreenModel(
                             val header = AnimeDownloadHeaderItem(entry.key.id, entry.key.name, entry.value.size)
                             header.addSubItems(0, entry.value.map { AnimeDownloadItem(it, header) })
                             add(header)
-                    }
+                        }
                 }
             }.collect { newList -> _state.update { newList } }
         }

@@ -10,6 +10,8 @@ import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
+import cafe.adriel.voyager.navigator.LocalNavigator
+import cafe.adriel.voyager.navigator.currentOrThrow
 import eu.kanade.presentation.more.settings.Preference
 import eu.kanade.presentation.more.settings.screen.SearchableSettings
 import eu.kanade.presentation.more.settings.screen.player.editor.codeeditor.CodeEditScreen
@@ -18,8 +20,6 @@ import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.i18n.stringResource
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
-import cafe.adriel.voyager.navigator.LocalNavigator
-import cafe.adriel.voyager.navigator.currentOrThrow
 
 object PlayerSettingsAdvancedScreen : SearchableSettings {
 

@@ -65,16 +65,34 @@ object SpanishDeinflector : Deinflector {
         // Present indicative
         // e->ie stem changing
         fun eToIERule(verbEnding: String, suffixPattern: Regex, conditionsIn: Set<String>) = stemChangingRule(
-            Regex("ie[a-z]*(o|as|a|an|es|e|en)$"), "ie", "e", suffixPattern, verbEnding, conditionsIn, conditionsIn
+            Regex("ie[a-z]*(o|as|a|an|es|e|en)$"),
+            "ie",
+            "e",
+            suffixPattern,
+            verbEnding,
+            conditionsIn,
+            conditionsIn,
         )
         // o->ue stem changing
         fun oToUERule(verbEnding: String, suffixPattern: Regex, conditionsIn: Set<String>) = stemChangingRule(
-            Regex("ue[a-z]*(o|as|a|an|es|e|en)$"), "ue", "o", suffixPattern, verbEnding, conditionsIn, conditionsIn,
-            mapOf("jue" to "u", "hue" to "o")
+            Regex("ue[a-z]*(o|as|a|an|es|e|en)$"),
+            "ue",
+            "o",
+            suffixPattern,
+            verbEnding,
+            conditionsIn,
+            conditionsIn,
+            mapOf("jue" to "u", "hue" to "o"),
         )
         // e->i stem changing
         fun eToIRule(verbEnding: String, suffixPattern: Regex, conditionsIn: Set<String>) = stemChangingRule(
-            Regex("i[a-z]*(o|es|e|en)$"), "i", "e", suffixPattern, verbEnding, conditionsIn, conditionsIn
+            Regex("i[a-z]*(o|es|e|en)$"),
+            "i",
+            "e",
+            suffixPattern,
+            verbEnding,
+            conditionsIn,
+            conditionsIn,
         )
 
         // Present indicative regular endings
@@ -523,12 +541,14 @@ object SpanishDeinflector : Deinflector {
         add(suffixInflection("irnos", "irse", setOf("v_ir"), setOf("v_ir")))
 
         // Pronominal (me + verbo -> verbo + se)
-        add(Rule.Custom(
-            conditionsIn = setOf("v"),
-            conditionsOut = setOf("v"),
-            isInflected = Regex("\\b(me|te|se|nos|os)\\s+([a-z]+)(ar|er|ir)\\b"),
-            deinflectFn = { term -> term.replace(Regex("\\b(?:me|te|se|nos|os)\\s+([a-z]+)(ar|er|ir)\\b")) { match -> "${match.groupValues[1]}${match.groupValues[2]}se" } },
-        ))
+        add(
+            Rule.Custom(
+                conditionsIn = setOf("v"),
+                conditionsOut = setOf("v"),
+                isInflected = Regex("\\b(me|te|se|nos|os)\\s+([a-z]+)(ar|er|ir)\\b"),
+                deinflectFn = { term -> term.replace(Regex("\\b(?:me|te|se|nos|os)\\s+([a-z]+)(ar|er|ir)\\b")) { match -> "${match.groupValues[1]}${match.groupValues[2]}se" } },
+            ),
+        )
     }
 
     private val deinflector = RuleDeinflector(allRules)

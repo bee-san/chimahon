@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-/**
+/*
  * Code is a mix between PlayerViewModel from mpvKt and the former
  * PlayerViewModel from Aniyomi.
  */
@@ -33,9 +33,6 @@ import android.provider.Settings
 import android.util.DisplayMetrics
 import android.view.inputmethod.InputMethodManager
 import androidx.compose.runtime.Immutable
-import com.arthenica.ffmpegkit.FFmpegKitConfig
-import com.arthenica.ffmpegkit.FFmpegSession
-import com.arthenica.ffmpegkit.ReturnCode
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -43,13 +40,16 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
+import com.arthenica.ffmpegkit.FFmpegKitConfig
+import com.arthenica.ffmpegkit.FFmpegSession
+import com.arthenica.ffmpegkit.ReturnCode
 import dev.icerock.moko.resources.StringResource
-import eu.kanade.domain.entries.anime.interactor.SetAnimeViewerFlags
 import eu.kanade.domain.base.BasePreferences
+import eu.kanade.domain.entries.anime.interactor.SetAnimeViewerFlags
 import eu.kanade.domain.episode.model.toDbEpisode
+import eu.kanade.domain.sync.SyncPreferences
 import eu.kanade.domain.track.interactor.TrackEpisode
 import eu.kanade.domain.track.service.TrackPreferences
-import eu.kanade.domain.sync.SyncPreferences
 import eu.kanade.domain.ui.UiPreferences
 import eu.kanade.presentation.more.settings.screen.player.custombutton.CustomButtonFetchState
 import eu.kanade.presentation.more.settings.screen.player.custombutton.getButtons
@@ -61,6 +61,7 @@ import eu.kanade.tachiyomi.animesource.model.SerializableHoster.Companion.serial
 import eu.kanade.tachiyomi.animesource.model.SerializableHoster.Companion.toHosterList
 import eu.kanade.tachiyomi.animesource.model.TimeStamp
 import eu.kanade.tachiyomi.animesource.model.Video
+import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.data.database.models.Episode
 import eu.kanade.tachiyomi.data.database.models.toDomainEpisode
 import eu.kanade.tachiyomi.data.download.DownloadManager
@@ -72,7 +73,6 @@ import eu.kanade.tachiyomi.data.sync.SyncDataJob
 import eu.kanade.tachiyomi.data.track.TrackerManager
 import eu.kanade.tachiyomi.data.track.anilist.Anilist
 import eu.kanade.tachiyomi.data.track.myanimelist.MyAnimeList
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.ui.dictionary.DictionaryPreferences
 import eu.kanade.tachiyomi.ui.player.controls.components.IndexedSegment
 import eu.kanade.tachiyomi.ui.player.controls.components.sheets.HosterState
@@ -82,9 +82,6 @@ import eu.kanade.tachiyomi.ui.player.loader.HosterLoader
 import eu.kanade.tachiyomi.ui.player.settings.GesturePreferences
 import eu.kanade.tachiyomi.ui.player.settings.PlayerPreferences
 import eu.kanade.tachiyomi.ui.player.settings.SubtitlePreferences
-import eu.kanade.tachiyomi.ui.youtube.YouTubePreferences
-import eu.kanade.tachiyomi.ui.youtube.YouTubeResolver
-import eu.kanade.tachiyomi.ui.youtube.allowsExternalSubtitleLookup
 import eu.kanade.tachiyomi.ui.player.utils.AniSkipApi
 import eu.kanade.tachiyomi.ui.player.utils.ChapterUtils.Companion.getStringRes
 import eu.kanade.tachiyomi.ui.player.utils.JimakuApi
@@ -93,16 +90,19 @@ import eu.kanade.tachiyomi.ui.player.utils.JimakuFile
 import eu.kanade.tachiyomi.ui.player.utils.JimakuMediaGuess
 import eu.kanade.tachiyomi.ui.player.utils.TrackSelect
 import eu.kanade.tachiyomi.ui.player.utils.applySubtitleRegexFilters
-import eu.kanade.tachiyomi.ui.player.utils.subtitleRegexFilterOptions
 import eu.kanade.tachiyomi.ui.player.utils.displayName
 import eu.kanade.tachiyomi.ui.player.utils.guessJimakuMedia
 import eu.kanade.tachiyomi.ui.player.utils.matchedSrtFiles
 import eu.kanade.tachiyomi.ui.player.utils.selectBestJimakuEntry
+import eu.kanade.tachiyomi.ui.player.utils.subtitleRegexFilterOptions
 import eu.kanade.tachiyomi.ui.reader.SaveImageNotifier
 import eu.kanade.tachiyomi.ui.reader.viewer.OcrTextBlock
 import eu.kanade.tachiyomi.ui.reader.viewer.orderedFullText
+import eu.kanade.tachiyomi.ui.youtube.YouTubePreferences
+import eu.kanade.tachiyomi.ui.youtube.YouTubeResolver
 import eu.kanade.tachiyomi.ui.youtube.YouTubeSource
 import eu.kanade.tachiyomi.ui.youtube.YouTubeVideoMetadata
+import eu.kanade.tachiyomi.ui.youtube.allowsExternalSubtitleLookup
 import eu.kanade.tachiyomi.util.editCover
 import eu.kanade.tachiyomi.util.episode.filterDownloadedEpisodes
 import eu.kanade.tachiyomi.util.lang.byteSize
@@ -148,12 +148,12 @@ import tachiyomi.core.common.util.lang.launchNonCancellable
 import tachiyomi.core.common.util.lang.withIOContext
 import tachiyomi.core.common.util.lang.withUIContext
 import tachiyomi.core.common.util.system.logcat
-import tachiyomi.domain.entries.anime.interactor.GetAnime
-import tachiyomi.domain.entries.anime.model.Anime
 import tachiyomi.domain.category.interactor.GetCategories
 import tachiyomi.domain.custombuttons.interactor.GetCustomButtons
 import tachiyomi.domain.custombuttons.model.CustomButton
 import tachiyomi.domain.download.service.DownloadPreferences
+import tachiyomi.domain.entries.anime.interactor.GetAnime
+import tachiyomi.domain.entries.anime.model.Anime
 import tachiyomi.domain.entries.anime.repository.AnimeRepository
 import tachiyomi.domain.episode.interactor.GetEpisodesByAnimeId
 import tachiyomi.domain.episode.interactor.UpdateEpisode
@@ -178,8 +178,8 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.io.File
 import java.io.InputStream
-import java.util.Locale
 import java.util.Date
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.collections.first
 import kotlin.coroutines.cancellation.CancellationException
@@ -1180,10 +1180,11 @@ class PlayerViewModel @JvmOverloads constructor(
                         parseSubtitleContent(title, input.bufferedReader().readText())
                     }.orEmpty()
                 }
-                uri.scheme == "file" -> uri.path
-                    ?.let { File(it) }
-                    ?.let { parseSubtitleFile(it) }
-                    .orEmpty()
+                uri.scheme == "file" ->
+                    uri.path
+                        ?.let { File(it) }
+                        ?.let { parseSubtitleFile(it) }
+                        .orEmpty()
                 path.startsWith("file://") -> Uri.parse(path).path
                     ?.let { File(it) }
                     ?.let { parseSubtitleFile(it) }
@@ -2044,7 +2045,7 @@ class PlayerViewModel @JvmOverloads constructor(
     }
 
     private fun seekByWithText(value: Int, text: String?) {
-        _doubleTapSeekAmount.update { if (value < 0 && it < 0 || pos.value + value > duration.value) 0 else it + value }
+        _doubleTapSeekAmount.update { if ((value < 0 && it < 0) || pos.value + value > duration.value) 0 else it + value }
         _seekText.update { text }
         _isSeekingForwards.value = value > 0
         seekBy(value, preciseSeek)
@@ -2255,33 +2256,49 @@ class PlayerViewModel @JvmOverloads constructor(
             ?: error("Requested episode of id $episodeId not found in episode list")
 
         val episodesForPlayer = episodes.filterNot {
-            anime.unseenFilterRaw == Anime.EPISODE_SHOW_SEEN &&
-                !it.seen ||
-                anime.unseenFilterRaw == Anime.EPISODE_SHOW_UNSEEN &&
-                it.seen ||
-                anime.downloadedFilterRaw == Anime.EPISODE_SHOW_DOWNLOADED &&
-                !downloadManager.isEpisodeDownloaded(
-                    it.name,
-                    it.scanlator,
-                    anime.title,
-                    anime.source,
+            (
+                anime.unseenFilterRaw == Anime.EPISODE_SHOW_SEEN &&
+                    !it.seen
                 ) ||
-                anime.downloadedFilterRaw == Anime.EPISODE_SHOW_NOT_DOWNLOADED &&
-                downloadManager.isEpisodeDownloaded(
-                    it.name,
-                    it.scanlator,
-                    anime.title,
-                    anime.source,
-                ) ||
-                anime.bookmarkedFilterRaw == Anime.EPISODE_SHOW_BOOKMARKED &&
-                !it.bookmark ||
-                anime.bookmarkedFilterRaw == Anime.EPISODE_SHOW_NOT_BOOKMARKED &&
-                it.bookmark ||
+                (
+                    anime.unseenFilterRaw == Anime.EPISODE_SHOW_UNSEEN &&
+                        it.seen
+                    ) ||
+                (
+                    anime.downloadedFilterRaw == Anime.EPISODE_SHOW_DOWNLOADED &&
+                        !downloadManager.isEpisodeDownloaded(
+                            it.name,
+                            it.scanlator,
+                            anime.title,
+                            anime.source,
+                        )
+                    ) ||
+                (
+                    anime.downloadedFilterRaw == Anime.EPISODE_SHOW_NOT_DOWNLOADED &&
+                        downloadManager.isEpisodeDownloaded(
+                            it.name,
+                            it.scanlator,
+                            anime.title,
+                            anime.source,
+                        )
+                    ) ||
+                (
+                    anime.bookmarkedFilterRaw == Anime.EPISODE_SHOW_BOOKMARKED &&
+                        !it.bookmark
+                    ) ||
+                (
+                    anime.bookmarkedFilterRaw == Anime.EPISODE_SHOW_NOT_BOOKMARKED &&
+                        it.bookmark
+                    ) ||
                 // AM (FILLERMARK) -->
-                anime.fillermarkedFilterRaw == Anime.EPISODE_SHOW_FILLERMARKED &&
-                !it.fillermark ||
-                anime.fillermarkedFilterRaw == Anime.EPISODE_SHOW_NOT_FILLERMARKED &&
-                it.fillermark
+                (
+                    anime.fillermarkedFilterRaw == Anime.EPISODE_SHOW_FILLERMARKED &&
+                        !it.fillermark
+                    ) ||
+                (
+                    anime.fillermarkedFilterRaw == Anime.EPISODE_SHOW_NOT_FILLERMARKED &&
+                        it.fillermark
+                    )
             // <-- AM (FILLERMARK)
         }.toMutableList()
 
@@ -2600,8 +2617,7 @@ class PlayerViewModel @JvmOverloads constructor(
         activity.setVideo(video, position = 0L)
     }
 
-    fun loadYoutubeVideo(videoUrl: String)
-    {
+    fun loadYoutubeVideo(videoUrl: String) {
         youtubeLoadJob?.cancel()
         youtubeLoadJob = viewModelScope.launchIO {
             try {
@@ -2613,8 +2629,9 @@ class PlayerViewModel @JvmOverloads constructor(
                     ?: throw IllegalStateException("Failed to create youtube episode")
 
                 val streams = videoMetadata.videoStreams
-                if (streams.isEmpty())
+                if (streams.isEmpty()) {
                     throw IllegalStateException("No playable video streams found")
+                }
 
                 saveCurrentEpisodeWatchingProgress()
                 updateIsLoadingEpisode(true)
@@ -2652,9 +2669,8 @@ class PlayerViewModel @JvmOverloads constructor(
         }
     }
 
-    private suspend fun createYoutubeEpisode(videoMetadata: YouTubeVideoMetadata, prefs: YouTubePreferences) : tachiyomi.domain.episode.model.Episode?
-    {
-        suspend fun createAndAddEpisode(episodeId: Long, animeId: Long) : tachiyomi.domain.episode.model.Episode {
+    private suspend fun createYoutubeEpisode(videoMetadata: YouTubeVideoMetadata, prefs: YouTubePreferences): tachiyomi.domain.episode.model.Episode? {
+        suspend fun createAndAddEpisode(episodeId: Long, animeId: Long): tachiyomi.domain.episode.model.Episode {
             val episode = tachiyomi.domain.episode.model.Episode.create().copy(
                 id = episodeId, // Once inserted it will change so it doesnt matter
                 animeId = animeId,
@@ -2665,8 +2681,8 @@ class PlayerViewModel @JvmOverloads constructor(
                 dateUpload = videoMetadata.videoUploadDate,
                 scanlator = videoMetadata.videoType,
                 previewUrl = videoMetadata.videoThumbnailUrl,
-                //summary = videoMetadata.videoDescription, removed because it looks ugly
-                episodeNumber = 0.0
+                // summary = videoMetadata.videoDescription, removed because it looks ugly
+                episodeNumber = 0.0,
             )
             val episodes = episodeRepository.addAll(listOf(episode))
             return episodes.first()
@@ -2676,11 +2692,11 @@ class PlayerViewModel @JvmOverloads constructor(
 
         // Try to find existing anime entry, and add the current episode
         val animeEntry = animeRepository.getAnimeByUrlAndSourceId(videoMetadata.channelUrl, YouTubeSource.id)
-        if (animeEntry != null)
-        {
+        if (animeEntry != null) {
             val episode = episodeRepository.getEpisodeByUrlAndAnimeId(videoMetadata.videoUrl, animeEntry.id)
-            if (episode == null)
+            if (episode == null) {
                 return createAndAddEpisode(episodeId, animeEntry.id)
+            }
 
             return episode
         }
@@ -2703,8 +2719,8 @@ class PlayerViewModel @JvmOverloads constructor(
             coverLastModified = System.currentTimeMillis(),
             backgroundLastModified = System.currentTimeMillis(),
 
-            favorite = prefs.addNewChannelsToLibrary
-            )
+            favorite = prefs.addNewChannelsToLibrary,
+        )
 
         val newAnimeId = animeRepository.insertAnime(newChannelEntry)
             ?: return null
@@ -3437,7 +3453,7 @@ class PlayerViewModel @JvmOverloads constructor(
                 val rawInput = audioSource
                     ?: MPVLib.getPropertyString("path")
                         ?.takeIf { it.isNotBlank() }
-                        ?: video.videoUrl
+                    ?: video.videoUrl
                 val input = when {
                     video.videoUrl.startsWith("content://") -> Uri.parse(video.videoUrl).toFFmpegString(activity)
                     rawInput.startsWith("file://") -> Uri.parse(rawInput).path ?: rawInput
@@ -3824,7 +3840,6 @@ class PlayerViewModel @JvmOverloads constructor(
         data class ShareImage(val uri: Uri, val seconds: String) : Event()
         data object OcrFailed : Event()
     }
-
 }
 
 fun isTorrentUrl(videoUrl: String): Boolean = videoUrl.endsWith(".torrent") || videoUrl.startsWith("magnet:")

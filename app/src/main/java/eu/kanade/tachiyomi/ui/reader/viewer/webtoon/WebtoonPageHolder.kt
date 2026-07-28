@@ -239,7 +239,9 @@ class WebtoonPageHolder(
                     (viewer.config.continuousCropBorders && !viewer.isContinuous)
                 val cropRect = if (!isAnimated && cropBorders) {
                     OcrCoordinateMapper.detectCropRect(source)
-                } else null
+                } else {
+                    null
+                }
 
                 Triple(source, isAnimated, cropRect)
             }

@@ -39,15 +39,14 @@ object YouTubeSource : AnimeHttpSource(), AnimeSourceScreenProvider, AlwaysVisib
 
     override fun createBrowseScreen(listingQuery: String?, targetUrl: String?) = YouTubeBrowserScreen(listingQuery, targetUrl)
 
-    override suspend fun getAnimeDetails(anime: SAnime): SAnime = withIOContext()
-    {
+    override suspend fun getAnimeDetails(anime: SAnime): SAnime = withIOContext {
         val channelId = anime.url.removePrefix(CHANNEL_PREFIX)
         val channelMetadata = YouTubeResolver.resolveChannel(channelId)
 
         anime.title = channelMetadata.name
         anime.description = channelMetadata.description
-        anime.thumbnail_url = channelMetadata?.avatarUrl
-        anime.background_url = channelMetadata?.bannerUrl
+        anime.thumbnail_url = channelMetadata.avatarUrl
+        anime.background_url = channelMetadata.bannerUrl
 
         anime
     }
@@ -55,12 +54,12 @@ object YouTubeSource : AnimeHttpSource(), AnimeSourceScreenProvider, AlwaysVisib
     private val getEpisodesByAnimeId: GetEpisodesByAnimeId = Injekt.get()
     private val getAnimeByUrlAndSourceId: GetAnimeByUrlAndSourceId = Injekt.get()
 
-    override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> = withIOContext() {
+    override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> = withIOContext {
         val channelId = anime.url.removePrefix(CHANNEL_PREFIX)
 
         val channelVideos = YouTubeResolver.resolveVideosFromTab(channelId, "videos") +
-                            YouTubeResolver.resolveVideosFromTab(channelId, "shorts") +
-                            YouTubeResolver.resolveVideosFromTab(channelId, "livestreams")
+            YouTubeResolver.resolveVideosFromTab(channelId, "shorts") +
+            YouTubeResolver.resolveVideosFromTab(channelId, "livestreams")
 
         val videos = run {
             val animeEntry = getAnimeByUrlAndSourceId.await(anime.url, id)
@@ -112,8 +111,9 @@ object YouTubeSource : AnimeHttpSource(), AnimeSourceScreenProvider, AlwaysVisib
         val prefs = YouTubePreferences(Injekt.get<Application>())
         val videoId = episode.url.removePrefix(WATCH_PREFIX)
         val videoMetadata = YouTubeResolver.resolveVideo(videoId, prefs.preferredQuality)
-        if (videoMetadata.videoStreams.isEmpty())
+        if (videoMetadata.videoStreams.isEmpty()) {
             return emptyList()
+        }
 
         val hoster = Hoster(hosterName = "YouTube", videoList = videoMetadata.videoStreams)
         return listOf(hoster)

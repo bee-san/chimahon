@@ -3,20 +3,23 @@ package chimahon.anki
 import android.content.Context
 import chimahon.Cloze
 import chimahon.DictionaryRepository
-import chimahon.HoshiDicts
 import chimahon.DictionaryStyle
 import chimahon.GlossaryEntry
+import chimahon.HoshiDicts
 import chimahon.LookupResult
 import chimahon.MediaInfo
 import chimahon.PitchEntry
 import chimahon.audio.WordAudioResult
 import chimahon.audio.WordAudioService
 import eu.kanade.tachiyomi.network.NetworkHelper
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.CancellationException
 import tachiyomi.domain.immersion.model.AnkiOperationStatus
 import tachiyomi.domain.immersion.model.AnkiOperationType
 import tachiyomi.domain.immersion.service.AnkiOperationRecorder
@@ -24,9 +27,6 @@ import tachiyomi.domain.immersion.service.InteractionProvenance
 import tachiyomi.domain.immersion.service.LookupIntentToken
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
 
 internal sealed interface AnkiInteractionTelemetryAttribution {
@@ -1119,8 +1119,11 @@ object AnkiCardCreator {
         val segments = distributeFurigana(expression, reading)
         return buildString {
             for ((text, furigana) in segments) {
-                if (furigana.isNotEmpty()) append(text).append('[').append(furigana).append(']')
-                else append(text).append(' ')
+                if (furigana.isNotEmpty()) {
+                    append(text).append('[').append(furigana).append(']')
+                } else {
+                    append(text).append(' ')
+                }
             }
         }
     }
@@ -1649,7 +1652,7 @@ object AnkiCardCreator {
             .replace(Regex("(?i)<br\\s*/?>"), "\n")
             .replace(Regex("(?i)</(p|li|div|tr|h[1-6])>"), "\n")
             .replace(Regex("<[^>]+>"), " ")
-        .replace("&lt;", "<").replace("&gt;", ">")
+            .replace("&lt;", "<").replace("&gt;", ">")
             .replace("&amp;", "&").replace("&quot;", "\"")
         return text
             .split('\n')
@@ -1661,7 +1664,7 @@ object AnkiCardCreator {
         val allStrings = (0 until arr.length()).all { arr.get(it) is String }
         if (allStrings) {
             if (arr.length() == 1) return contentValueToHtml(arr.getString(0), dictionary, parentTag, exportMedia)
-            
+
             // Only auto-wrap in UL if we are NOT already in a list-like tag
             val isListParent = parentTag == "ul" || parentTag == "ol" || parentTag == "li" || parentTag == "span" || parentTag == "td" || parentTag == "th"
             if (!isListParent) {
@@ -1806,7 +1809,7 @@ object AnkiCardCreator {
 
         val sb = StringBuilder("<img")
         sb.append(""" src="${attrEscape(renderPath)}"""")
-        
+
         node.optString("alt", "").takeIf { it.isNotEmpty() }?.let { sb.append(""" alt="${attrEscape(it)}"""") }
         node.optString("title", "").takeIf { it.isNotEmpty() }?.let { sb.append(""" title="${attrEscape(it)}"""") }
 
@@ -1814,7 +1817,7 @@ object AnkiCardCreator {
         val height = node.optInt("height", 0)
         val sizeUnits = node.optString("sizeUnits", "px")
         val appearance = node.optString("appearance", "")
-        
+
         val styleParts = mutableListOf<String>()
         if (width > 0 || height > 0) {
             val cssWidth = if (width > 0) "${width}$sizeUnits" else "auto"
@@ -1822,9 +1825,9 @@ object AnkiCardCreator {
             styleParts.add("width: $cssWidth")
             styleParts.add("height: $cssHeight")
         }
-        
+
         styleParts.add("vertical-align: middle")
-        
+
         if (appearance == "monochrome") {
             sb.append(""" class="gloss-image-monochrome"""")
             // Yomitan style masking: allows the image to inherit text color
@@ -1836,7 +1839,7 @@ object AnkiCardCreator {
             styleParts.add("mask-repeat: no-repeat")
             styleParts.add("mask-size: contain")
         }
-        
+
         if (styleParts.isNotEmpty()) {
             sb.append(""" style="${styleParts.joinToString("; ")}"""")
         }

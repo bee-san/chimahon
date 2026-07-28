@@ -24,4 +24,3 @@ data class MALAnime(
 data class MALAnimeCovers(
     val large: String = "",
 )
-
