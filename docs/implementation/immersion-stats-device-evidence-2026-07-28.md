@@ -129,6 +129,60 @@ Confirmed against the live provider:
 - Capability limits are reported honestly: `noteModificationTime = true`,
   `cardModificationTime = false`, `reviewHistory = false`.
 
+### 4. Functional acceptance scenarios — `ImmersionStatsAcceptanceDeviceTest`
+
+Result: **OK**, both scenarios.
+
+Unlike the performance rows, plan scenarios 33.6 and 33.7 assert *convergence*
+— counter preservation, exactly-once deletion, merge idempotency, tombstone
+behaviour. They contain no latency budget, so a software-emulated device is a
+legitimate host for them.
+
+Artifacts:
+
+| Scenario | File | SHA-256 |
+|---|---|---|
+| 33.6 privacy and deletion | `device-acceptance-privacy-deletion-api26.json` | `7938eddc2eca2da859e2467cbdeb02da588b47937ca5bd8b05b44e48e07f080f` |
+| 33.7 backup and multi-device merge | `device-acceptance-backup-merge-api26.json` | `c97638cc0c05aa33ef978bda5a30f7c441836fad1737a1ae8e9c366912ca039f` |
+
+**33.6 (partial — see limits below).** Raw-text deletion cleared 2 rows while
+gross characters stayed at 20 and sessions at 2, proving counters survive
+provenance removal. Deleting one of two sessions moved sessions 2 → 1 and gross
+20 → 8, i.e. exactly once; a repeated delete returned no preview and left
+totals unchanged.
+
+**33.7.** Device B (15 characters) was seeded, exported, and the app's data
+cleared with `pm clear`; device A (7 characters) then merged the remote archive.
+Totals summed to 22 exactly once. Repeated merges reported `ALREADY_COMPLETE`
+and left totals at 22. After deleting the merged session (back to 7), merging a
+*separately exported* older copy of the same data reported **5 rows skipped by
+tombstone** and left totals at 7 — the deleted data did not return.
+
+Three implementation facts were established by making these tests fail first,
+and are worth recording because each initially looked like a product bug:
+
+1. `resetAllStats` tombstones everything it deletes. Simulating a second device
+   by resetting locally therefore cannot work — the merge correctly refuses to
+   resurrect tombstoned rows. The harness uses `pm clear` between two
+   instrumentation phases instead.
+2. Re-merging a byte-identical archive short-circuits on its checkpoint ledger
+   and replays the prior report rather than reporting zero inserts. Asserting
+   `insertedRows == 0` tests the wrong thing.
+3. For the same reason, step 3 must merge a *separately exported* copy.
+   Re-merging the identical archive proves nothing about tombstones, because it
+   never reaches the tombstone filter.
+
+#### Limits on the 33.6 claim
+
+The scenario as written also requires reading **in incognito** and confirming
+zero rows of any kind, driven through the reader UI. These runs exercise the
+repository layer only, so the incognito write-barrier step is **not** covered
+here. `privacyAndDeletionAcceptance` therefore remains `false`.
+
+Scenario 33.7's step 1 ("device A and B read different content") is likewise
+modelled at the repository layer rather than by two physical devices
+exchanging real backup files through the settings UI.
+
 ## Why no matrix row flips
 
 `docs/immersion-stats-release-validation.md` requires each evidence object to
@@ -157,6 +211,10 @@ commit/variant/device/command/artifact requirements but not the remaining ones:
    classification against the real provider. It does not exercise knownness and
    maturity against a real collection containing new, learning, young, and
    mature cards, which is what the acceptance row requires.
+6. **The acceptance runs cover their scenarios only partially.** Run 4 closes
+   the convergence half of 33.6 and 33.7 but omits the incognito write-barrier
+   step and the real two-device backup-file exchange, both of which the plan
+   text requires. They are also unreviewed.
 
 Rows still needing work that this session did not touch:
 `supportedVersionUpgrades`, `releaseMinSdkAndMigration` (needs a release build

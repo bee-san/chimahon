@@ -1,0 +1,23 @@
+{
+  "scenario": "33.7 backup and multi-device merge",
+  "remoteDeviceGrossCharacters": 15,
+  "localDeviceGrossCharacters": 7,
+  "grossCharactersAfterFirstMerge": 22,
+  "firstMergeInsertedRows": 8,
+  "secondMergeDisposition": "ALREADY_COMPLETE",
+  "thirdMergeDisposition": "ALREADY_COMPLETE",
+  "grossCharactersAfterSecondMerge": 22,
+  "mergeIsIdempotent": true,
+  "grossCharactersAfterDeletionAndRemerge": 7,
+  "thirdMergeSkippedByTombstoneRows": 5,
+  "tombstonePreventedResurrection": true,
+  "schemaVersion": 1,
+  "evidenceKind": "device-acceptance-scenario",
+  "appCommit": "66b10f0186",
+  "buildType": "debug",
+  "apiLevel": 26,
+  "androidRelease": "8.0.0",
+  "abi": "x86_64",
+  "note": "Functional convergence scenario with no latency assertions; valid on a software-emulated device.",
+  "decision": "pass"
+}

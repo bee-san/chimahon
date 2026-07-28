@@ -135,6 +135,26 @@ Artifacts and checksums: `docs/implementation/evidence/2026-07-28-api26/`.
 - Only `emulator-5556` (`chimahon_api26`) was targeted. An unrelated emulator
   from another task remained attached as `emulator-5554` and was never
   installed to, instrumented, or stopped.
+- Added `ImmersionStatsAcceptanceDeviceTest` and passed the **convergence half
+  of acceptance scenarios 33.6 and 33.7** on device. These scenarios assert
+  exactly-once deletion, counter preservation, merge idempotency, and tombstone
+  behaviour, with no latency budget, so software emulation is a valid host for
+  them (unlike the performance rows). Artifacts and hashes are under
+  `docs/implementation/evidence/2026-07-28-api26-acceptance/`.
+  - 33.6: raw-text deletion cleared 2 rows while gross characters held at 20
+    and sessions at 2; deleting 1 of 2 sessions moved sessions 2 → 1 and gross
+    20 → 8 exactly once; a repeated delete was a no-op.
+  - 33.7: device B (15 chars) exported, `pm clear`, device A (7 chars) merged →
+    22 summed once; repeat merges reported `ALREADY_COMPLETE` with totals
+    unchanged; after deleting the merged session, merging a separately exported
+    older copy skipped **5 rows by tombstone** and left totals at 7.
+- Three implementation behaviours were established by making those tests fail
+  first, each of which initially resembled a product bug but is correct:
+  `resetAllStats` tombstones what it deletes (so a local reset cannot simulate a
+  second device); re-merging a byte-identical archive short-circuits on its
+  checkpoint and replays the prior report instead of reporting zero inserts; and
+  step 3 must therefore merge a separately exported copy to reach the tombstone
+  filter at all.
 
 ### Deliberately incomplete and unverified
 
@@ -169,6 +189,11 @@ Artifacts and checksums: `docs/implementation/evidence/2026-07-28-api26/`.
   before it can be called stable.
 - The seven final acceptance scenarios (novel, manga/OCR, video, Anki
   knownness, goals, privacy/deletion, and backup/multi-device) remain open.
+  33.6 and 33.7 now have passing on-device convergence evidence but are still
+  **incomplete**: 33.6's incognito write-barrier step is not covered, and
+  33.7 models the second device with `pm clear` at the repository layer rather
+  than two physical devices exchanging real backup files through the UI. Both
+  also lack reviewer sign-off, so both rows stay `false`.
 - The evidence branch changes span `app/build.gradle.kts`,
   `gradle/androidx.versions.toml`, `app/src/androidTest/`, `app/src/debug/`,
   `docs/immersion-stats-release-validation.json`,
