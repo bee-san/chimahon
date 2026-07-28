@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - '.github/scripts/run_animated_scene_device_validation.sh'
       - '.github/workflows/animated_scene_device_validation.yml'
       - '.gitmodules'
       - 'app/build.gradle.kts'
@@ -94,26 +95,7 @@ jobs:
           disk-size: 6G
           emulator-boot-timeout: 900
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -no-metrics -camera-back none
-          script: |
-            set -eu
-            evidence_dir="build/device-validation/api-$API_LEVEL"
-            {
-              echo "device_serial=$(adb get-serialno)"
-              echo "device_api=$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
-              echo "device_model=$(adb shell getprop ro.product.model | tr -d '\r')"
-              echo "device_abi=$(adb shell getprop ro.product.cpu.abi | tr -d '\r')"
-              echo "device_fingerprint=$(adb shell getprop ro.build.fingerprint | tr -d '\r')"
-            } >> "$evidence_dir/environment.txt"
-
-            set +e
-            ./gradlew :app:connectedDebugAndroidTest \
-              -Pandroid.testInstrumentationRunnerArguments.class=eu.kanade.tachiyomi.ui.player.scene.SceneCapturePipelineInstrumentedTest
-            test_status=$?
-            set -e
-
-            echo "gradle_exit_code=$test_status" >> "$evidence_dir/environment.txt"
-            adb logcat -d -v threadtime > "$evidence_dir/logcat.txt" || true
-            exit "$test_status"
+          script: bash .github/scripts/run_animated_scene_device_validation.sh
 
       - name: Upload device evidence
         if: always()
