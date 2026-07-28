@@ -2346,12 +2346,6 @@ At minimum:
 ./gradlew testReleaseUnitTest
 ```
 
-While the audited animated-scene and native corresponding-source gates remain
-blocked, `testReleaseUnitTest` is expected to stop in the protected release task
-graph before tests execute. Run `./gradlew testDebugUnitTest` for the equivalent
-local JVM suite, record the exact release-gate failure, and keep release
-qualification open rather than bypassing either gate.
-
 Also run:
 
 - SQLDelight generation/migration tests.

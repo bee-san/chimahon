@@ -61,7 +61,17 @@ class AnimeImageFetcher(
         }
 
         if (url == null) error("No cover specified")
-        return when (getResourceType(url)) {
+        val resourceType = getResourceType(url)
+        if (resourceType == Type.File && url.startsWith("/")) {
+            val file = File(url.substringAfter("file://"))
+            if (!file.exists()) {
+                val source = sourceLazy.value
+                if (source != null) {
+                    return httpLoader()
+                }
+            }
+        }
+        return when (resourceType) {
             Type.URL -> httpLoader()
             Type.File -> fileLoader(File(url.substringAfter("file://")))
             Type.URI -> uniFileLoader(url)
@@ -159,8 +169,14 @@ class AnimeImageFetcher(
     }
 
     private fun newRequest(): Request {
+        // Resolve relative web paths (e.g. /upload/vod/...) via source's baseUrl
+        val resolvedUrl = if (url!!.startsWith("/")) {
+            sourceLazy.value?.baseUrl?.trimEnd('/') + url
+        } else {
+            url!!
+        }
         val request = Request.Builder().apply {
-            url(url!!)
+            url(resolvedUrl)
 
             val sourceHeaders = sourceLazy.value?.headers
             if (sourceHeaders != null) {

@@ -18,6 +18,7 @@ import eu.kanade.presentation.components.RadioMenuItem
 import eu.kanade.presentation.components.SearchToolbar
 import eu.kanade.tachiyomi.source.Source
 import kotlinx.collections.immutable.persistentListOf
+import tachiyomi.domain.history.model.SearchHistory
 import tachiyomi.domain.library.model.LibraryDisplayMode
 import tachiyomi.i18n.MR
 import tachiyomi.i18n.kmk.KMR
@@ -58,6 +59,7 @@ fun BrowseSourceToolbar(
         onChangeSearchQuery = onSearchQueryChange,
         onSearch = onSearch,
         onClickCloseSearch = navigateUp,
+        searchHistoryScope = SearchHistory.SCOPE_ANIME_MANGA,
         actions = {
             AppBarActions(
                 actions = persistentListOf<AppBar.AppBarAction>().builder()

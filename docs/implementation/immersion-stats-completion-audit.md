@@ -125,23 +125,12 @@ Current test-matrix assessment:
 - Operational merge, tombstone, retention, and export paths have local tests;
   real backup/restore and supported-version upgrades remain open.
 
-## Release and distribution gates
+## Release and rollout gates
 
-Live evidence checked on 2026-07-27:
-
-- `./gradlew testReleaseUnitTest` reaches the protected release task graph and
-  stops before unit-test execution at
-  `:app:verifyAnimatedSceneReleaseReadiness`: "Animated-scene device validation
-  is not verified." The required API/device, AnkiDroid, playback, failure, and
-  lower-end benchmark matrix remains incomplete.
-- GitHub release `stats-v2.5.0-debug` is still draft and prerelease.
-- Its five APK assets each report zero downloads.
-- `docs/native-source-manifest.json` has `releaseGate: blocked`.
-- Exact corresponding-source evidence for the current FFmpegKit/mpv native
-  binaries is still incomplete.
-
-Do not publish those APKs, run a public rollout, disable legacy writes, or
-delete legacy code while these gates remain open. Follow
+The required API/device, AnkiDroid, playback, failure, accessibility, migration,
+and lower-end benchmark matrix remains incomplete. Do not promote the
+event-backed statistics implementation, disable legacy writes, or delete legacy
+code while these statistics gates remain open. Follow
 `immersion-stats-legacy-retirement-runbook.md` for staged promotion and
 retirement.
 

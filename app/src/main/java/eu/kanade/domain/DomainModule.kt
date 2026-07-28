@@ -50,6 +50,7 @@ import mihon.domain.extension.interactor.GetExtensionStores
 import mihon.domain.extension.interactor.RemoveExtensionStore
 import mihon.domain.extension.interactor.UpdateExtensionStores
 import mihon.domain.extension.repository.ExtensionStoreRepository
+import mihon.domain.extensionrepo.service.ExtensionRepoService
 import mihon.domain.migration.usecases.MigrateMangaUseCase
 import mihon.domain.source.interactor.UpdateMangaFromRemote
 import mihon.domain.upcoming.interactor.GetUpcomingManga
@@ -58,6 +59,7 @@ import tachiyomi.data.chapter.ChapterRepositoryImpl
 import tachiyomi.data.custombutton.CustomButtonRepositoryImpl
 import tachiyomi.data.history.AnimeHistoryRepositoryImpl
 import tachiyomi.data.history.HistoryRepositoryImpl
+import tachiyomi.data.history.SearchHistoryRepositoryImpl
 import tachiyomi.data.manga.MangaRepositoryImpl
 import tachiyomi.data.release.ReleaseServiceImpl
 import tachiyomi.data.source.SourceRepositoryImpl
@@ -94,17 +96,22 @@ import tachiyomi.domain.custombuttons.interactor.ReorderCustomButton
 import tachiyomi.domain.custombuttons.interactor.ToggleFavoriteCustomButton
 import tachiyomi.domain.custombuttons.interactor.UpdateCustomButton
 import tachiyomi.domain.custombuttons.repository.CustomButtonRepository
+import tachiyomi.domain.history.interactor.ClearSearchHistory
+import tachiyomi.domain.history.interactor.DeleteSearchHistory
 import tachiyomi.domain.history.interactor.GetAllHistory
 import tachiyomi.domain.history.interactor.GetAnimeHistory
 import tachiyomi.domain.history.interactor.GetHistory
 import tachiyomi.domain.history.interactor.GetNextChapters
+import tachiyomi.domain.history.interactor.GetSearchHistory
 import tachiyomi.domain.history.interactor.GetTotalReadDuration
 import tachiyomi.domain.history.interactor.RemoveAnimeHistory
 import tachiyomi.domain.history.interactor.RemoveHistory
 import tachiyomi.domain.history.interactor.UpsertAnimeHistory
 import tachiyomi.domain.history.interactor.UpsertHistory
+import tachiyomi.domain.history.interactor.UpsertSearchHistory
 import tachiyomi.domain.history.repository.AnimeHistoryRepository
 import tachiyomi.domain.history.repository.HistoryRepository
+import tachiyomi.domain.history.repository.SearchHistoryRepository
 import tachiyomi.domain.manga.interactor.FetchInterval
 import tachiyomi.domain.manga.interactor.GetDuplicateLibraryManga
 import tachiyomi.domain.manga.interactor.GetFavorites
@@ -221,6 +228,12 @@ class DomainModule : InjektModule {
         addFactory { UpsertAnimeHistory(get()) }
         addFactory { RemoveAnimeHistory(get()) }
 
+        addSingletonFactory<SearchHistoryRepository> { SearchHistoryRepositoryImpl(get()) }
+        addFactory { GetSearchHistory(get()) }
+        addFactory { UpsertSearchHistory(get()) }
+        addFactory { DeleteSearchHistory(get()) }
+        addFactory { ClearSearchHistory(get()) }
+
         addFactory { DeleteDownload(get(), get()) }
         addFactory { DeleteAnimeDownload(get(), get()) }
 
@@ -259,6 +272,7 @@ class DomainModule : InjektModule {
         addFactory { TrustExtension(get(), get()) }
 
         addSingletonFactory { ExtensionStoreService(get(), get(), get()) }
+        addSingletonFactory { ExtensionRepoService(get(), get()) }
         addSingletonFactory<ExtensionStoreRepository> { ExtensionStoreRepositoryImpl(get(), get()) }
         addFactory { AddExtensionStore(get()) }
         addFactory { GetExtensionStoreCountAsFlow(get()) }

@@ -3,6 +3,6 @@
 package chimahon.dictionary.ko
 
 object KoreanParserMode {
-    const val LEGACY = "legacy"
-    const val ANALYZER = "analyzer"
+    const val Legacy = "legacy"
+    const val Analyzer = "analyzer"
 }

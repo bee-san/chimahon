@@ -44,6 +44,7 @@ import mihon.feature.migration.dialog.MigrateMangaDialog
 import mihon.feature.migration.list.MigrationListScreen
 import mihon.presentation.core.util.collectAsLazyPagingItems
 import tachiyomi.core.common.Constants
+import tachiyomi.domain.history.model.SearchHistory
 import tachiyomi.domain.manga.model.Manga
 import tachiyomi.i18n.MR
 import tachiyomi.i18n.sy.SYMR
@@ -118,6 +119,7 @@ data class MigrateSourceSearchScreen(
                         onClickCloseSearch = navigator::pop,
                         onSearch = screenModel::search,
                         scrollBehavior = scrollBehavior,
+                        searchHistoryScope = SearchHistory.SCOPE_EXTENSION_MIGRATE,
                         // KMK -->
                         actions = {
                             AppBarActions(

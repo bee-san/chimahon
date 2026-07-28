@@ -7,17 +7,17 @@ import java.time.LocalDate
 object AnkiStatsStorage {
 
     private fun getAnkiStatsFile(context: Context): File {
-        return File(context.filesDir, FileNames.ANKI_STATS)
+        return File(context.filesDir, FileNames.ankiStats)
     }
 
     fun loadAll(context: Context): List<AnkiStats> {
         val file = getAnkiStatsFile(context)
         if (!file.exists()) return emptyList()
-        return BookStorage.load<List<AnkiStats>>(context.filesDir, FileNames.ANKI_STATS) ?: emptyList()
+        return BookStorage.load<List<AnkiStats>>(context.filesDir, FileNames.ankiStats) ?: emptyList()
     }
 
     fun saveAll(context: Context, stats: List<AnkiStats>) {
-        BookStorage.save(stats, context.filesDir, FileNames.ANKI_STATS)
+        BookStorage.save(stats, context.filesDir, FileNames.ankiStats)
         chimahon.widget.ImmersionWidgetSignals.notifyStatsChanged()
     }
 

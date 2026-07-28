@@ -4,11 +4,9 @@
 <h1 align="center">Chimahon, Bee's Fork</h1>
 
 Differences from upstream
-- Animated WebP video to Anki
 - Much better stats similar to Subminer / GameSentenceMiner
-- If you run a similar app (Manatan, Mangatan, Yomikiku) you can 100% take my code. It is GPL licensed because of FFMPEG, but I can dual license my specific code and you can take it. Whatever makes the Japanese learning ecosystem the best :) 
 
-**Mihon-focused immersion fork with Manga and Novel support.**
+**Mihon-focused immersion fork with Manga, Novel, and Anime support.**
 
 [![GitHub downloads](https://img.shields.io/github/downloads/sohilsayed/chimahon/latest/total?label=Latest%20Downloads&labelColor=27303D&color=0D1111&logo=github&logoColor=FFFFFF&style=flat)](https://github.com/sohilsayed/chimahon/releases/latest)
 [![GitHub downloads](https://img.shields.io/github/downloads/sohilsayed/chimahon/total?label=Total%20Downloads&labelColor=27303D&color=0D1111&logo=github&logoColor=FFFFFF&style=flat)](https://github.com/sohilsayed/chimahon/releases)
@@ -24,12 +22,13 @@ Chimahon is a specialized Android reader designed for language learners and imme
   <img src="./.github/readme-images/novel.png" width="32%" />
   <img src="./.github/readme-images/popup-manga.png" width="32%" />
   <img src="./.github/readme-images/dict-tab.png" width="32%" />
+  <img src="./.github/readme-images/anime.jpg" width="64%" />
 </p>
 
 ## 🚀 Key Immersion Features
 
 ### 📖 Novel & Manga Support
-- **Novel Reader**: Dedicated reader for e-books with integrated dictionary lookup. Based on [Hoshi Reader](https://github.com/Manhhao/Hoshi-Reader).
+- **Novel Reader**: E-book reader with inline dictionary lookup and an illustration viewer for art OCR and vocabulary mining.
 - **Manga Reader**: Native reading experience with support for all major online and local sources.
 - **Local OCR**: High-performance, on-device text recognition — no internet connection required.
 - **.mokuro Support**: Native integration for reading `.mokuro` formatted manga files with pre-rendered OCR overlays.
@@ -47,6 +46,16 @@ Chimahon is a specialized Android reader designed for language learners and imme
 - **Screenshot Crop**: Manually crop images for your cards with specialized UI.
 - **Smart Markers**: Flexible field mapping for expression, reading, glossary, pitch, and context sentences.
 - **Duplicate Checking**: Reliable duplicate detection to prevent redundant flashcards.
+
+### 🌐 Screen OCR Lookup
+- **Any App**: Look up and mine text from any app — capture your screen, tap any word, and get an instant dictionary definition.
+
+### 🎬 Anime & Video Player
+- **Video Player**: Full MPV player with subtitle lookup and frame-accurate OCR for vocabulary mining.
+- **Jimaku Support**: Seamless integration for searching, fetching, and syncing Japanese subtitles.
+- **Video Frame OCR**: Look up any on-screen text, signs, or hardsubs directly from the video, even if it's not present in the subtitle file.
+- **Built-in YouTube Extension**: Stream and mine content directly from YouTube inside the app.
+- **Anime Library**: Browse, track, and organize your anime with source extensions and external tracker sync.
 
 ---
 

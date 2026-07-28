@@ -47,7 +47,7 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 
 @Composable
-internal fun PlayerPanels(
+fun PlayerPanels(
     panelShown: Panels,
     subtitleCues: ImmutableList<SubtitleCue>,
     activeSubtitleCueIndex: Int?,

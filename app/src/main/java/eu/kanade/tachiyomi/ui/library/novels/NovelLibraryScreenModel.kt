@@ -15,9 +15,6 @@ import eu.kanade.presentation.library.components.LibraryToolbarTitle
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
-import kotlinx.coroutines.FlowPreview
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import tachiyomi.core.common.preference.CheckboxState
@@ -33,17 +30,8 @@ class NovelLibraryScreenModel(
     private val libraryPreferences: NovelLibraryPreferences = Injekt.get(),
 ) : StateScreenModel<NovelLibraryScreenModel.State>(State()) {
 
-    private val searchQueryFlow = MutableStateFlow<String?>(null)
-
     init {
         loadLibrary()
-        screenModelScope.launch {
-            searchQueryFlow
-                .debounce(250)
-                .collect { query ->
-                    mutableState.update { it.copy(searchQuery = query) }
-                }
-        }
     }
 
     fun loadLibrary() {
@@ -62,7 +50,7 @@ class NovelLibraryScreenModel(
     }
 
     fun search(query: String?) {
-        searchQueryFlow.value = query
+        mutableState.update { it.copy(searchQuery = query) }
     }
 
     fun updateActiveCategoryIndex(index: Int) {
@@ -136,10 +124,10 @@ class NovelLibraryScreenModel(
             state.selection.forEach { bookId ->
                 val bookDir = BookStorage.getBookDirectory(app, bookId)
                 // Delete statistics file ΓÇö BookStorage.save will recreate it fresh on next read
-                val statsFile = java.io.File(bookDir, com.canopus.chimareader.data.FileNames.STATISTICS)
+                val statsFile = java.io.File(bookDir, com.canopus.chimareader.data.FileNames.statistics)
                 if (statsFile.exists()) statsFile.delete()
                 // Also delete bookmark so reading position resets
-                val bookmarkFile = java.io.File(bookDir, com.canopus.chimareader.data.FileNames.BOOKMARK)
+                val bookmarkFile = java.io.File(bookDir, com.canopus.chimareader.data.FileNames.bookmark)
                 if (bookmarkFile.exists()) bookmarkFile.delete()
             }
             clearSelection()

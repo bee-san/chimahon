@@ -30,6 +30,7 @@ import eu.kanade.presentation.components.AppBarActions
 import eu.kanade.presentation.components.SearchToolbar
 import eu.kanade.tachiyomi.ui.browse.source.globalsearch.SourceFilter
 import kotlinx.collections.immutable.persistentListOf
+import tachiyomi.domain.history.model.SearchHistory
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.components.material.padding
 import tachiyomi.presentation.core.i18n.stringResource
@@ -53,6 +54,7 @@ fun GlobalSearchToolbar(
     isRunning: Boolean,
     hasPinnedSources: Boolean,
     // KMK <--
+    searchHistoryScope: String = SearchHistory.SCOPE_ANIME_MANGA,
 ) {
     Column(modifier = Modifier.background(MaterialTheme.colorScheme.surface)) {
         Box {
@@ -63,6 +65,7 @@ fun GlobalSearchToolbar(
                 onClickCloseSearch = navigateUp,
                 navigateUp = navigateUp,
                 scrollBehavior = scrollBehavior,
+                searchHistoryScope = searchHistoryScope,
                 // KMK -->
                 actions = {
                     AppBarActions(

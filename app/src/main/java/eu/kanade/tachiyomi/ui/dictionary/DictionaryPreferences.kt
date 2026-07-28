@@ -62,7 +62,7 @@ class DictionaryPreferences(
 
     fun autoKanaConversion() = preferenceStore.getBoolean("pref_dict_auto_kana_conversion", true)
 
-    fun koreanParserMode() = preferenceStore.getString("pref_dict_korean_parser_mode", KoreanParserMode.LEGACY)
+    fun koreanParserMode() = preferenceStore.getString("pref_dict_korean_parser_mode", KoreanParserMode.Legacy)
 
     fun recursiveLookupMode() = preferenceStore.getString("pref_dict_recursive_lookup_mode", "tabs")
 

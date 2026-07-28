@@ -1,5 +1,3 @@
-@file:Suppress("ktlint:standard:filename")
-
 package chimahon.ocr
 
 object Mokuro {

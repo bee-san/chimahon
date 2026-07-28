@@ -28,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -49,6 +50,7 @@ import chimahon.LookupResult
 import chimahon.anki.AnkiCardCreator
 import chimahon.anki.AnkiDroidBridge
 import chimahon.anki.AnkiResult
+import eu.kanade.presentation.components.SearchHistoryRow
 import eu.kanade.presentation.util.Tab
 import eu.kanade.tachiyomi.ui.dictionary.DictionaryPreferences
 import eu.kanade.tachiyomi.ui.dictionary.TabInfo
@@ -62,6 +64,10 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import tachiyomi.core.common.i18n.stringResource
+import tachiyomi.domain.history.interactor.DeleteSearchHistory
+import tachiyomi.domain.history.interactor.GetSearchHistory
+import tachiyomi.domain.history.interactor.UpsertSearchHistory
+import tachiyomi.domain.history.model.SearchHistory
 import tachiyomi.domain.immersion.model.LookupStatus
 import tachiyomi.domain.immersion.service.LookupIntentToken
 import tachiyomi.domain.immersion.service.LookupTelemetry
@@ -212,6 +218,13 @@ data object DictionaryTab : Tab {
         var retainedWebView by remember { mutableStateOf<WebView?>(null) }
         val focusManager = LocalFocusManager.current
         val focusRequester = remember { FocusRequester() }
+
+        val getSearchHistory: GetSearchHistory = remember { Injekt.get() }
+        val upsertSearchHistory: UpsertSearchHistory = remember { Injekt.get() }
+        val deleteSearchHistory: DeleteSearchHistory = remember { Injekt.get() }
+        val searchHistoryList by produceState<List<SearchHistory>>(initialValue = emptyList()) {
+            getSearchHistory.subscribe(SearchHistory.SCOPE_DICTIONARY).collect { value = it }
+        }
 
         val dictionaryPreferences = remember { Injekt.get<DictionaryPreferences>() }
         val lookupTelemetry = remember { Injekt.get<LookupTelemetry>() }
@@ -390,6 +403,15 @@ data object DictionaryTab : Tab {
             }
         }
 
+        fun saveDictionaryHistory(targetQuery: String) {
+            val trimmed = targetQuery.trim()
+            if (trimmed.isNotBlank()) {
+                scope.launch(Dispatchers.IO) {
+                    upsertSearchHistory.await(SearchHistory.SCOPE_DICTIONARY, trimmed)
+                }
+            }
+        }
+
         // ── Auto-focus effect ──────────────────────────────────────────────────
         LaunchedEffect(Unit) {
             // Wait for tab animation/composition to settle
@@ -475,7 +497,6 @@ data object DictionaryTab : Tab {
                             is AnkiResult.Error -> context.toast(
                                 context.stringResource(MR.strings.anki_card_error, ankiResult.message),
                             )
-                            AnkiResult.Cancelled -> Unit
                             is AnkiResult.NotConfigured -> context.toast(MR.strings.anki_not_configured)
                         }
                     }
@@ -572,6 +593,7 @@ data object DictionaryTab : Tab {
                         onSearch = {
                             val trimmed = query.trim()
                             if (trimmed.isNotEmpty()) {
+                                saveDictionaryHistory(trimmed)
                                 lookupStack.clear()
                                 activeTabIndex = 0
                                 stackLookup(trimmed)
@@ -590,6 +612,7 @@ data object DictionaryTab : Tab {
                             errorMessage = null
                             hasSearched = true
                         } else {
+                            saveDictionaryHistory(trimmedQuery)
                             lookupStack.clear()
                             activeTabIndex = 0
                             stackLookup(trimmedQuery)
@@ -647,6 +670,34 @@ data object DictionaryTab : Tab {
                         }
                     }
                 }
+            }
+
+            // Search history chips
+            if (searchHistoryList.isNotEmpty()) {
+                SearchHistoryRow(
+                    historyList = searchHistoryList,
+                    onSelectQuery = { selectedQuery ->
+                        saveDictionaryHistory(selectedQuery)
+                        textFieldValue = TextFieldValue(
+                            text = selectedQuery,
+                            selection = TextRange(selectedQuery.length),
+                        )
+                        lookupStack.clear()
+                        activeTabIndex = 0
+                        stackLookup(selectedQuery)
+                        focusManager.clearFocus()
+                    },
+                    onDeleteQuery = { queryToDelete ->
+                        scope.launch {
+                            deleteSearchHistory.await(SearchHistory.SCOPE_DICTIONARY, queryToDelete)
+                        }
+                    },
+                    onClearAll = {
+                        scope.launch {
+                            deleteSearchHistory.clearScope(SearchHistory.SCOPE_DICTIONARY)
+                        }
+                    },
+                )
             }
 
             // Status / body

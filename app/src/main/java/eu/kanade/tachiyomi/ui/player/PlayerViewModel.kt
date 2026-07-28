@@ -40,11 +40,9 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
-import chimahon.anki.AnkiMediaRequest
-import chimahon.anki.AnkiScreenshotMode
-import chimahon.anki.AnkiScreenshotPreparation
-import chimahon.anki.LazyAnkiMediaProvider
-import chimahon.anki.LazyAnkiScreenshotProvider
+import com.arthenica.ffmpegkit.FFmpegKitConfig
+import com.arthenica.ffmpegkit.FFmpegSession
+import com.arthenica.ffmpegkit.ReturnCode
 import dev.icerock.moko.resources.StringResource
 import eu.kanade.domain.base.BasePreferences
 import eu.kanade.domain.entries.anime.interactor.SetAnimeViewerFlags
@@ -59,6 +57,7 @@ import eu.kanade.tachiyomi.animesource.AnimeSource
 import eu.kanade.tachiyomi.animesource.model.ChapterType
 import eu.kanade.tachiyomi.animesource.model.Hoster
 import eu.kanade.tachiyomi.animesource.model.SAnime
+import eu.kanade.tachiyomi.animesource.model.SerializableHoster.Companion.serialize
 import eu.kanade.tachiyomi.animesource.model.SerializableHoster.Companion.toHosterList
 import eu.kanade.tachiyomi.animesource.model.TimeStamp
 import eu.kanade.tachiyomi.animesource.model.Video
@@ -80,22 +79,6 @@ import eu.kanade.tachiyomi.ui.player.controls.components.sheets.HosterState
 import eu.kanade.tachiyomi.ui.player.controls.components.sheets.getChangedAt
 import eu.kanade.tachiyomi.ui.player.loader.EpisodeLoader
 import eu.kanade.tachiyomi.ui.player.loader.HosterLoader
-import eu.kanade.tachiyomi.ui.player.scene.AndroidSceneCaptureService
-import eu.kanade.tachiyomi.ui.player.scene.CapturedOcrFrame
-import eu.kanade.tachiyomi.ui.player.scene.FrozenSceneSentenceAudioService
-import eu.kanade.tachiyomi.ui.player.scene.PlayerSceneMiningCoordinator
-import eu.kanade.tachiyomi.ui.player.scene.PlayerSceneMiningProgress
-import eu.kanade.tachiyomi.ui.player.scene.SceneCaptureRequest
-import eu.kanade.tachiyomi.ui.player.scene.SceneCaptureRequestFactory
-import eu.kanade.tachiyomi.ui.player.scene.SceneCaptureService
-import eu.kanade.tachiyomi.ui.player.scene.SceneClockDomain
-import eu.kanade.tachiyomi.ui.player.scene.SceneMpvSnapshot
-import eu.kanade.tachiyomi.ui.player.scene.SceneRangeCandidate
-import eu.kanade.tachiyomi.ui.player.scene.SceneRangeProvenance
-import eu.kanade.tachiyomi.ui.player.scene.SceneScreenshotFileReader
-import eu.kanade.tachiyomi.ui.player.scene.SceneSentenceAudioService
-import eu.kanade.tachiyomi.ui.player.scene.SceneVideoInputSnapshot
-import eu.kanade.tachiyomi.ui.player.scene.mergeSceneHeaders
 import eu.kanade.tachiyomi.ui.player.settings.GesturePreferences
 import eu.kanade.tachiyomi.ui.player.settings.PlayerPreferences
 import eu.kanade.tachiyomi.ui.player.settings.SubtitlePreferences
@@ -116,7 +99,9 @@ import eu.kanade.tachiyomi.ui.reader.SaveImageNotifier
 import eu.kanade.tachiyomi.ui.reader.viewer.OcrTextBlock
 import eu.kanade.tachiyomi.ui.reader.viewer.orderedFullText
 import eu.kanade.tachiyomi.ui.youtube.YouTubePreferences
-import eu.kanade.tachiyomi.ui.youtube.YoutubeResolver
+import eu.kanade.tachiyomi.ui.youtube.YouTubeResolver
+import eu.kanade.tachiyomi.ui.youtube.YouTubeSource
+import eu.kanade.tachiyomi.ui.youtube.YouTubeVideoMetadata
 import eu.kanade.tachiyomi.ui.youtube.allowsExternalSubtitleLookup
 import eu.kanade.tachiyomi.util.editCover
 import eu.kanade.tachiyomi.util.episode.filterDownloadedEpisodes
@@ -124,14 +109,13 @@ import eu.kanade.tachiyomi.util.lang.byteSize
 import eu.kanade.tachiyomi.util.lang.takeBytes
 import eu.kanade.tachiyomi.util.storage.DiskUtil
 import eu.kanade.tachiyomi.util.storage.cacheImageDir
+import eu.kanade.tachiyomi.util.storage.toFFmpegString
 import eu.kanade.tachiyomi.util.system.toast
 import `is`.xyz.mpv.MPVLib
 import `is`.xyz.mpv.Utils
 import kotlinx.collections.immutable.toImmutableList
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
@@ -143,7 +127,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -162,7 +145,6 @@ import mihon.feature.stats.capture.VideoSubtitleRole
 import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.core.common.util.lang.launchNonCancellable
-import tachiyomi.core.common.util.lang.toLong
 import tachiyomi.core.common.util.lang.withIOContext
 import tachiyomi.core.common.util.lang.withUIContext
 import tachiyomi.core.common.util.system.logcat
@@ -172,9 +154,11 @@ import tachiyomi.domain.custombuttons.model.CustomButton
 import tachiyomi.domain.download.service.DownloadPreferences
 import tachiyomi.domain.entries.anime.interactor.GetAnime
 import tachiyomi.domain.entries.anime.model.Anime
+import tachiyomi.domain.entries.anime.repository.AnimeRepository
 import tachiyomi.domain.episode.interactor.GetEpisodesByAnimeId
 import tachiyomi.domain.episode.interactor.UpdateEpisode
 import tachiyomi.domain.episode.model.EpisodeUpdate
+import tachiyomi.domain.episode.repository.EpisodeRepository
 import tachiyomi.domain.episode.service.getEpisodeSort
 import tachiyomi.domain.history.interactor.GetNextEpisodes
 import tachiyomi.domain.history.interactor.UpsertAnimeHistory
@@ -192,20 +176,17 @@ import tachiyomi.i18n.MR
 import tachiyomi.source.local.entries.anime.isLocal
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
-import java.io.Closeable
 import java.io.File
 import java.io.InputStream
-import java.util.Collections
 import java.util.Date
-import java.util.UUID
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
+import kotlin.collections.first
 import kotlin.coroutines.cancellation.CancellationException
 
 private const val MAX_SUBTITLE_HISTORY = 120
 private const val VIDEO_SELECTION_DELIMITER = "\u001e"
 private const val DEFAULT_DYNAMIC_SUBTITLE_DURATION_MILLIS = 5_000L
-
 class PlayerViewModelProviderFactory(
     private val activity: PlayerActivity,
 ) : ViewModelProvider.Factory {
@@ -214,10 +195,12 @@ class PlayerViewModelProviderFactory(
     }
 }
 
-class PlayerViewModel @JvmOverloads internal constructor(
+class PlayerViewModel @JvmOverloads constructor(
     private val activity: PlayerActivity,
     private val savedState: SavedStateHandle,
     private val sourceManager: AnimeSourceManager = Injekt.get(),
+    private val animeRepository: AnimeRepository = Injekt.get(),
+    private val episodeRepository: EpisodeRepository = Injekt.get(),
     private val downloadManager: DownloadManager = Injekt.get(),
     private val imageSaver: ImageSaver = Injekt.get(),
     private val downloadPreferences: DownloadPreferences = Injekt.get(),
@@ -243,9 +226,6 @@ class PlayerViewModel @JvmOverloads internal constructor(
     private val getCustomButtons: GetCustomButtons = Injekt.get(),
     private val trackSelect: TrackSelect = Injekt.get(),
     private val jimakuApi: JimakuApi = JimakuApi(),
-    private val sceneCaptureRequestFactory: SceneCaptureRequestFactory = SceneCaptureRequestFactory(),
-    private val sceneCaptureService: () -> SceneCaptureService = { AndroidSceneCaptureService(activity) },
-    private val sceneSentenceAudioService: SceneSentenceAudioService = FrozenSceneSentenceAudioService(activity),
     uiPreferences: UiPreferences = Injekt.get(),
 ) : ViewModel() {
 
@@ -292,8 +272,8 @@ class PlayerViewModel @JvmOverloads internal constructor(
     val currentSubtitleText = _currentSubtitleText.asStateFlow()
     private val _subtitlesVisible = MutableStateFlow(true)
     val subtitlesVisible = _subtitlesVisible.asStateFlow()
-    private val subtitleHistoryState = MutableStateFlow<List<SubtitleCue>>(emptyList())
-    internal val subtitleHistory = subtitleHistoryState.asStateFlow()
+    private val _subtitleHistory = MutableStateFlow<List<SubtitleCue>>(emptyList())
+    val subtitleHistory = _subtitleHistory.asStateFlow()
     private val _activeSubtitleCueIndex = MutableStateFlow<Int?>(null)
     val activeSubtitleCueIndex = _activeSubtitleCueIndex.asStateFlow()
     private val _primarySubtitleDelaySeconds = MutableStateFlow(0.0)
@@ -343,7 +323,7 @@ class PlayerViewModel @JvmOverloads internal constructor(
     val pos = _pos.asStateFlow()
 
     private var castProgressJob: Job? = null
-    private var standaloneYoutubeLoadJob: Job? = null
+    private var youtubeLoadJob: Job? = null
 
     val duration = MutableStateFlow(0f)
 
@@ -402,9 +382,8 @@ class PlayerViewModel @JvmOverloads internal constructor(
 
     private val _customButtons = MutableStateFlow<CustomButtonFetchState>(CustomButtonFetchState.Loading)
 
-    private val ocrFrameLock = Any()
-    private val ocrFrameState = MutableStateFlow<CapturedOcrFrame?>(null)
-    internal val ocrFrame: StateFlow<CapturedOcrFrame?> = ocrFrameState.asStateFlow()
+    private val _ocrScreenshot = MutableStateFlow<Bitmap?>(null)
+    val ocrScreenshot: StateFlow<Bitmap?> = _ocrScreenshot.asStateFlow()
     private val _isCapturingOcr = MutableStateFlow(false)
     val isCapturingOcr: StateFlow<Boolean> = _isCapturingOcr.asStateFlow()
     private val _suppressTap = MutableStateFlow(false)
@@ -426,14 +405,6 @@ class PlayerViewModel @JvmOverloads internal constructor(
     private val videoSubtitleLookupCuesByDisplayIndex = mutableMapOf<Int, VideoSubtitleCueCapture>()
     private var secondarySubtitleText = ""
     val customButtons = _customButtons.asStateFlow()
-
-    private val sceneRequests = Collections.synchronizedSet(mutableSetOf<SceneCaptureRequest>())
-    private val sceneUiGeneration = AtomicLong()
-    private val sceneMiningCoordinator = PlayerSceneMiningCoordinator(
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
-        sceneCaptureService = sceneCaptureService,
-    )
-    internal val sceneMiningProgress: StateFlow<PlayerSceneMiningProgress> = sceneMiningCoordinator.progress
 
     private val _primaryButtonTitle = MutableStateFlow("")
     val primaryButtonTitle = _primaryButtonTitle.asStateFlow()
@@ -564,14 +535,7 @@ class PlayerViewModel @JvmOverloads internal constructor(
                             subTracks.add(track)
                             rememberParsedSubtitleTrack(track)
                         }
-                        "audio" -> audioTracks.add(
-                            VideoTrack(
-                                id = getTrackMPVId(i),
-                                name = getTrackTitle(i),
-                                language = getTrackLanguage(i),
-                                externalFilename = getTrackExternalFilename(i),
-                            ),
-                        )
+                        "audio" -> audioTracks.add(VideoTrack(getTrackMPVId(i), getTrackTitle(i), getTrackLanguage(i)))
                         else -> error("Unrecognized track type")
                     }
                 }
@@ -623,13 +587,12 @@ class PlayerViewModel @JvmOverloads internal constructor(
     )
 
     @Immutable
-    internal data class SubtitleCue(
+    data class SubtitleCue(
         val index: Int,
         val text: String,
         val positionSeconds: Double,
         val endPositionSeconds: Double = positionSeconds + 5.0,
         val rawText: String = text,
-        val sceneTimingCandidate: SceneRangeCandidate? = null,
     )
 
     sealed interface JimakuState {
@@ -1029,7 +992,7 @@ class PlayerViewModel @JvmOverloads internal constructor(
             return
         }
 
-        subtitleHistoryState.update { cues -> cues.toEffectiveSubtitleCues() }
+        _subtitleHistory.update { cues -> cues.toEffectiveSubtitleCues() }
         updateActiveSubtitleCueFromPosition(pos.value.toDouble())
     }
 
@@ -1106,7 +1069,7 @@ class PlayerViewModel @JvmOverloads internal constructor(
             lastSubtitleHistoryText = ""
             currentRawSubtitleText = ""
             _currentSubtitleText.update { "" }
-            subtitleHistoryState.update { emptyList() }
+            _subtitleHistory.update { emptyList() }
             _activeSubtitleCueIndex.update { null }
             return
         }
@@ -1126,13 +1089,13 @@ class PlayerViewModel @JvmOverloads internal constructor(
                 showingParsedSubtitleTrackId = trackId
                 lastSubtitleHistoryText = ""
                 nextSubtitleCueIndex = rawCues.maxOfOrNull { it.index + 1 } ?: 0
-                subtitleHistoryState.update { emptyList() }
+                _subtitleHistory.update { emptyList() }
                 _activeSubtitleCueIndex.update { null }
                 return
             }
             if (showingParsedSubtitleTrackId != null) {
                 showingParsedSubtitleTrackId = null
-                subtitleHistoryState.update { emptyList() }
+                _subtitleHistory.update { emptyList() }
                 _activeSubtitleCueIndex.update { null }
                 lastSubtitleHistoryText = ""
                 nextSubtitleCueIndex = 0
@@ -1143,7 +1106,7 @@ class PlayerViewModel @JvmOverloads internal constructor(
         showingParsedSubtitleTrackId = trackId
         lastSubtitleHistoryText = ""
         nextSubtitleCueIndex = cues.maxOfOrNull { it.index + 1 } ?: 0
-        subtitleHistoryState.update { cues }
+        _subtitleHistory.update { cues }
         updateActiveSubtitleCueFromPosition(pos.value.toDouble())
     }
 
@@ -1279,8 +1242,7 @@ class PlayerViewModel @JvmOverloads internal constructor(
 
                 val timeParts = lines[timeIndex].split("-->", limit = 2)
                 val start = timeParts.getOrNull(0)?.let { parseSubtitleTimestampSeconds(it) } ?: return@forEach
-                val parsedEnd = timeParts.getOrNull(1)?.let { parseSubtitleTimestampSeconds(it) }
-                val end = parsedEnd ?: (start + 5.0)
+                val end = timeParts.getOrNull(1)?.let { parseSubtitleTimestampSeconds(it) } ?: (start + 5.0)
                 val text = lines.drop(timeIndex + 1)
                     .joinToString("\n")
                     .cleanMpvSubtitleText()
@@ -1291,14 +1253,6 @@ class PlayerViewModel @JvmOverloads internal constructor(
                         text = text,
                         positionSeconds = start,
                         endPositionSeconds = end.coerceAtLeast(start + 1.0),
-                        sceneTimingCandidate = parsedEnd?.let {
-                            SceneRangeCandidate(
-                                startSeconds = start,
-                                endSeconds = it,
-                                clockDomain = SceneClockDomain.SUBTITLE,
-                                provenance = SceneRangeProvenance.PARSED_SUBTITLE_CUE,
-                            )
-                        },
                     )
                 }
             }
@@ -1342,8 +1296,7 @@ class PlayerViewModel @JvmOverloads internal constructor(
             if (values.size <= maxOf(startIndex, endIndex, textIndex)) return@forEach
 
             val start = parseSubtitleTimestampSeconds(values[startIndex]) ?: return@forEach
-            val parsedEnd = parseSubtitleTimestampSeconds(values[endIndex])
-            val end = parsedEnd ?: (start + 5.0)
+            val end = parseSubtitleTimestampSeconds(values[endIndex]) ?: (start + 5.0)
             val text = values[textIndex].cleanMpvSubtitleText()
             if (text.isBlank()) return@forEach
 
@@ -1352,14 +1305,6 @@ class PlayerViewModel @JvmOverloads internal constructor(
                 text = text,
                 positionSeconds = start,
                 endPositionSeconds = end.coerceAtLeast(start + 1.0),
-                sceneTimingCandidate = parsedEnd?.let {
-                    SceneRangeCandidate(
-                        startSeconds = start,
-                        endSeconds = it,
-                        clockDomain = SceneClockDomain.SUBTITLE,
-                        provenance = SceneRangeProvenance.PARSED_SUBTITLE_CUE,
-                    )
-                },
             )
         }
         return cues
@@ -1454,7 +1399,7 @@ class PlayerViewModel @JvmOverloads internal constructor(
             rawText = rawText,
             positionSeconds = pos.value.toDouble(),
         )
-        subtitleHistoryState.update { cues -> (cues + cue).takeLast(MAX_SUBTITLE_HISTORY) }
+        _subtitleHistory.update { cues -> (cues + cue).takeLast(MAX_SUBTITLE_HISTORY) }
         _activeSubtitleCueIndex.update { cue.index }
     }
 
@@ -1693,28 +1638,19 @@ class PlayerViewModel @JvmOverloads internal constructor(
         }
         pause()
         viewModelScope.launch {
-            try {
-                val paddingSeconds = dictionaryPreferences.videoOcrSentenceAudioPaddingSeconds().get().toDouble()
-                val frame = sceneCaptureRequestFactory.captureOcr(
-                    videoSnapshot = ::sceneVideoInputSnapshot,
-                    paddingSeconds = paddingSeconds,
-                    captureFallback = ::captureVideoFrameForOcr,
-                )
-                if (frame == null) {
-                    eventChannel.send(Event.OcrFailed)
-                } else {
-                    sceneRequests += frame.request
-                    replaceOcrFrame(frame)?.let { releaseSceneRequest(it.request) }
-                }
-            } finally {
-                _isCapturingOcr.value = false
-                _suppressTap.value = false
+            val screenshot = captureVideoFrameForOcr()
+            _isCapturingOcr.value = false
+            _suppressTap.value = false
+            if (screenshot == null) {
+                eventChannel.send(Event.OcrFailed)
+            } else {
+                _ocrScreenshot.value = screenshot
             }
         }
     }
 
     fun dismissOcrScreenshot() {
-        replaceOcrFrame(null)?.let { releaseSceneRequest(it.request) }
+        _ocrScreenshot.value = null
         videoOcrLookupFrame = null
         videoCaptureAdapter?.onVideoOcrHidden()
     }
@@ -2216,20 +2152,12 @@ class PlayerViewModel @JvmOverloads internal constructor(
 
     override fun onCleared() {
         finalizeVideoCapture()
-        sceneUiGeneration.incrementAndGet()
-        sceneMiningCoordinator.shutdown()
-        replaceOcrFrame(null)?.let { releaseSceneRequest(it.request) }
-        synchronized(sceneRequests) {
-            sceneRequests.toList().forEach { it.close() }
-            sceneRequests.clear()
-        }
         if (currentEpisode.value != null) {
             saveWatchingProgress(currentEpisode.value!!)
             episodeToDownload?.let {
                 downloadManager.addDownloadsToStartOfQueue(listOf(it))
             }
         }
-        super.onCleared()
     }
 
     fun updateCastProgress(position: Float) {
@@ -2681,20 +2609,6 @@ class PlayerViewModel @JvmOverloads internal constructor(
         updateIsLoadingHosters(false)
         isLoading.update { false }
 
-        when {
-            video.videoPageUrl.isNotEmpty() -> {
-                _jimakuState.update { JimakuState.Idle }
-                loadYoutubeStandalone(video)
-            }
-            else -> {
-                videoClickHandler = ::onSourceVideoClicked
-                loadNormalStandalone(video)
-            }
-        }
-    }
-
-    private fun loadNormalStandalone(video: Video) {
-        standaloneYoutubeLoadJob?.cancel()
         val title = video.videoTitle.ifBlank { video.videoUrl.substringAfterLast('/').substringBefore('?') }
         animeTitle.update { title }
         mediaTitle.update { title }
@@ -2703,52 +2617,47 @@ class PlayerViewModel @JvmOverloads internal constructor(
         activity.setVideo(video, position = 0L)
     }
 
-    private fun loadYoutubeStandalone(video: Video) {
-        videoClickHandler = ::onStandaloneYoutubeVideoClicked
-        updateIsLoadingHosters(true)
-        standaloneYoutubeLoadJob?.cancel()
-        standaloneYoutubeLoadJob = viewModelScope.launchIO {
+    fun loadYoutubeVideo(videoUrl: String) {
+        youtubeLoadJob?.cancel()
+        youtubeLoadJob = viewModelScope.launchIO {
             try {
+                // Get all stream metadata, then get channel info
                 val prefs = YouTubePreferences(Injekt.get<Application>())
-                val streams = YoutubeResolver.resolveAllStreams(video.videoPageUrl, prefs.preferredQuality)
-                if (!isActive) return@launchIO
+                val videoMetadata = YouTubeResolver.resolveVideo(YouTubeResolver.getVideoId(videoUrl), prefs.preferredQuality)
+
+                val episode = createYoutubeEpisode(videoMetadata, prefs)
+                    ?: throw IllegalStateException("Failed to create youtube episode")
+
+                val streams = videoMetadata.videoStreams
                 if (streams.isEmpty()) {
-                    withContext(Dispatchers.Main) {
-                        updateIsLoadingHosters(false)
-                        activity.toast("No playable video streams found")
-                    }
-                    return@launchIO
+                    throw IllegalStateException("No playable video streams found")
                 }
 
-                val hoster = Hoster(hosterName = "YouTube", videoList = streams)
-                _hosterList.update { listOf(hoster) }
-                _hosterState.update {
-                    listOf(
-                        HosterState.Ready(
-                            "YouTube",
-                            streams,
-                            List(streams.size) { Video.State.READY },
-                        ),
+                saveCurrentEpisodeWatchingProgress()
+                updateIsLoadingEpisode(true)
+                updateIsLoadingHosters(true)
+
+                val hoster = Hoster(hosterName = "YouTube", videoList = videoMetadata.videoStreams)
+                val selected = streams.firstOrNull { it.preferred }
+                    ?: selectYouTubeStream(streams, prefs.preferredQuality)
+                val vidIndex = streams.indexOf(selected)
+
+                val initResult = init(episode.animeId, episode.id, listOf(hoster).serialize(), 0, vidIndex)
+                if (!initResult.second.getOrDefault(false)) {
+                    val exception = initResult.second.exceptionOrNull() ?: IllegalStateException(
+                        "Unknown error",
                     )
-                }
-                _hosterExpandedList.update { listOf(true) }
-                _isEpisodeOnline.update { true }
 
-                val title = video.videoTitle.ifBlank { "YouTube" }
-                animeTitle.update { title }
-                mediaTitle.update { title }
-                MPVLib.setPropertyString("user-data/current-anime/anime-title", title)
-
-                withContext(Dispatchers.Main) {
-                    updateIsLoadingHosters(false)
-                    val selected = streams.firstOrNull { it.preferred }
-                        ?: selectYouTubeStream(streams, prefs.preferredQuality)
-                    val index = streams.indexOf(selected)
-                    _selectedHosterVideoIndex.update { Pair(0, index) }
-                    qualityIndex = Pair(0, index)
-                    _currentVideo.update { selected }
-                    activity.setVideo(selected, position = 0L)
+                    throw exception
                 }
+
+                updateIsLoadingHosters(false)
+                loadHosters(
+                    source = currentSource.value!!,
+                    hosterList = initResult.first.hosterList ?: emptyList(),
+                    hosterIndex = initResult.first.videoIndex.first,
+                    videoIndex = initResult.first.videoIndex.second,
+                )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -2760,11 +2669,70 @@ class PlayerViewModel @JvmOverloads internal constructor(
         }
     }
 
+    private suspend fun createYoutubeEpisode(videoMetadata: YouTubeVideoMetadata, prefs: YouTubePreferences): tachiyomi.domain.episode.model.Episode? {
+        suspend fun createAndAddEpisode(episodeId: Long, animeId: Long): tachiyomi.domain.episode.model.Episode {
+            val episode = tachiyomi.domain.episode.model.Episode.create().copy(
+                id = episodeId, // Once inserted it will change so it doesnt matter
+                animeId = animeId,
+                url = videoMetadata.videoUrl,
+                name = videoMetadata.videoName,
+                totalSeconds = videoMetadata.videoLength,
+                dateFetch = System.currentTimeMillis(),
+                dateUpload = videoMetadata.videoUploadDate,
+                scanlator = videoMetadata.videoType,
+                previewUrl = videoMetadata.videoThumbnailUrl,
+                // summary = videoMetadata.videoDescription, removed because it looks ugly
+                episodeNumber = 0.0,
+            )
+            val episodes = episodeRepository.addAll(listOf(episode))
+            return episodes.first()
+        }
+
+        val episodeId = videoMetadata.videoId.hashCode().toLong()
+
+        // Try to find existing anime entry, and add the current episode
+        val animeEntry = animeRepository.getAnimeByUrlAndSourceId(videoMetadata.channelUrl, YouTubeSource.id)
+        if (animeEntry != null) {
+            val episode = episodeRepository.getEpisodeByUrlAndAnimeId(videoMetadata.videoUrl, animeEntry.id)
+            if (episode == null) {
+                return createAndAddEpisode(episodeId, animeEntry.id)
+            }
+
+            return episode
+        }
+
+        val channelMetadata = YouTubeResolver.resolveChannel(videoMetadata.channelId)
+
+        // We create a new channel entry
+        val newChannelEntry = Anime.create().copy(
+            id = videoMetadata.channelId.hashCode().toLong(),
+            url = videoMetadata.channelUrl,
+            source = YouTubeSource.id,
+
+            ogTitle = videoMetadata.channelName,
+            ogDescription = channelMetadata?.description,
+            ogThumbnailUrl = channelMetadata?.avatarUrl,
+            backgroundUrl = channelMetadata?.bannerUrl,
+
+            dateAdded = System.currentTimeMillis(),
+            lastModifiedAt = System.currentTimeMillis(),
+            coverLastModified = System.currentTimeMillis(),
+            backgroundLastModified = System.currentTimeMillis(),
+
+            favorite = prefs.addNewChannelsToLibrary,
+        )
+
+        val newAnimeId = animeRepository.insertAnime(newChannelEntry)
+            ?: return null
+
+        return createAndAddEpisode(episodeId, newAnimeId)
+    }
+
     private fun selectYouTubeStream(streams: List<Video>, targetQuality: String): Video {
-        val targetPixels = YoutubeResolver.parseResolution(targetQuality)
-        return streams.filter { YoutubeResolver.parseResolution(it.videoTitle) <= targetPixels }
-            .maxByOrNull { YoutubeResolver.parseResolution(it.videoTitle) }
-            ?: streams.minByOrNull { YoutubeResolver.parseResolution(it.videoTitle) }
+        val targetPixels = YouTubeResolver.parseResolution(targetQuality)
+        return streams.filter { YouTubeResolver.parseResolution(it.videoTitle) <= targetPixels }
+            .maxByOrNull { YouTubeResolver.parseResolution(it.videoTitle) }
+            ?: streams.minByOrNull { YouTubeResolver.parseResolution(it.videoTitle) }
             ?: streams.first()
     }
 
@@ -3193,31 +3161,6 @@ class PlayerViewModel @JvmOverloads internal constructor(
         }
     }
 
-    private fun onStandaloneYoutubeVideoClicked(hosterIndex: Int, videoIndex: Int) {
-        val hosterState = _hosterState.value[hosterIndex] as? HosterState.Ready
-        val video = hosterState?.videoList
-            ?.getOrNull(videoIndex)
-            ?: return
-
-        val videoState = hosterState.videoState
-            .getOrNull(videoIndex)
-            ?: return
-
-        if (videoState == Video.State.ERROR) {
-            return
-        }
-
-        updatePausedState()
-        pause()
-        _selectedHosterVideoIndex.update { Pair(hosterIndex, videoIndex) }
-        _currentVideo.update { video }
-        qualityIndex = Pair(hosterIndex, videoIndex)
-        activity.setVideo(video)
-        if (sheetShown.value == Sheets.QualityTracks) {
-            dismissSheet()
-        }
-    }
-
     fun onHosterClicked(index: Int) {
         when (hosterState.value[index]) {
             is HosterState.Ready -> {
@@ -3471,181 +3414,98 @@ class PlayerViewModel @JvmOverloads internal constructor(
     }
 
     suspend fun captureVideoFrameForOcr(): Bitmap? {
-        val file = File(cachePath, "${UUID.randomUUID()}_mpv_ocr_frame.png")
-        return try {
+        val file = File(cachePath, "${System.currentTimeMillis()}_mpv_ocr_frame.png")
+        return runCatching {
             withUIContext {
                 file.delete()
                 MPVLib.command(arrayOf("screenshot-to-file", file.absolutePath, "video"))
             }
             withIOContext {
-                SceneScreenshotFileReader.await(file) { screenshot ->
-                    BitmapFactory.decodeFile(screenshot.absolutePath)
+                repeat(20) {
+                    if (file.exists() && file.length() > 0L) {
+                        return@withIOContext BitmapFactory.decodeFile(file.absolutePath)
+                    }
+                    Thread.sleep(25L)
                 }
+                file.takeIf { it.exists() && it.length() > 0L }
+                    ?.let { BitmapFactory.decodeFile(it.absolutePath) }
             }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            logcat(LogPriority.ERROR, e)
-            null
-        } finally {
+        }.onFailure {
+            logcat(LogPriority.ERROR, it)
+        }.getOrNull().also {
             file.delete()
         }
     }
 
-    internal suspend fun captureSubtitleSceneRequest(
-        parsedSubtitleCandidate: SceneRangeCandidate?,
-        playbackFallback: SceneRangeCandidate?,
-    ): SceneCaptureRequest? {
-        val request = sceneCaptureRequestFactory.captureSubtitle(
-            videoSnapshot = ::sceneVideoInputSnapshot,
-            parsedSubtitleCandidates = listOfNotNull(parsedSubtitleCandidate),
-            playbackFallback = playbackFallback,
-            captureFallback = ::captureVideoFrameForOcr,
-        ) ?: return null
-        sceneRequests += request
-        return request
-    }
+    suspend fun captureSubtitleAudioForAnki(startSeconds: Double?, endSeconds: Double?): ByteArray? {
+        val start = startSeconds ?: return null
+        val end = endSeconds ?: return null
+        if (end <= start) return null
 
-    internal fun createSceneMediaRequest(
-        request: SceneCaptureRequest?,
-        screenshotMode: String,
-        onFinished: () -> Unit,
-    ): AnkiMediaRequest {
-        val mode = AnkiScreenshotMode.fromStorageValue(screenshotMode)
-        val uiGeneration = sceneUiGeneration.get()
-        return AnkiMediaRequest(
-            screenshotMode = mode,
-            screenshotProvider = when {
-                request != null -> LazyAnkiScreenshotProvider {
-                    sceneMiningCoordinator.prepareScreenshot(
-                        request = request,
-                        mode = mode,
-                    )
-                }
-                mode == AnkiScreenshotMode.ANIMATED_SCENE -> LazyAnkiScreenshotProvider {
-                    AnkiScreenshotPreparation.GenerationFailed(stillFallback = null)
-                }
-                else -> null
-            },
-            sentenceAudioProvider = request?.let { frozenRequest ->
-                LazyAnkiMediaProvider {
-                    sceneMiningCoordinator.markPreparingSentenceAudio()
-                    try {
-                        sceneSentenceAudioService.prepare(frozenRequest)
-                    } finally {
-                        sceneMiningCoordinator.markWaitingForCommit()
-                    }
-                }
-            },
-            onCommitStarted = sceneMiningCoordinator::markCommitStarted,
-            onFinished = {
-                request?.let(::releaseSceneRequest)
-                if (sceneUiGeneration.get() == uiGeneration) {
-                    onFinished()
-                }
-            },
-        )
-    }
-
-    internal fun launchSceneMining(
-        request: SceneCaptureRequest?,
-        block: suspend () -> Unit,
-    ): Boolean {
-        return if (request != null) {
-            sceneMiningCoordinator.launch(request, block)
-        } else {
-            sceneMiningCoordinator.launchWithLease(
-                acquireLease = { Closeable {} },
-                block = block,
-            )
-        }
-    }
-
-    internal fun cancelSceneMiningPreCommit() {
-        sceneMiningCoordinator.cancelPreCommit()
-    }
-
-    internal fun onPlayerActivityDestroyed() {
-        sceneUiGeneration.incrementAndGet()
-        sceneMiningCoordinator.cancelPreCommit()
-    }
-
-    internal fun releaseSceneRequest(request: SceneCaptureRequest) {
-        sceneRequests -= request
-        request.close()
-    }
-
-    private fun replaceOcrFrame(frame: CapturedOcrFrame?): CapturedOcrFrame? {
-        return synchronized(ocrFrameLock) {
-            val previous = ocrFrameState.value
-            ocrFrameState.value = frame
-            previous
-        }
-    }
-
-    private fun sceneVideoInputSnapshot(mpv: SceneMpvSnapshot): SceneVideoInputSnapshot? {
         val video = currentVideo.value ?: return null
-        val source = currentSource.value
-        val videoHeaders = video.headers?.toList().orEmpty()
-        val sourceHeaders = (source as? AnimeHttpSource)?.headers?.toList().orEmpty()
-        val mergedHeaders = mergeSceneHeaders(sourceHeaders, videoHeaders)
-        val originalValue = video.videoUrl
-        val stableLocalFile = when {
-            originalValue.startsWith("/") -> File(originalValue).isFile
-            originalValue.startsWith("file://", ignoreCase = true) -> {
-                Uri.parse(originalValue).path?.let(::File)?.isFile == true
-            }
-            else -> false
-        }
+        val output = File(activity.cacheDir, "chimahon_sentence_audio_${System.currentTimeMillis()}.m4a")
+        return runCatching {
+            withIOContext {
+                output.delete()
 
-        return SceneVideoInputSnapshot(
-            originalVideoValue = originalValue,
-            playableValue = mpv.playableValue,
-            externalAudioValue = selectedExternalAudioValue(
-                mpvValue = mpv.selectedExternalAudioValue,
-                selectedAudioId = mpv.selectedAudioId,
-                selectedAudioIsExternal = mpv.selectedAudioIsExternal,
-            ),
-            headers = mergedHeaders,
-            ffmpegStreamArgs = video.ffmpegStreamArgs.toList(),
-            ffmpegVideoArgs = video.ffmpegVideoArgs.toList(),
-            episodeId = currentEpisode.value?.id,
-            sourceId = source?.id,
-            quality = video.videoTitle,
-            seekable = mpv.seekable ?: stableLocalFile,
-            // The source model exposes no trustworthy protection flag. The frozen input is
-            // fail-closed inspected before either FFmpeg scene or sentence-audio access.
-            torrent = originalValue.startsWith("magnet:", ignoreCase = true) ||
-                originalValue.substringBefore('?').endsWith(".torrent", ignoreCase = true),
-        )
+                // For video-only streams (e.g. YouTube DASH), use the separate audio track URL
+                val audioSource = video.audioTracks.firstOrNull()?.url
+                val rawInput = audioSource
+                    ?: MPVLib.getPropertyString("path")
+                        ?.takeIf { it.isNotBlank() }
+                    ?: video.videoUrl
+                val input = when {
+                    video.videoUrl.startsWith("content://") -> Uri.parse(video.videoUrl).toFFmpegString(activity)
+                    rawInput.startsWith("file://") -> Uri.parse(rawInput).path ?: rawInput
+                    else -> rawInput
+                }.replace("\"", "\\\"")
+
+                val source = currentSource.value as? AnimeHttpSource
+                val headers = video.headers ?: source?.headers
+                val headerOptions = if (rawInput.startsWith("http") && headers != null) {
+                    headers.joinToString("", "-headers '", "'") {
+                        "${it.first}: ${it.second.replace("'", "'\\''")}\r\n"
+                    }
+                } else {
+                    ""
+                }
+                val duration = (end - start).coerceIn(0.25, 30.0)
+                val command = listOf(
+                    headerOptions,
+                    "-ss ${start.coerceAtLeast(0.0).formatSeconds()}",
+                    "-t ${duration.formatSeconds()}",
+                    "-i \"$input\"",
+                    "-vn",
+                    "-map 0:a:0",
+                    "-c:a copy",
+                    "\"${output.absolutePath.replace("\"", "\\\"")}\"",
+                    "-y",
+                )
+                    .filter { it.isNotBlank() }
+                    .joinToString(" ")
+                val session = FFmpegSession.create(FFmpegKitConfig.parseArguments(command))
+                FFmpegKitConfig.ffmpegExecute(session)
+                if (ReturnCode.isSuccess(session.returnCode) && output.exists() && output.length() > 0L) {
+                    output.readBytes()
+                } else {
+                    session.failStackTrace?.let { logcat(LogPriority.WARN) { it } }
+                    null
+                }
+            }
+        }.onFailure {
+            logcat(LogPriority.WARN, it) { "Failed to capture subtitle sentence audio" }
+        }.getOrNull().also {
+            output.delete()
+        }
     }
 
-    private fun selectedExternalAudioValue(
-        mpvValue: String?,
-        selectedAudioId: Int?,
-        selectedAudioIsExternal: Boolean,
-    ): String? {
-        if (!selectedAudioIsExternal) return null
-        val selectedTrack = audioTracks.value.firstOrNull { it.id == selectedAudioId }
-        val selectedValue = mpvValue ?: selectedTrack?.externalFilename
-        if (selectedValue != null) {
-            val restored = currentEpisode.value?.id
-                ?.let(addedAudioTracksByEpisodeId::get)
-                ?.firstOrNull { it.path == selectedValue }
-            if (restored != null) {
-                return if (restored.isContentUri) restored.uriString else restored.path
-            }
-            if (
-                selectedValue.startsWith("http://", ignoreCase = true) ||
-                selectedValue.startsWith("https://", ignoreCase = true) ||
-                selectedValue.startsWith("content://", ignoreCase = true) ||
-                selectedValue.startsWith("file://", ignoreCase = true) ||
-                selectedValue.startsWith("/")
-            ) {
-                return selectedValue
-            }
-        }
-        return null
+    suspend fun captureVideoOcrAudioForAnki(): ByteArray? {
+        val centerSeconds = activity.player.timePos?.toDouble() ?: pos.value.toDouble()
+        val paddingSeconds = dictionaryPreferences.videoOcrSentenceAudioPaddingSeconds().get().toDouble()
+        return captureSubtitleAudioForAnki(
+            startSeconds = centerSeconds - paddingSeconds,
+            endSeconds = centerSeconds + paddingSeconds,
+        )
     }
 
     /**
@@ -3994,4 +3854,8 @@ fun CustomButton.executeLongPress() {
 
 fun Float.normalize(inMin: Float, inMax: Float, outMin: Float, outMax: Float): Float {
     return (this - inMin) * (outMax - outMin) / (inMax - inMin) + outMin
+}
+
+private fun Double.formatSeconds(): String {
+    return String.format(Locale.US, "%.3f", this)
 }

@@ -24,7 +24,6 @@ import kotlinx.collections.immutable.mutate
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
@@ -85,14 +84,12 @@ class AnimeLibraryScreenModel(
     State(activeCategoryIndex = preferences.lastUsedCategory().get()),
 ) {
 
-    private val searchQueryFlow = MutableStateFlow<String?>(null)
-
     init {
         screenModelScope.launchIO {
             combine(
                 getLibraryAnime.subscribe(),
                 getAnimeCategories.subscribe(),
-                searchQueryFlow.debounce(SEARCH_DEBOUNCE_MILLIS).distinctUntilChanged(),
+                state.map { it.searchQuery }.distinctUntilChanged().debounce(SEARCH_DEBOUNCE_MILLIS),
                 preferences.sortingMode().changes(),
                 preferences.filterUnseen().changes(),
                 preferences.filterStarted().changes(),
@@ -216,7 +213,7 @@ class AnimeLibraryScreenModel(
     }
 
     fun search(query: String?) {
-        searchQueryFlow.value = query
+        mutableState.update { it.copy(searchQuery = query) }
     }
 
     fun toggleSelection(anime: LibraryAnime) {

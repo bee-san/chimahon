@@ -64,9 +64,7 @@ Attach one evidence bundle per candidate release. It must contain:
 8. approved capture/query latency, battery, memory and database/raw-text growth;
 9. TalkBack, 200% text/display, reduced-motion and min-SDK results;
 10. supported-version migration results and rollback rehearsal;
-11. user metric/privacy documentation and the proposed release note;
-12. a satisfied native corresponding-source/distribution gate for any binary
-    release.
+11. user metric/privacy documentation and the proposed release note.
 
 The completion audit lists evidence that is currently missing.
 

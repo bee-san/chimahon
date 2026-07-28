@@ -156,7 +156,7 @@ class ReaderLoaderViewModel(
         val root = rootUrl ?: return
         val doc = BookStorage.loadEpub(root)
         val bookCopy = book.copy(lastAccess = System.currentTimeMillis())
-        BookStorage.save(bookCopy, root, FileNames.METADATA)
+        BookStorage.save(bookCopy, root, FileNames.metadata)
         document = doc
     }
 }
@@ -909,7 +909,7 @@ class ReaderViewModel(
                 lastModified = System.currentTimeMillis(),
             ),
             rootUrl,
-            FileNames.BOOKMARK,
+            FileNames.bookmark,
         )
         lastSavedChapterIndex = index
         lastSavedProgress = progress

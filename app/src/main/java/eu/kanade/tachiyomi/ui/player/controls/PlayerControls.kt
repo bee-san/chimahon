@@ -56,7 +56,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -105,7 +104,6 @@ import eu.kanade.tachiyomi.ui.player.controls.components.VolumeSlider
 import eu.kanade.tachiyomi.ui.player.controls.components.panels.SubtitlesBorderStyle
 import eu.kanade.tachiyomi.ui.player.controls.components.panels.toColorHexString
 import eu.kanade.tachiyomi.ui.player.controls.components.sheets.toFixed
-import eu.kanade.tachiyomi.ui.player.scene.SceneRangeCandidate
 import eu.kanade.tachiyomi.ui.player.settings.AudioPreferences
 import eu.kanade.tachiyomi.ui.player.settings.GesturePreferences
 import eu.kanade.tachiyomi.ui.player.settings.PlayerPreferences
@@ -115,10 +113,8 @@ import eu.kanade.tachiyomi.ui.reader.viewer.isLookupStartChar
 import eu.kanade.tachiyomi.util.system.toast
 import `is`.xyz.mpv.MPVLib
 import kotlinx.collections.immutable.toImmutableList
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import tachiyomi.domain.immersion.model.LookupStatus
 import tachiyomi.domain.immersion.service.LookupTelemetry
@@ -168,7 +164,7 @@ fun PlayerControls(
     val subtitlesVisible by viewModel.subtitlesVisible.collectAsState()
     val subtitleCues by viewModel.subtitleHistory.collectAsState()
     val activeSubtitleCueIndex by viewModel.activeSubtitleCueIndex.collectAsState()
-    val sceneMiningProgress by viewModel.sceneMiningProgress.collectAsState()
+    val primarySubtitleDelaySeconds by viewModel.primarySubtitleDelaySeconds.collectAsState()
     val panel by viewModel.panelShown.collectAsState()
     val activeSubtitleCue = remember(subtitleCues, activeSubtitleCueIndex) {
         subtitleCues.firstOrNull { it.index == activeSubtitleCueIndex }
@@ -178,9 +174,7 @@ fun PlayerControls(
     var isSeeking by remember { mutableStateOf(false) }
     var resetControls by remember { mutableStateOf(true) }
     var subtitleLookupRequest by remember { mutableStateOf<SubtitleLookupRequest?>(null) }
-    var subtitleLookupCaptureJob by remember { mutableStateOf<Job?>(null) }
     var wasPlayerAlreadyPause by remember { mutableStateOf(false) }
-    val subtitleLookupScope = rememberCoroutineScope()
     val customButtons by viewModel.customButtons.collectAsState()
     val customButton by viewModel.primaryButton.collectAsState()
 
@@ -206,22 +200,16 @@ fun PlayerControls(
         subtitleLookupRequest
             ?.lookupToken
             ?.let { lookupTelemetry.complete(it, LookupStatus.CANCELLED) }
-        subtitleLookupRequest
-            ?.sceneCaptureRequest
-            ?.let(viewModel::releaseSceneRequest)
         subtitleLookupRequest = null
     }
 
     fun dismissSubtitleLookup() {
-        subtitleLookupCaptureJob?.cancel()
-        subtitleLookupCaptureJob = null
         releaseSubtitleLookupRequest()
         if (!wasPlayerAlreadyPause) viewModel.unpause()
     }
 
     DisposableEffect(Unit) {
         onDispose {
-            subtitleLookupCaptureJob?.cancel()
             releaseSubtitleLookupRequest()
         }
     }
@@ -231,7 +219,6 @@ fun PlayerControls(
             dismissSubtitleLookup()
             return@openSubtitleLookup
         }
-        if (subtitleLookupCaptureJob?.isActive == true) return@openSubtitleLookup
         val currentPanel = viewModel.panelShown.value
         if (
             viewModel.sheetShown.value != Sheets.None ||
@@ -253,7 +240,7 @@ fun PlayerControls(
             provenance = interactionProvenance,
             allowAmbientFallback = false,
         )
-        val baseRequest = SubtitleLookupRequest(
+        subtitleLookupRequest = SubtitleLookupRequest(
             lookupString = subtitleLookup.lookupString,
             fullText = subtitleLookup.fullText,
             charOffset = subtitleLookup.charOffset,
@@ -269,29 +256,11 @@ fun PlayerControls(
             lineTop = subtitleLookup.lineTop,
             lineWidth = subtitleLookup.lineWidth,
             lineHeight = subtitleLookup.lineHeight,
+            cueStartSeconds = subtitleLookup.cueStartSeconds,
+            cueEndSeconds = subtitleLookup.cueEndSeconds,
             interactionProvenance = interactionProvenance,
             lookupToken = lookupToken,
         )
-        subtitleLookupCaptureJob = subtitleLookupScope.launch {
-            var sceneRequest: eu.kanade.tachiyomi.ui.player.scene.SceneCaptureRequest? = null
-            var handedOff = false
-            try {
-                sceneRequest = viewModel.captureSubtitleSceneRequest(
-                    parsedSubtitleCandidate = subtitleLookup.parsedSubtitleCandidate,
-                    playbackFallback = subtitleLookup.playbackFallback,
-                )
-                if (!isActive) return@launch
-                subtitleLookupRequest = baseRequest.copy(sceneCaptureRequest = sceneRequest)
-                sceneRequest = null
-                handedOff = true
-            } finally {
-                sceneRequest?.let(viewModel::releaseSceneRequest)
-                if (!handedOff) {
-                    lookupTelemetry.complete(lookupToken, LookupStatus.CANCELLED)
-                }
-                subtitleLookupCaptureJob = null
-            }
-        }
     }
     val togglePanel: (Panels) -> Unit = { panel ->
         viewModel.showPanel(
@@ -323,6 +292,7 @@ fun PlayerControls(
         PlayerSubtitleTextLayer(
             text = if (subtitlesVisible) currentSubtitleText else "",
             cue = activeSubtitleCue,
+            subtitleDelaySeconds = primarySubtitleDelaySeconds,
             request = subtitleLookupRequest,
             onLookup = openSubtitleLookup,
         )
@@ -886,16 +856,11 @@ fun PlayerControls(
             brightness = currentBrightness,
         )
 
-        val ocrFrame by viewModel.ocrFrame.collectAsState()
+        val ocrScreenshot by viewModel.ocrScreenshot.collectAsState()
         PlayerVideoOcrOverlay(
             viewModel = viewModel,
-            frame = ocrFrame,
+            screenshot = ocrScreenshot,
             onDismiss = dismissVideoOcr,
-        )
-
-        PlayerSceneMiningProgressDialog(
-            progress = sceneMiningProgress,
-            onCancel = viewModel::cancelSceneMiningPreCommit,
         )
     }
 
@@ -912,6 +877,7 @@ fun PlayerControls(
 private fun PlayerSubtitleTextLayer(
     text: String,
     cue: PlayerViewModel.SubtitleCue?,
+    subtitleDelaySeconds: Double,
     request: SubtitleLookupRequest?,
     onLookup: (SubtitleLookupSelection) -> Unit,
     modifier: Modifier = Modifier,
@@ -1035,17 +1001,17 @@ private fun PlayerSubtitleTextLayer(
                         )
                     }
                 }
-                .pointerInput(subtitleText, textLayout, textLayerOrigin, cue) {
+                .pointerInput(subtitleText, textLayout, textLayerOrigin, subtitleDelaySeconds) {
                     detectTapGestures(
                         onTap = { position ->
                             val layout = textLayout ?: return@detectTapGestures
-                            layout.subtitleLookupSelectionForTap(subtitleText, position, cue)
+                            layout.subtitleLookupSelectionForTap(subtitleText, position, cue, subtitleDelaySeconds)
                                 ?.offsetBy(textLayerOrigin)
                                 ?.let(onLookup)
                         },
                         onLongPress = { position ->
                             val layout = textLayout ?: return@detectTapGestures
-                            layout.subtitleLookupSelectionForTap(subtitleText, position, cue)
+                            layout.subtitleLookupSelectionForTap(subtitleText, position, cue, subtitleDelaySeconds)
                                 ?.offsetBy(textLayerOrigin)
                                 ?.let(onLookup)
                         },
@@ -1091,8 +1057,8 @@ private data class SubtitleLookupSelection(
     val lineWidth: Float,
     val lineHeight: Float,
     val cueIndex: Int? = null,
-    val parsedSubtitleCandidate: SceneRangeCandidate? = null,
-    val playbackFallback: SceneRangeCandidate? = null,
+    val cueStartSeconds: Double? = null,
+    val cueEndSeconds: Double? = null,
 )
 
 private fun String.hasLookupCharacters(): Boolean = any { it.isSubtitleLookupChar() }
@@ -1101,6 +1067,7 @@ private fun TextLayoutResult.subtitleLookupSelectionForTap(
     text: String,
     position: Offset,
     cue: PlayerViewModel.SubtitleCue?,
+    subtitleDelaySeconds: Double,
 ): SubtitleLookupSelection? {
     if (text.isBlank()) return null
     val offset = lookupOffsetForPosition(text, position) ?: return null
@@ -1131,10 +1098,8 @@ private fun TextLayoutResult.subtitleLookupSelectionForTap(
         lineWidth = lineBounds.width,
         lineHeight = lineBounds.height,
         cueIndex = cue?.index,
-        parsedSubtitleCandidate = cue?.sceneTimingCandidate,
-        // SubtitleCue positions are subtitle-file timestamps, even when the cue has no parsed end.
-        // The capture factory must build a MEDIA-clock fallback from the snapshotted mpv position.
-        playbackFallback = null,
+        cueStartSeconds = cue?.positionSeconds?.plus(subtitleDelaySeconds),
+        cueEndSeconds = cue?.endPositionSeconds?.plus(subtitleDelaySeconds),
     )
 }
 

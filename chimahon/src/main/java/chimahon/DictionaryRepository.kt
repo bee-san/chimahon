@@ -14,7 +14,7 @@ import java.util.LinkedHashMap
 
 class DictionaryRepository(
     private val externalFilesDir: File?,
-    private val koreanParserMode: () -> String = { KoreanParserMode.LEGACY },
+    private val koreanParserMode: () -> String = { KoreanParserMode.Legacy },
 ) {
     private var session: Long? = null
     val lookupSession: Long? get() = session
@@ -63,7 +63,7 @@ class DictionaryRepository(
 
         val effectiveLang = languageCode.lowercase()
 
-        val genericDeinflector = if (effectiveLang == "ko" && koreanParserMode() == KoreanParserMode.ANALYZER) {
+        val genericDeinflector = if (effectiveLang == "ko" && koreanParserMode() == KoreanParserMode.Analyzer) {
             KoreanAnalyzerDeinflector
         } else {
             chimahon.dictionary.DeinflectorRegistry.get(effectiveLang)
