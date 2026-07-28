@@ -6,6 +6,7 @@ import cafe.adriel.voyager.core.model.StateScreenModel
 import cafe.adriel.voyager.core.model.screenModelScope
 import dev.icerock.moko.resources.StringResource
 import eu.kanade.domain.animeextension.interactor.GetAnimeExtensionsByType
+import eu.kanade.domain.animeextension.model.AnimeExtensions
 import eu.kanade.domain.base.BasePreferences
 import eu.kanade.domain.source.service.SourcePreferences
 import eu.kanade.presentation.components.SEARCH_DEBOUNCE_MILLIS
@@ -30,6 +31,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.i18n.MR
+import tachiyomi.i18n.kmk.KMR
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import kotlin.time.Duration.Companion.seconds
@@ -62,33 +64,16 @@ class AnimeExtensionsScreenModel(
                     .map { searchQueryPredicate(it ?: "") },
                 currentDownloads,
                 getAnimeExtensions.subscribe(),
-            ) { predicate, downloads, (_updates, _installed, _available, _untrusted) ->
-                buildMap {
-                    val updates = _updates.filter(predicate).map(extensionMapper(downloads))
-                    if (updates.isNotEmpty()) {
-                        put(AnimeExtensionUiModel.Header.Resource(MR.strings.ext_updates_pending), updates)
-                    }
-
-                    val installed = _installed
-                        .filter(predicate)
-                        .map(extensionMapper(downloads))
-                    val untrusted = _untrusted.filter(predicate).map(extensionMapper(downloads))
-                    if (installed.isNotEmpty() || untrusted.isNotEmpty()) {
-                        put(AnimeExtensionUiModel.Header.Resource(MR.strings.ext_installed), installed + untrusted)
-                    }
-
-                    val languagesWithExtensions = _available
-                        .filter(predicate)
-                        .groupBy { it.lang }
-                        .toSortedMap(LocaleHelper.comparator)
-                        .map { (lang, exts) ->
-                            AnimeExtensionUiModel.Header.Text(LocaleHelper.getSourceDisplayName(lang, context)) to
-                                exts.map(extensionMapper(downloads))
-                        }
-                    if (languagesWithExtensions.isNotEmpty()) {
-                        putAll(languagesWithExtensions)
-                    }
-                }
+            ) { predicate, downloads, extensions ->
+                // Chimahon --> grouping extracted into a pure, testable function
+                buildAnimeExtensionItemGroups(
+                    extensions = extensions,
+                    predicate = predicate,
+                    toItem = extensionMapper(downloads),
+                    languageDisplayName = { LocaleHelper.getSourceDisplayName(it, context) },
+                    languageComparator = LocaleHelper.comparator,
+                )
+                // Chimahon <--
             }
                 .collectLatest { items ->
                     mutableState.update { state ->
@@ -228,6 +213,53 @@ class AnimeExtensionsScreenModel(
 }
 
 typealias AnimeItemGroups = Map<AnimeExtensionUiModel.Header, List<AnimeExtensionUiModel.Item>>
+
+// Chimahon -->
+/**
+ * Builds the ordered section groups shown on the anime extensions screen.
+ *
+ * Extracted as a pure function so section ordering — including the "Extensions from Sync" section
+ * placed directly after "Installed" — can be unit tested without the screen model, flows, or an
+ * Android context.
+ */
+internal fun buildAnimeExtensionItemGroups(
+    extensions: AnimeExtensions,
+    predicate: (AnimeExtension) -> Boolean,
+    toItem: (AnimeExtension) -> AnimeExtensionUiModel.Item,
+    languageDisplayName: (String) -> String,
+    languageComparator: (String, String) -> Int,
+): AnimeItemGroups = buildMap {
+    val (updates, installed, available, untrusted, fromSync) = extensions
+
+    val updateItems = updates.filter(predicate).map(toItem)
+    if (updateItems.isNotEmpty()) {
+        put(AnimeExtensionUiModel.Header.Resource(MR.strings.ext_updates_pending), updateItems)
+    }
+
+    val installedItems = installed.filter(predicate).map(toItem)
+    val untrustedItems = untrusted.filter(predicate).map(toItem)
+    if (installedItems.isNotEmpty() || untrustedItems.isNotEmpty()) {
+        put(AnimeExtensionUiModel.Header.Resource(MR.strings.ext_installed), installedItems + untrustedItems)
+    }
+
+    // Extensions remembered from sync and installable from this device's catalog, right after Installed.
+    val fromSyncItems = fromSync.filter(predicate).map(toItem)
+    if (fromSyncItems.isNotEmpty()) {
+        put(AnimeExtensionUiModel.Header.Resource(KMR.strings.extensions_from_sync), fromSyncItems)
+    }
+
+    val languagesWithExtensions = available
+        .filter(predicate)
+        .groupBy { it.lang }
+        .toSortedMap(languageComparator)
+        .map { (lang, exts) ->
+            AnimeExtensionUiModel.Header.Text(languageDisplayName(lang)) to exts.map(toItem)
+        }
+    if (languagesWithExtensions.isNotEmpty()) {
+        putAll(languagesWithExtensions)
+    }
+}
+// Chimahon <--
 
 object AnimeExtensionUiModel {
     sealed interface Header {

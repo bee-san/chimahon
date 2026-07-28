@@ -7,6 +7,7 @@ import cafe.adriel.voyager.core.model.screenModelScope
 import dev.icerock.moko.resources.StringResource
 import eu.kanade.domain.base.BasePreferences
 import eu.kanade.domain.extension.interactor.GetExtensionsByType
+import eu.kanade.domain.extension.model.Extensions
 import eu.kanade.domain.source.service.SourcePreferences
 import eu.kanade.presentation.components.SEARCH_DEBOUNCE_MILLIS
 import eu.kanade.tachiyomi.extension.ExtensionManager
@@ -74,50 +75,17 @@ class ExtensionsScreenModel(
                 // KMK <--
                 currentDownloads,
                 getExtensions.subscribe(),
-            ) { predicate, nsfwOnly, downloads, (_updates, _installed, _available, _untrusted) ->
-                buildMap {
-                    val updates = _updates.filter(predicate).map(extensionMapper(downloads))
-                        // KMK -->
-                        .filter { !nsfwOnly || it.extension.isNsfw }
-                    // KMK <--
-                    if (updates.isNotEmpty()) {
-                        put(ExtensionUiModel.Header.Resource(MR.strings.ext_updates_pending), updates)
-                    }
-
-                    val installed = _installed.filter(predicate).map(extensionMapper(downloads))
-                        // KMK -->
-                        .filter { !nsfwOnly || it.extension.isNsfw }
-                    // KMK <--
-                    val untrusted = _untrusted.filter(predicate).map(extensionMapper(downloads))
-                        // KMK -->
-                        .filter { !nsfwOnly || it.extension.isNsfw }
-                    // KMK <--
-                    if (installed.isNotEmpty() || untrusted.isNotEmpty()) {
-                        put(ExtensionUiModel.Header.Resource(MR.strings.ext_installed), installed + untrusted)
-                    }
-
-                    val languagesWithExtensions = _available
-                        .filter(predicate)
-                        // KMK -->
-                        .filter { !nsfwOnly || it.isNsfw }
-                        // KMK <--
-                        .groupBy { it.lang }
-                        .toSortedMap(LocaleHelper.comparator)
-                        .map { (lang, exts) ->
-                            ExtensionUiModel.Header.Text(LocaleHelper.getSourceDisplayName(lang, context)) to
-                                exts.map(extensionMapper(downloads))
-                        }
-                    if (languagesWithExtensions.isNotEmpty()) {
-                        putAll(languagesWithExtensions)
-                    }
-
-                    // KMK -->
-                    // Show "More..." header if no available extensions
-                    if (_available.isEmpty()) {
-                        put(ExtensionUiModel.Header.Resource(KMR.strings.extensions_page_more), emptyList())
-                    }
-                    // KMK <--
-                }
+            ) { predicate, nsfwOnly, downloads, extensions ->
+                // Chimahon --> grouping extracted into a pure, testable function
+                buildExtensionItemGroups(
+                    extensions = extensions,
+                    predicate = predicate,
+                    nsfwOnly = nsfwOnly,
+                    toItem = extensionMapper(downloads),
+                    languageDisplayName = { LocaleHelper.getSourceDisplayName(it, context) },
+                    languageComparator = LocaleHelper.comparator,
+                )
+                // Chimahon <--
             }
                 .collectLatest { items ->
                     mutableState.update { state ->
@@ -281,6 +249,64 @@ class ExtensionsScreenModel(
 }
 
 typealias ItemGroups = Map<ExtensionUiModel.Header, List<ExtensionUiModel.Item>>
+
+// Chimahon -->
+/**
+ * Builds the ordered section groups shown on the manga extensions screen.
+ *
+ * Extracted as a pure function so section ordering — including the "Extensions from Sync" section
+ * placed directly after "Installed" — can be unit tested without the screen model, flows, or an
+ * Android context.
+ */
+internal fun buildExtensionItemGroups(
+    extensions: Extensions,
+    predicate: (Extension) -> Boolean,
+    nsfwOnly: Boolean,
+    toItem: (Extension) -> ExtensionUiModel.Item,
+    languageDisplayName: (String) -> String,
+    languageComparator: (String, String) -> Int,
+): ItemGroups = buildMap {
+    val (updates, installed, available, untrusted, fromSync) = extensions
+
+    val updateItems = updates.filter(predicate).map(toItem)
+        .filter { !nsfwOnly || it.extension.isNsfw }
+    if (updateItems.isNotEmpty()) {
+        put(ExtensionUiModel.Header.Resource(MR.strings.ext_updates_pending), updateItems)
+    }
+
+    val installedItems = installed.filter(predicate).map(toItem)
+        .filter { !nsfwOnly || it.extension.isNsfw }
+    val untrustedItems = untrusted.filter(predicate).map(toItem)
+        .filter { !nsfwOnly || it.extension.isNsfw }
+    if (installedItems.isNotEmpty() || untrustedItems.isNotEmpty()) {
+        put(ExtensionUiModel.Header.Resource(MR.strings.ext_installed), installedItems + untrustedItems)
+    }
+
+    // Extensions remembered from sync and installable from this device's catalog, right after Installed.
+    val fromSyncItems = fromSync.filter(predicate).map(toItem)
+        .filter { !nsfwOnly || it.extension.isNsfw }
+    if (fromSyncItems.isNotEmpty()) {
+        put(ExtensionUiModel.Header.Resource(KMR.strings.extensions_from_sync), fromSyncItems)
+    }
+
+    val languagesWithExtensions = available
+        .filter(predicate)
+        .filter { !nsfwOnly || it.isNsfw }
+        .groupBy { it.lang }
+        .toSortedMap(languageComparator)
+        .map { (lang, exts) ->
+            ExtensionUiModel.Header.Text(languageDisplayName(lang)) to exts.map(toItem)
+        }
+    if (languagesWithExtensions.isNotEmpty()) {
+        putAll(languagesWithExtensions)
+    }
+
+    // Show "More..." header if no available extensions
+    if (available.isEmpty()) {
+        put(ExtensionUiModel.Header.Resource(KMR.strings.extensions_page_more), emptyList())
+    }
+}
+// Chimahon <--
 
 object ExtensionUiModel {
     sealed interface Header {

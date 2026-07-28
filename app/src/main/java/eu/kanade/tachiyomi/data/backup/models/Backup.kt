@@ -60,5 +60,8 @@ data class Backup(
     @ProtoNumber(710) var backupMangaStats: List<com.canopus.chimareader.data.MangaStats> = emptyList(),
     @ProtoNumber(711) var backupAnkiStats: List<com.canopus.chimareader.data.AnkiStats> = emptyList(),
     @ProtoNumber(712) var backupImmersionStats: tachiyomi.domain.immersion.model.ImmersionPortableArchive? = null,
+    // Remembered extension identities for the "Extensions from Sync" feature (package id + signing hash only)
+    @ProtoNumber(720) var backupMangaExtensions: List<BackupExtension> = emptyList(),
+    @ProtoNumber(721) var backupAnimeExtensions: List<BackupExtension> = emptyList(),
     // Chimahon <--
 )
