@@ -9,13 +9,13 @@ CREATE TABLE search_history (
 CREATE INDEX search_history_scope_time_idx ON search_history(scope, last_searched_at DESC, _id DESC);
 
 selectByScope:
-SELECT * FROM search_history 
-WHERE scope = :scope 
-ORDER BY last_searched_at DESC, _id DESC 
+SELECT * FROM search_history
+WHERE scope = :scope
+ORDER BY last_searched_at DESC, _id DESC
 LIMIT :limit;
 
 selectAll:
-SELECT * FROM search_history 
+SELECT * FROM search_history
 ORDER BY last_searched_at DESC, _id DESC;
 
 upsertQuery:
@@ -32,11 +32,11 @@ clearAll:
 DELETE FROM search_history;
 
 deleteOldEntries:
-DELETE FROM search_history 
-WHERE scope = :scope 
+DELETE FROM search_history
+WHERE scope = :scope
   AND _id NOT IN (
-    SELECT _id FROM search_history 
-    WHERE scope = :scope 
-    ORDER BY last_searched_at DESC, _id DESC 
+    SELECT _id FROM search_history
+    WHERE scope = :scope
+    ORDER BY last_searched_at DESC, _id DESC
     LIMIT :limit
 );
