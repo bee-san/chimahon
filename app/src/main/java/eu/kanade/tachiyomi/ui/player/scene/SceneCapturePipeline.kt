@@ -271,7 +271,10 @@ internal class SceneCapturePipeline(
         currentCoroutineContext().ensureActive()
         val validation = AnimatedWebpValidator.validate(muxedOutput)
         val valid = validation as? AnimatedWebpValidation.Valid
-            ?: return SceneCaptureResult.Failure(SceneCaptureFailureReason.INVALID_ANIMATED_WEBP)
+            ?: return SceneCaptureResult.Failure(
+                reason = SceneCaptureFailureReason.INVALID_ANIMATED_WEBP,
+                detail = (validation as AnimatedWebpValidation.Invalid).reason,
+            )
 
         currentCoroutineContext().ensureActive()
         reportProgress(SceneCaptureProgress.Hashing)

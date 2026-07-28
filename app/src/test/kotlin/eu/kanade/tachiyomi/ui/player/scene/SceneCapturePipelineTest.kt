@@ -187,6 +187,23 @@ class SceneCapturePipelineTest {
     }
 
     @Test
+    fun `invalid animated WebP includes the validator diagnostic`() = runTest {
+        val pipeline = pipeline(
+            executor = FakeCommandExecutor(muxedOutput = byteArrayOf(1, 2, 3)),
+            dispatcher = StandardTestDispatcher(testScheduler),
+        )
+
+        assertEquals(
+            SceneCaptureResult.Failure(
+                reason = SceneCaptureFailureReason.INVALID_ANIMATED_WEBP,
+                detail = "Truncated RIFF header",
+            ),
+            pipeline.capture(request()),
+        )
+        assertJobFilesCleaned()
+    }
+
+    @Test
     fun `hard timeout is a failure distinct from cancellation and closes input lease`() = runTest {
         val executor = FakeCommandExecutor(blockProbe = true)
         val inputAcquirer = FakeInputAcquirer()
@@ -456,6 +473,7 @@ class SceneCapturePipelineTest {
         private val extractedFrameCount: Int = 2,
         private val blockProbe: Boolean = false,
         private val probeCancelled: Boolean = false,
+        private val muxedOutput: ByteArray = animatedWebp(),
     ) : SceneCommandExecutor {
         var ffmpegCalls = 0
         var ffprobeCalls = 0
@@ -484,7 +502,7 @@ class SceneCapturePipelineTest {
                         .writeBytes(byteArrayOf(1))
                 }
             } else {
-                File(output).writeBytes(animatedWebp())
+                File(output).writeBytes(muxedOutput)
             }
             return SceneCommandResult.Success()
         }

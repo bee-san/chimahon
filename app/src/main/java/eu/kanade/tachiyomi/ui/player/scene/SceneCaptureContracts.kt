@@ -96,6 +96,7 @@ internal sealed interface SceneCaptureResult {
 
     data class Failure(
         val reason: SceneCaptureFailureReason,
+        val detail: String? = null,
     ) : SceneCaptureResult
 
     data object Cancelled : SceneCaptureResult

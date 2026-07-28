@@ -18,20 +18,31 @@ internal class AndroidSceneWebpFrameEncoder : SceneWebpFrameEncoder {
                 inPreferredConfig = Bitmap.Config.ARGB_8888
             },
         ) ?: return@withContext false
+        var encodedFile: File? = null
 
         try {
+            val temporaryFile = File.createTempFile(
+                "${webpFile.name}.",
+                ".encoded",
+                webpFile.parentFile,
+            )
+            encodedFile = temporaryFile
             val format = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 Bitmap.CompressFormat.WEBP_LOSSY
             } else {
                 @Suppress("DEPRECATION")
                 Bitmap.CompressFormat.WEBP
             }
-            val encoded = webpFile.outputStream().buffered().use { output ->
+            val encoded = temporaryFile.outputStream().buffered().use { output ->
                 bitmap.compress(format, WEBP_QUALITY, output)
             }
-            encoded && webpFile.isFile && webpFile.length() > 0L
+            encoded &&
+                temporaryFile.isFile &&
+                temporaryFile.length() > 0L &&
+                StaticWebpFrameSanitizer.sanitize(temporaryFile, webpFile)
         } finally {
             bitmap.recycle()
+            encodedFile?.delete()
             if (!webpFile.isFile || webpFile.length() <= 0L) {
                 webpFile.delete()
             }
