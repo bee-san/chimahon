@@ -14,6 +14,220 @@ Target branch: `feat/stats`
 Target product: Chimahon / Komikku Android app
 Primary goal: make every meaningful unit of reading and mining measurable from a day down to a title, session, source line, word, and Unicode character.
 
+## Current execution checkpoint (2026-07-28)
+
+**Release status:** the statistics implementation and release-pipeline
+hardening are merged into the fork's `main` at
+`2151ec33c2b897a1157cb16f422aba915f529127`, but `v2.5.0` is **not
+released**. The representative-device evidence gate is still blocked. The
+GitHub release is an unpublished draft with no tag and no assets.
+
+This checkpoint records the upstream merge, release preparation, and
+device-evidence work performed after the implementation audit below. It is the
+resume point for release work; unchecked validation entries elsewhere in this
+plan remain unchecked.
+
+### Completed and merged
+
+- Completed the locally verifiable statistics implementation and hardening,
+  including atomic session start, hourly rollups, Overview/widget filter
+  parity, vocabulary/title/character/Anki analytics, deletion and forecast
+  hardening, knownness timelines, and heartbeat compaction.
+- Merged PR
+  [#1](https://github.com/bee-san/chimahon/pull/1), which brought the
+  statistics work and `v2.5.0` release notes onto the fork.
+- Fetched current `upstream/main`, merged it into the fork, and resolved the
+  fork delta as requested: upstream image/GIF behavior was retained while the
+  statistics work was preserved. The experimental animated-scene device PR
+  was closed without merging.
+- Merged the upstream synchronization as PR
+  [#5](https://github.com/bee-san/chimahon/pull/5). Its CI follow-ups allow
+  preview builds without an optional OAuth file and initialize recursive
+  native submodules.
+- Restored idempotent merged-branch cleanup in PR
+  [#6](https://github.com/bee-san/chimahon/pull/6).
+- Restored the compliant release workflow and its evidence inputs in PR
+  [#7](https://github.com/bee-san/chimahon/pull/7). This includes native
+  corresponding-source packaging, source/license notices, release artifact
+  verification, signing checks, checksums, and the machine-readable native
+  and statistics evidence manifests.
+- Created the draft GitHub release `Chimahon v2.5.0`, targeting
+  `2151ec33c2b897a1157cb16f422aba915f529127`. It remains deliberately
+  unpublished and has no tag or assets.
+- Recovered the Android OAuth configuration from the official upstream
+  Chimahon `v2.3.0` APK without printing or committing its values, then set
+  the fork's `GOOGLE_CLIENT_SECRETS_JSON` GitHub Actions secret.
+- Identified that the release workflow incorrectly required desktop OAuth
+  fields (`client_secret` and `redirect_uris`) that the Android runtime does
+  not use. Commit `95e6cab5510c842452da89db28fb47b1fac47f57`
+  corrects validation to require the runtime Android fields.
+- Opened PR
+  [#8](https://github.com/bee-san/chimahon/pull/8) for that OAuth validation
+  fix. Hosted build run `30364693409` ("Build app") and `label_pr` both
+  completed successfully, and the PR was merged to `main` as squash commit
+  `eda2900422cbbaf81a9a6f5b3ea0b95dd2062234`.
+
+### Device-evidence preparation completed
+
+- Created worktree `/local/home/skerraut/work/chimahon-release-evidence` on
+  feature branch `test/release-device-evidence`, based on
+  `2151ec33c2b897a1157cb16f422aba915f529127`.
+- Added, but did not commit, Android instrumentation dependencies, a
+  debug-only `StatsReleaseValidationActivity`, and
+  `ImmersionStatsDeviceValidationTest`.
+- The initial instrumentation test uses the production SQLDelight repository,
+  resets its fixture state, persists title/session/source/exposure data,
+  verifies the Overview query, and writes privacy-safe JSON under the
+  app-specific external `release-evidence` directory.
+- Ran `spotlessApply` and successfully compiled the instrumentation source
+  with `:app:compileDebugAndroidTestKotlin`.
+- Initialized all recursive native submodules after the first package attempt
+  exposed missing native source checkouts.
+- Installed the Android API 26 Google APIs x86_64 system image and created AVD
+  `chimahon_api26`.
+- Booted the API 26 AVD and began
+  `:app:connectedDebugAndroidTest
+  -Pandroid.injected.build.abi=x86_64`. Packaging reached the debug and test
+  APK tasks. The run was stopped at the user's request before installation or
+  test execution, so it produced no accepted device result.
+- Downloaded official AnkiDroid `2.24.0` x86_64 to
+  `/tmp/ankidroid-2.24-x86_64.apk`; its SHA-256 is
+  `b8aaef8c8ed13e96b7bbafbc46e690490684192147ab445db8a193c4ef6989b0`.
+- Cloned current Google TalkBack source to `/tmp/google-talkback` at
+  `229212fdf5842191d0a93fc95d9ca1423b346866` and unpacked Gradle `8.13`
+  under `/tmp/gradle-8.13` for its build.
+
+### Device-evidence runs executed on 2026-07-28
+
+Full log, environment, commands, and limitations:
+`docs/implementation/immersion-stats-device-evidence-2026-07-28.md`.
+Artifacts and checksums: `docs/implementation/evidence/2026-07-28-api26/`.
+
+- Discovered the host has **no KVM** (`/dev/kvm` absent, no `vmx`/`svm`), so
+  the API 26 AVD only boots with `-accel off`. Every duration measured on this
+  host is therefore unrepresentative, which is what still blocks all
+  performance rows.
+- `:app:connectedDebugAndroidTest` fails on this host with UTP `ErrorCode 2002`
+  before running any test (`Starting 0 tests`). The same APKs install fine over
+  `adb`, so this is an install timeout under software emulation, not a
+  packaging defect. Tests were driven with `adb shell am instrument`.
+- Completed three instrumentation runs against the production SQLDelight
+  repository on API 26, each passing and each writing a privacy-safe JSON
+  artifact that was pulled and hashed:
+  - repository smoke (`ImmersionStatsDeviceValidationTest`), SHA-256
+    `5aa71237dc931a45b13eed074fa546ac55203614cebbf96a173fb58cb341dd37`;
+  - scale/growth/timeline (`ImmersionStatsDeviceScaleTest`), SHA-256
+    `18004b3528d177ea8481899bc9fe0474cdba5726f12caab788f5bcff508a0f39`;
+  - live AnkiDroid probe (`ImmersionStatsAnkiDroidProviderTest`), SHA-256
+    `da52ede57c86ddfe118b56efbfc68c0716c39ae13faca1fb97a2a738e755f7a9`.
+- Added `ImmersionStatsDeviceScaleTest`: 2 500 source units × 40 distinct CJK
+  code points (100 000 gross characters) through the production repository.
+  It measured real database growth of **8 024 304 bytes (3 209 B per source
+  unit)** and asserted a 120-bucket session timeline that reconciles exactly
+  with the Overview gross total. Byte growth is deterministic and does not
+  depend on host speed; the timings in the same artifact do.
+- Added `ImmersionStatsAnkiDroidProviderTest` and ran the production
+  `AnkiDroidInventoryProvider` against the **official AnkiDroid 2.24.0 APK,
+  not a mock**. The live provider probed `AVAILABLE` at version `2.24.0`,
+  a disabled integration correctly probed `UNAVAILABLE`/`DISABLED` rather than
+  degrading to "all unknown", and the declared capability limits
+  (`cardModificationTime = false`, `reviewHistory = false`) were confirmed.
+- Only `emulator-5556` (`chimahon_api26`) was targeted. An unrelated emulator
+  from another task remained attached as `emulator-5554` and was never
+  installed to, instrumented, or stopped.
+
+### Deliberately incomplete and unverified
+
+- Every one of the 17 entries in
+  `docs/immersion-stats-release-validation.json` remains `false`, and
+  `releaseGate` remains `blocked`. The three 2026-07-28 runs are recorded
+  there as evidence objects with `"decision": "recorded-not-accepted"` and
+  `"qualifiesMatrixEntry": false`.
+- **No matrix row was flipped by the 2026-07-28 runs, and none may be until
+  they are re-run on a KVM-accelerated or physical device and reviewed.** The
+  documented bar also requires a named reviewer and an explicit pass decision;
+  no human has reviewed these runs.
+- No screenshot, macro/microbenchmark, or accessibility report has been
+  produced or attached.
+- TalkBack has not been built, installed, or exercised. Cloning its source is
+  not a passing result.
+- The AnkiDroid work covers capability probing only. The `ankiAcceptance`
+  scenario additionally needs knownness and maturity against a real collection
+  containing new, learning, young, and mature cards; AnkiDroid could not be
+  driven past `IntroductionActivity` because the emulator's System UI enters
+  ANR under software emulation.
+- Recorder wake/write measurements, TalkBack pass, 200% text/display pass,
+  reduced-motion pass, visual matrix, supported-version upgrades, and
+  release/min-SDK migration run remain open. The GUI-dependent rows are
+  **unexecutable on this host** and need a different device.
+- Database/raw-text growth is now measured once at 100k characters, but the
+  storage forecast (P20-09, P20-10) still needs week/year/multi-year profiles
+  before it can be called stable.
+- The seven final acceptance scenarios (novel, manga/OCR, video, Anki
+  knownness, goals, privacy/deletion, and backup/multi-device) remain open.
+- The evidence branch changes span `app/build.gradle.kts`,
+  `gradle/androidx.versions.toml`, `app/src/androidTest/`, `app/src/debug/`,
+  `docs/immersion-stats-release-validation.json`,
+  `docs/implementation/immersion-stats-device-evidence-2026-07-28.md`,
+  `docs/implementation/evidence/2026-07-28-api26/`, and this plan file.
+- No annotated `v2.5.0` tag exists, no release workflow has produced final
+  assets, no APK signature/version has been release-verified, and the draft
+  has not been published.
+- The release remains an opt-in preview with legacy dual-write. This evidence
+  work does not authorize legacy read-only mode or legacy writer retirement.
+
+### Next steps
+
+1. **Obtain a qualifying device.** This is now the top blocker. Use a physical
+   Android device or a host exposing `/dev/kvm`. The instrumentation harness on
+   this branch is reusable as-is; only the environment must change. Every
+   performance, accessibility, and acceptance row depends on this.
+2. Re-run the three existing evidence classes on that device, then have a named
+   reviewer record an explicit pass decision. Only then may the corresponding
+   matrix rows change.
+3. Extend the harness for recorder wake/write behavior and for
+   week/year/multi-year growth profiles so the storage forecast becomes stable.
+4. Build and install the official TalkBack source (already cloned at
+   `/tmp/google-talkback`) and drive the AnkiDroid acceptance scenario against
+   a real collection containing new, learning, young, and mature cards. Do not
+   replace either row with mocks.
+5. Run TalkBack, 200% text/display, reduced-motion, and the required
+   light/dark/device visual configurations. Capture privacy-reviewed,
+   immutable reports/screenshots with SHA-256 values.
+6. Exercise upgrades from supported prior stats builds and validate the
+   release build on API 26, including the real SQLDelight migration.
+7. Execute and document all seven final acceptance scenarios. Keep a matrix
+   entry `false` unless its complete evidence object exists.
+8. Run the repository gates in order:
+   `./gradlew spotlessApply`, `./gradlew spotlessCheck`, then
+   `./gradlew assembleDebug`, followed by the targeted statistics,
+   instrumentation, migration, and release tests.
+9. Commit and push the evidence branch, open a PR, publish evidence artifacts
+   at immutable URLs, and update only genuinely passing rows in
+   `docs/immersion-stats-release-validation.json`.
+10. Merge the evidence PR only after review and hosted CI. Create and push an
+    annotated `v2.5.0` tag at that final reviewed commit.
+11. Monitor the tag-triggered release workflow. Verify checksums, APK signing
+    certificate, package/version identity, native corresponding-source
+    archive, source revision, and all release attestations.
+12. Attach the verified artifacts to the existing draft, perform a clean
+    install/upgrade smoke check from those exact assets, and only then publish
+    the release. Recheck the public release page, tag, asset URLs, and hashes
+    after publication.
+
+### Stopped state (2026-07-28, after the device-evidence session)
+
+- PR #8 is merged to `main` as `eda2900422`; hosted checks passed first.
+- Three API 26 instrumentation runs passed and their artifacts are stored under
+  `docs/implementation/evidence/2026-07-28-api26/` with a `SHA256SUMS` file.
+- `docs/immersion-stats-release-validation.json` still has all 17 matrix rows
+  `false` and `releaseGate: blocked`. It now also carries three evidence
+  objects explicitly marked not accepted.
+- The `chimahon_api26` emulator may still be running on port 5556. The
+  unrelated `emulator-5554` from another task was left untouched.
+- The draft release remains unpublished with no tag and no assets.
+- `v2.5.0` must not be tagged or published from this state.
+
 ## 1. Executive summary
 
 Chimahon already records useful daily totals for novels and manga, plus daily Anki card counts. The current model is intentionally small: JSON aggregates store characters, time, speed, completion, and cards, while the Stats screen joins those totals with library and history data. That is enough for "how much did I read?" but not for:

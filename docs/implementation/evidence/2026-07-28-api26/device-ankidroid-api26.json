@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "evidenceKind": "live-ankidroid-provider-probe",
+  "appCommit": "2151ec33c2",
+  "buildType": "debug",
+  "apiLevel": 26,
+  "androidRelease": "8.0.0",
+  "abi": "x86_64",
+  "ankiDroidPackage": "com.ichi2.anki",
+  "ankiDroidVersion": "2.24.0",
+  "permissionGranted": true,
+  "mocked": false,
+  "capabilityState": "AVAILABLE",
+  "reportedPackageVersion": "2.24.0",
+  "noteModificationTime": true,
+  "cardModificationTime": false,
+  "reviewHistory": false,
+  "disabledProbeState": "UNAVAILABLE",
+  "disabledProbeFailure": "DISABLED",
+  "probeNanos": 1492392795,
+  "decision": "pass"
+}
