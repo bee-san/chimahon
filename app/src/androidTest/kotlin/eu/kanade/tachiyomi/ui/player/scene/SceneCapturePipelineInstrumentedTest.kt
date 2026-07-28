@@ -1,8 +1,11 @@
 package eu.kanade.tachiyomi.ui.player.scene
 
 import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
 import android.graphics.Movie
+import android.graphics.drawable.AnimatedImageDrawable
 import android.net.Uri
+import android.os.Build
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.LargeTest
 import androidx.test.filters.SdkSuppress
@@ -126,9 +129,19 @@ class SceneCapturePipelineInstrumentedTest {
                 firstFrame?.recycle()
             }
 
-            val movie = Movie.decodeFile(success.output.file.absolutePath)
-            assertNotNull("Android Movie could not open the animated WebP", movie)
-            assertTrue("Animated WebP reported no playback duration", movie!!.duration() > 0)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val drawable = ImageDecoder.decodeDrawable(
+                    ImageDecoder.createSource(success.output.file),
+                )
+                assertTrue(
+                    "Android ImageDecoder did not return an animated WebP drawable",
+                    drawable is AnimatedImageDrawable,
+                )
+            } else {
+                val movie = Movie.decodeFile(success.output.file.absolutePath)
+                assertNotNull("Android Movie could not open the animated WebP", movie)
+                assertTrue("Animated WebP reported no playback duration", movie!!.duration() > 0)
+            }
         } finally {
             success.output.close()
         }
