@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "candidate": "v2.5.0",
+  "rollout": "opt-in-preview-with-legacy-dual-write",
+  "releaseGate": "blocked",
+  "reason": "Representative-device performance, accessibility, upgrade, migration, and end-to-end acceptance evidence is incomplete.",
+  "evidence": [],
+  "matrix": {
+    "knownnessTimelinePerformance": false,
+    "captureAndQueryPerformance": false,
+    "recorderWakeAndWriteBehavior": false,
+    "databaseAndRawTextGrowth": false,
+    "talkBack": false,
+    "largeTextAndDisplay": false,
+    "reducedMotion": false,
+    "visualConfigurationMatrix": false,
+    "supportedVersionUpgrades": false,
+    "releaseMinSdkAndMigration": false,
+    "novelAcceptance": false,
+    "mangaOcrAcceptance": false,
+    "videoAcceptance": false,
+    "ankiAcceptance": false,
+    "goalsAcceptance": false,
+    "privacyAndDeletionAcceptance": false,
+    "backupAndMultiDeviceAcceptance": false
+  }
+}

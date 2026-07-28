@@ -63,6 +63,13 @@ jobs:
       - name: Check code format
         run: ./gradlew spotlessCheck
 
+      - name: Verify release compliance metadata and task wiring
+        run: |
+          ./gradlew \
+            :app:verifyNativeSourceCompliance \
+            :app:verifyImmersionStatsReleaseValidationMetadata \
+            :app:verifyReleaseComplianceTaskWiring
+
       - name: Build app
         if: github.repository == github.event.pull_request.head.repo.full_name && env.HAS_GOOGLE_CLIENT_SECRETS == 'true'
         run: ./gradlew assemblePreview -Pinclude-telemetry -Penable-updater
