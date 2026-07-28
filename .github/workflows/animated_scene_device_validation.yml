@@ -1,0 +1,128 @@
+name: Animated Scene Device Validation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/animated_scene_device_validation.yml'
+      - '.gitmodules'
+      - 'app/build.gradle.kts'
+      - 'app/src/androidTest/**'
+      - 'app/src/main/java/eu/kanade/tachiyomi/ui/player/scene/**'
+      - 'buildSrc/**'
+      - 'docs/animated-scene-device-validation.*'
+      - 'gradle/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scene-pipeline:
+    name: Scene pipeline (API ${{ matrix.api-level }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - api-level: 29
+            encoding-path: api26To29Webp
+          - api-level: 35
+            encoding-path: api30PlusWebpLossy
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Checkout submodules
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --recursive
+
+      - name: Set up JDK
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0
+        with:
+          java-version-file: .github/.java-version
+          distribution: temurin
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Prepare evidence metadata
+        env:
+          API_LEVEL: ${{ matrix.api-level }}
+          ENCODING_PATH: ${{ matrix.encoding-path }}
+        run: |
+          set -euo pipefail
+          evidence_dir="build/device-validation/api-$API_LEVEL"
+          mkdir -p "$evidence_dir"
+          {
+            echo "tested_commit=$(git rev-parse HEAD)"
+            echo "api_level=$API_LEVEL"
+            echo "encoding_path=$ENCODING_PATH"
+            echo "test_class=eu.kanade.tachiyomi.ui.player.scene.SceneCapturePipelineInstrumentedTest"
+            sha256sum app/src/androidTest/assets/scene_capture_rotated_sdr.mp4
+          } > "$evidence_dir/environment.txt"
+
+      - name: Run packaged scene pipeline
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        env:
+          API_LEVEL: ${{ matrix.api-level }}
+        with:
+          api-level: ${{ matrix.api-level }}
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          cores: 2
+          ram-size: 3072M
+          heap-size: 512M
+          disk-size: 6G
+          emulator-boot-timeout: 900
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          script: |
+            set -euo pipefail
+            evidence_dir="build/device-validation/api-$API_LEVEL"
+            {
+              echo "device_serial=$(adb get-serialno)"
+              echo "device_api=$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
+              echo "device_model=$(adb shell getprop ro.product.model | tr -d '\r')"
+              echo "device_abi=$(adb shell getprop ro.product.cpu.abi | tr -d '\r')"
+              echo "device_fingerprint=$(adb shell getprop ro.build.fingerprint | tr -d '\r')"
+            } >> "$evidence_dir/environment.txt"
+
+            set +e
+            ./gradlew :app:connectedDebugAndroidTest \
+              -Pandroid.testInstrumentationRunnerArguments.class=eu.kanade.tachiyomi.ui.player.scene.SceneCapturePipelineInstrumentedTest
+            test_status=$?
+            set -e
+
+            echo "gradle_exit_code=$test_status" >> "$evidence_dir/environment.txt"
+            adb logcat -d -v threadtime > "$evidence_dir/logcat.txt" || true
+            exit "$test_status"
+
+      - name: Upload device evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: animated-scene-api-${{ matrix.api-level }}-attempt-${{ github.run_attempt }}
+          path: |
+            build/device-validation/api-${{ matrix.api-level }}
+            app/build/outputs/androidTest-results/connected
+            app/build/reports/androidTests/connected
+          if-no-files-found: error
+          retention-days: 90
