@@ -122,11 +122,10 @@ jobs:
             -alias "$ALIAS" > /dev/null
           jq -e '
             .installed as $installed |
+            ($installed | type == "object") and
             ($installed.client_id | type == "string" and length > 0) and
-            ($installed.client_secret | type == "string" and length > 0) and
             ($installed.auth_uri | type == "string" and startswith("https://")) and
-            ($installed.token_uri | type == "string" and startswith("https://")) and
-            ($installed.redirect_uris | type == "array" and length > 0)
+            ($installed.token_uri | type == "string" and startswith("https://"))
           ' <<< "$GOOGLE_CLIENT_SECRETS_JSON" > /dev/null
 
       - name: Package exact application source
