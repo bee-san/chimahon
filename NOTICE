@@ -11,26 +11,3 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-
-Chimahon also distributes native multimedia components. Their license terms
-and notices are shown in the app's Open source licenses screen. Exact
-Corresponding Source links and checksums are recorded in
-docs/native-distribution-compliance.md.
-
-FFmpegKit Android wrapper
-Copyright (c) Taner Sener
-Licensed under GNU LGPL version 3 or, at your option, any later version.
-https://github.com/bee-san/ffmpeg-kit/tree/6a937c79cea09748385215891b68bf7d78215f81
-
-FFmpeg native libraries bundled by FFmpegKit
-Copyright (c) 2000-2024 the FFmpeg developers
-The distributed build enables GPL and version-3 components and is licensed
-under GNU GPL version 3 or later terms.
-https://ffmpeg.org/
-
-Aniyomi mpv Android library
-Copyright (c) 2016 Ilya Zhuravlev
-Copyright (c) 2016 sfan5 <sfan5@live.de>
-The Android wrapper is licensed under MIT terms. Its native payload includes
-GPL-covered mpv and FFmpeg components; see the in-app compound license entry.
-https://github.com/bee-san/aniyomi-mpv-lib/tree/ff7447ea918eb460bf379cc8de16e076865b067b

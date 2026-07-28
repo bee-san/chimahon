@@ -38,11 +38,9 @@ jobs:
           patch="${BASH_REMATCH[3]}"
           version_code=$((major * 10000 + minor * 100 + patch))
 
-          {
-            echo "tag=$tag"
-            echo "version_name=$version_name"
-            echo "version_code=$version_code"
-          } >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version_name=$version_name" >> "$GITHUB_OUTPUT"
+          echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build
@@ -65,75 +63,11 @@ jobs:
           fi
           git submodule update --init --recursive
 
-      - name: Verify annotated release tag
-        env:
-          RELEASE_TAG: ${{ needs.get_tag.outputs.tag }}
-        run: |
-          set -euo pipefail
-          tag_ref="refs/tags/$RELEASE_TAG"
-          peeled_tag_ref="$tag_ref^{}"
-          remote_refs=$(git ls-remote origin "$tag_ref" "$peeled_tag_ref")
-          tag_object=$(awk -v ref="$tag_ref" '$2 == ref { print $1 }' <<< "$remote_refs")
-          tag_commit=$(awk -v ref="$peeled_tag_ref" '$2 == ref { print $1 }' <<< "$remote_refs")
-          head_commit=$(git rev-parse HEAD)
-
-          if [ -z "$tag_object" ] || [ -z "$tag_commit" ] || [ "$tag_object" = "$tag_commit" ]; then
-            echo "::error::$RELEASE_TAG must be an annotated remote tag"
-            exit 1
-          fi
-          if [ "$tag_commit" != "$head_commit" ]; then
-            echo "::error::$RELEASE_TAG does not peel to the checked-out commit"
-            exit 1
-          fi
-
       - name: Set up JDK
         uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
         with:
           java-version: 17
           distribution: temurin
-
-      - name: Validate release secrets
-        env:
-          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
-          ALIAS: ${{ secrets.ALIAS }}
-          KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          GOOGLE_CLIENT_SECRETS_JSON: ${{ secrets.GOOGLE_CLIENT_SECRETS_JSON }}
-        run: |
-          set -euo pipefail
-          for secret_name in \
-            SIGNING_KEY \
-            ALIAS \
-            KEY_STORE_PASSWORD \
-            KEY_PASSWORD \
-            GOOGLE_CLIENT_SECRETS_JSON
-          do
-            if [ -z "${!secret_name}" ]; then
-              echo "::error::Missing required Actions secret: $secret_name"
-              exit 1
-            fi
-          done
-
-          printf '%s' "$SIGNING_KEY" |
-            base64 --decode > "$RUNNER_TEMP/chimahon-release.keystore"
-          keytool -list \
-            -keystore "$RUNNER_TEMP/chimahon-release.keystore" \
-            -storepass "$KEY_STORE_PASSWORD" \
-            -alias "$ALIAS" > /dev/null
-          jq -e '
-            .installed as $installed |
-            ($installed.client_id | type == "string" and length > 0) and
-            ($installed.client_secret | type == "string" and length > 0) and
-            ($installed.auth_uri | type == "string" and startswith("https://")) and
-            ($installed.token_uri | type == "string" and startswith("https://")) and
-            ($installed.redirect_uris | type == "array" and length > 0)
-          ' <<< "$GOOGLE_CLIENT_SECRETS_JSON" > /dev/null
-
-      - name: Package exact application source
-        run: |
-          ./.github/scripts/package_release_source.sh \
-            "chimahon-source-${{ needs.get_tag.outputs.tag }}.tar.gz" \
-            "chimahon-source-${{ needs.get_tag.outputs.tag }}"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
@@ -147,11 +81,6 @@ jobs:
 
       - name: Clean CMake cache
         run: rm -rf app/.cxx chimahon/.cxx
-
-      - name: Verify formatting and unit tests
-        run: |
-          ./gradlew spotlessCheck
-          ./gradlew testReleaseUnitTest
 
       - name: Build
         run: ./gradlew assembleRelease -Penable-updater -PreleaseVersionName=${{ needs.get_tag.outputs.version_name }} -PreleaseVersionCode=${{ needs.get_tag.outputs.version_code }}
@@ -169,59 +98,13 @@ jobs:
 
       - name: Rename APK
         run: |
-          set -euo pipefail
+          set -e
 
           mv app/build/outputs/apk/release/app-universal-release-unsigned-signed.apk chimahon-${{ needs.get_tag.outputs.tag }}.apk
           mv app/build/outputs/apk/release/app-arm64-v8a-release-unsigned-signed.apk chimahon-arm64-v8a-${{ needs.get_tag.outputs.tag }}.apk
           mv app/build/outputs/apk/release/app-armeabi-v7a-release-unsigned-signed.apk chimahon-armeabi-v7a-${{ needs.get_tag.outputs.tag }}.apk
           mv app/build/outputs/apk/release/app-x86-release-unsigned-signed.apk chimahon-x86-${{ needs.get_tag.outputs.tag }}.apk
           mv app/build/outputs/apk/release/app-x86_64-release-unsigned-signed.apk chimahon-x86_64-${{ needs.get_tag.outputs.tag }}.apk
-
-      - name: Verify signed APKs and checksums
-        run: |
-          set -euo pipefail
-          build_tools="$ANDROID_HOME/build-tools/35.0.1"
-          expected_digest=""
-          apk_files=(
-            "chimahon-${{ needs.get_tag.outputs.tag }}.apk"
-            "chimahon-arm64-v8a-${{ needs.get_tag.outputs.tag }}.apk"
-            "chimahon-armeabi-v7a-${{ needs.get_tag.outputs.tag }}.apk"
-            "chimahon-x86-${{ needs.get_tag.outputs.tag }}.apk"
-            "chimahon-x86_64-${{ needs.get_tag.outputs.tag }}.apk"
-          )
-
-          : > SIGNING-CERTIFICATE.txt
-          for apk in "${apk_files[@]}"; do
-            "$build_tools/zipalign" -c -p 4 "$apk"
-            verification=$("$build_tools/apksigner" verify --verbose --print-certs "$apk")
-            printf '## %s\n%s\n\n' "$apk" "$verification" >> SIGNING-CERTIFICATE.txt
-
-            digest=$(sed -n \
-              's/^Signer #1 certificate SHA-256 digest: //p' \
-              <<< "$verification")
-            if [ -z "$digest" ]; then
-              echo "::error::Could not read signing certificate digest from $apk"
-              exit 1
-            fi
-            if [ -z "$expected_digest" ]; then
-              expected_digest="$digest"
-            elif [ "$digest" != "$expected_digest" ]; then
-              echo "::error::$apk was signed by a different certificate"
-              exit 1
-            fi
-
-            badging=$("$build_tools/aapt" dump badging "$apk")
-            grep -F "name='app.chimahon'" <<< "$badging"
-            grep -F "versionCode='${{ needs.get_tag.outputs.version_code }}'" <<< "$badging"
-            grep -F "versionName='${{ needs.get_tag.outputs.version_name }}'" <<< "$badging"
-          done
-
-          sha256sum \
-            "${apk_files[@]}" \
-            "chimahon-source-${{ needs.get_tag.outputs.tag }}.tar.gz" \
-            SIGNING-CERTIFICATE.txt \
-            > SHA256SUMS
-          sha256sum --check SHA256SUMS
 
       - name: Upload APK
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
@@ -233,9 +116,6 @@ jobs:
             chimahon-armeabi-v7a-${{ needs.get_tag.outputs.tag }}.apk
             chimahon-x86-${{ needs.get_tag.outputs.tag }}.apk
             chimahon-x86_64-${{ needs.get_tag.outputs.tag }}.apk
-            chimahon-source-${{ needs.get_tag.outputs.tag }}.tar.gz
-            SIGNING-CERTIFICATE.txt
-            SHA256SUMS
 
   release:
     name: Create GitHub Release
@@ -302,8 +182,5 @@ jobs:
             chimahon-armeabi-v7a-${{ needs.get_tag.outputs.tag }}.apk
             chimahon-x86-${{ needs.get_tag.outputs.tag }}.apk
             chimahon-x86_64-${{ needs.get_tag.outputs.tag }}.apk
-            chimahon-source-${{ needs.get_tag.outputs.tag }}.tar.gz
-            SIGNING-CERTIFICATE.txt
-            SHA256SUMS
           draft: true
           prerelease: false

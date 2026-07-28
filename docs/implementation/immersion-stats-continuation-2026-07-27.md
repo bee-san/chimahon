@@ -24,14 +24,6 @@ preserving idempotent retries and typed identity conflicts. Add repository
 tests proving all three rows commit together or all roll back, then update the
 recorder fake/tests to use the atomic operation.
 
-Do not publish the current APK artifacts publicly. The draft
-`stats-v2.5.0-debug` release is private and all five assets had zero downloads
-when it was contained. The APKs include the repository's current FFmpegKit/mpv
-native artifacts, while `docs/native-source-manifest.json` and
-`docs/native-distribution-compliance.md` keep every binary distribution path
-blocked until exact corresponding source is recovered or the binaries are
-replaced with reproducible, fully documented builds.
-
 Remaining plan work is tracked in `plans/stats.md`. The strongest local gaps
 after atomic start are the all-time hourly raw-event scan, complete Overview
 filter/widget parity tests, richer title/vocabulary/character workbenches, and

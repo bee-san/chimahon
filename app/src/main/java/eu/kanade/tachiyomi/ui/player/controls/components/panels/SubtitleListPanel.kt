@@ -37,7 +37,7 @@ import kotlinx.collections.immutable.ImmutableList
 import tachiyomi.presentation.core.components.material.padding
 
 @Composable
-internal fun SubtitleListPanel(
+fun SubtitleListPanel(
     cues: ImmutableList<SubtitleCue>,
     activeCueIndex: Int?,
     onSelectCue: (Int) -> Unit,

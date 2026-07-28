@@ -1,5 +1,3 @@
-@file:Suppress("ktlint:standard:filename")
-
 package eu.kanade.tachiyomi.data.track.mangabaka
 
 import dev.icerock.moko.resources.StringResource

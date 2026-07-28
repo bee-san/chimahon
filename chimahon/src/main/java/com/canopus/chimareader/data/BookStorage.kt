@@ -46,9 +46,9 @@ object BookStorage {
         targetFile.writeText(data)
         // Reader hot path uses save() directly (not saveBookmark/saveMetadata).
         when (fileName) {
-            FileNames.BOOKMARK, FileNames.METADATA, FileNames.BOOK_INFO ->
+            FileNames.bookmark, FileNames.metadata, FileNames.bookinfo ->
                 chimahon.widget.ImmersionWidgetSignals.notifyNovelsChanged()
-            FileNames.STATISTICS ->
+            FileNames.statistics ->
                 chimahon.widget.ImmersionWidgetSignals.notifyStatsChanged()
         }
     }
@@ -65,51 +65,51 @@ object BookStorage {
         }
     }
     fun saveBookmark(bookmark: Bookmark, directory: File) {
-        save(bookmark, directory, FileNames.BOOKMARK)
+        save(bookmark, directory, FileNames.bookmark)
     }
 
     fun loadBookmark(directory: File): Bookmark? {
-        return load(directory, FileNames.BOOKMARK)
+        return load(directory, FileNames.bookmark)
     }
 
     fun saveBookInfo(bookInfo: BookInfo, directory: File) {
-        save(bookInfo, directory, FileNames.BOOK_INFO)
+        save(bookInfo, directory, FileNames.bookinfo)
     }
 
     fun loadBookInfo(directory: File): BookInfo? {
-        return load(directory, FileNames.BOOK_INFO)
+        return load(directory, FileNames.bookinfo)
     }
 
     fun saveMetadata(metadata: BookMetadata, directory: File) {
-        save(metadata, directory, FileNames.METADATA)
+        save(metadata, directory, FileNames.metadata)
     }
 
     fun loadMetadata(directory: File): BookMetadata? {
-        return load(directory, FileNames.METADATA)
+        return load(directory, FileNames.metadata)
     }
 
     fun saveStatistics(statistics: List<Statistics>, directory: File) {
-        save(statistics, directory, FileNames.STATISTICS)
+        save(statistics, directory, FileNames.statistics)
     }
 
     fun loadStatistics(directory: File): List<Statistics>? {
-        return load(directory, FileNames.STATISTICS)
+        return load(directory, FileNames.statistics)
     }
 
     fun saveSasayakiMatchData(matchData: SasayakiMatchData, directory: File) {
-        save(matchData, directory, FileNames.SASAYAKI_MATCHES)
+        save(matchData, directory, FileNames.sasayakiMatches)
     }
 
     fun loadSasayakiMatchData(directory: File): SasayakiMatchData? {
-        return load(directory, FileNames.SASAYAKI_MATCHES)
+        return load(directory, FileNames.sasayakiMatches)
     }
 
     fun saveSasayakiPlaybackData(playbackData: SasayakiPlaybackData, directory: File) {
-        save(playbackData, directory, FileNames.SASAYAKI_PLAYBACK)
+        save(playbackData, directory, FileNames.sasayakiPlayback)
     }
 
     fun loadSasayakiPlaybackData(directory: File): SasayakiPlaybackData? {
-        return load(directory, FileNames.SASAYAKI_PLAYBACK)
+        return load(directory, FileNames.sasayakiPlayback)
     }
 
     fun loadAllBooks(context: android.content.Context): List<BookMetadata> {

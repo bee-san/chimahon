@@ -66,6 +66,5 @@ dependencies {
 
     testImplementation(libs.bundles.test)
     testImplementation(kotlinx.coroutines.test)
-    testImplementation("org.json:json:20260522")
     testRuntimeOnly(libs.junit.platform.launcher)
 }

@@ -1,6 +1,5 @@
 package eu.kanade.presentation.more.settings.screen.about
 
-import android.text.method.LinkMovementMethod
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -76,8 +75,6 @@ class OpenSourceLibraryLicenseScreen(
             },
             update = {
                 it.text = HtmlCompat.fromHtml(html, HtmlCompat.FROM_HTML_MODE_COMPACT)
-                it.linksClickable = true
-                it.movementMethod = LinkMovementMethod.getInstance()
             },
         )
     }

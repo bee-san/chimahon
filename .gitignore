@@ -28,7 +28,6 @@ app/standard/preview/*
 
 # Chimahon additions
 *.md
-!/app/src/androidTest/assets/scene_capture_rotated_sdr.PROVENANCE.md
 /ref
 /reference/
 /external_ocr_refs
@@ -38,8 +37,4 @@ AGENTS.md
 /temp_hoshi
 /AnkiconnectAndroid
 *.patch
-/docs/*
-!/docs/animated-scene-device-validation.json
-!/docs/animated-scene-device-validation.md
-!/docs/native-distribution-compliance.md
-!/docs/native-source-manifest.json
+/docs

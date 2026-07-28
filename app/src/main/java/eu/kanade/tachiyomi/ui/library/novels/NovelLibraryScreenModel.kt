@@ -124,10 +124,10 @@ class NovelLibraryScreenModel(
             state.selection.forEach { bookId ->
                 val bookDir = BookStorage.getBookDirectory(app, bookId)
                 // Delete statistics file ΓÇö BookStorage.save will recreate it fresh on next read
-                val statsFile = java.io.File(bookDir, com.canopus.chimareader.data.FileNames.STATISTICS)
+                val statsFile = java.io.File(bookDir, com.canopus.chimareader.data.FileNames.statistics)
                 if (statsFile.exists()) statsFile.delete()
                 // Also delete bookmark so reading position resets
-                val bookmarkFile = java.io.File(bookDir, com.canopus.chimareader.data.FileNames.BOOKMARK)
+                val bookmarkFile = java.io.File(bookDir, com.canopus.chimareader.data.FileNames.bookmark)
                 if (bookmarkFile.exists()) bookmarkFile.delete()
             }
             clearSelection()
