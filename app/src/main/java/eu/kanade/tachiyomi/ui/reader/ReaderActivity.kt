@@ -135,6 +135,7 @@ import tachiyomi.core.common.util.lang.withUIContext
 import logcat.logcat
 import logcat.LogPriority
 import eu.kanade.presentation.reader.stats.MangaStatsSheet
+import eu.kanade.tachiyomi.ui.reader.setting.ReaderOcrSource
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderOrientation
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderSettingsScreenModel
@@ -1232,6 +1233,21 @@ class ReaderActivity : BaseActivity() {
         )
     }
 
+    private fun selectOcrSourceFromReader(source: ReaderOcrSource) {
+        if (!viewModel.setOcrSource(source) || !viewModel.isOcrEnabled()) return
+
+        when (val viewer = viewModel.state.value.viewer) {
+            is PagerViewer -> {
+                viewer.setOcrEnabled(false)
+                viewer.setOcrEnabled(true)
+            }
+            is WebtoonViewer -> {
+                viewer.setOcrEnabled(false)
+                viewer.setOcrEnabled(true)
+            }
+        }
+    }
+
     /**
      * Called when the user clicks the back key or the button on the toolbar. The call is
      * delegated to the presenter.
@@ -1474,7 +1490,9 @@ class ReaderActivity : BaseActivity() {
             },
             ocrEnabled = ocrEnabled,
             ocrLoading = state.ocrScanProgress != null,
+            ocrSource = state.ocrSource,
             onToggleOcr = ::toggleOcrFromReader,
+            onSelectOcrSource = ::selectOcrSourceFromReader,
             onClickSettings = viewModel::openSettingsDialog,
             onClickMangaStats = viewModel::openMangaStatsSheet,
             // SY -->

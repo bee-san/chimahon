@@ -13,14 +13,27 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.io.ByteArrayOutputStream
 
+enum class OcrEngineType {
+    CLOUD,
+    LOCAL,
+    ;
+
+    companion object {
+        fun fromPreference(value: String): OcrEngineType {
+            return if (value == "local") LOCAL else CLOUD
+        }
+    }
+}
+
 suspend fun recognizePage(
     bytes: ByteArray,
     language: OcrLanguage,
+    engineType: OcrEngineType? = null,
 ): List<OcrResult> {
     val dictPrefs = Injekt.get<eu.kanade.tachiyomi.ui.dictionary.DictionaryPreferences>()
-    val engineType = dictPrefs.ocrEngine().get()
+    val resolvedEngineType = engineType ?: OcrEngineType.fromPreference(dictPrefs.ocrEngine().get())
 
-    if (engineType == "local") {
+    if (resolvedEngineType == OcrEngineType.LOCAL) {
         val localOcrBridge = Injekt.get<LocalOcrBridge>()
         val modelDownloader = Injekt.get<ModelDownloader>()
         if (!modelDownloader.isDownloaded) {
@@ -59,11 +72,12 @@ suspend fun recognizePage(
 suspend fun recognizePage(
     bitmap: Bitmap,
     language: OcrLanguage,
+    engineType: OcrEngineType? = null,
 ): List<OcrResult> {
     val dictPrefs = Injekt.get<eu.kanade.tachiyomi.ui.dictionary.DictionaryPreferences>()
-    val engineType = dictPrefs.ocrEngine().get()
+    val resolvedEngineType = engineType ?: OcrEngineType.fromPreference(dictPrefs.ocrEngine().get())
 
-    if (engineType == "local") {
+    if (resolvedEngineType == OcrEngineType.LOCAL) {
         val localOcrBridge = Injekt.get<LocalOcrBridge>()
         val modelDownloader = Injekt.get<ModelDownloader>()
         if (!modelDownloader.isDownloaded) {

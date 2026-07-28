@@ -5,6 +5,7 @@ import androidx.compose.ui.graphics.BlendMode
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
 import dev.icerock.moko.resources.StringResource
 import eu.kanade.tachiyomi.ui.reader.viewer.pager.PagerConfig
+import tachiyomi.core.common.preference.Preference
 import tachiyomi.core.common.preference.PreferenceStore
 import tachiyomi.core.common.preference.getEnum
 import tachiyomi.i18n.MR
@@ -108,6 +109,11 @@ class ReaderPreferences(
 
     // Chimahon -->
     fun ocrOverlayEnabled() = preferenceStore.getBoolean("reader_ocr_overlay_enabled", false)
+
+    fun ocrSource(mangaId: Long) = preferenceStore.getEnum(
+        readerOcrSourcePreferenceKey(mangaId),
+        ReaderOcrSource.AUTOMATIC,
+    )
 
     fun ocrOutlineVisible() = preferenceStore.getBoolean("reader_ocr_outline_visible", false)
 
@@ -353,4 +359,8 @@ class ReaderPreferences(
         )
         // SY <--
     }
+}
+
+internal fun readerOcrSourcePreferenceKey(mangaId: Long): String {
+    return Preference.appStateKey("reader_ocr_source_$mangaId")
 }
