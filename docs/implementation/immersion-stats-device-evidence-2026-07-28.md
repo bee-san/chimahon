@@ -14,6 +14,15 @@ statistics candidate. It is a factual log, not an approval. **No entry in
 document**, and `releaseGate` remains `blocked`. See
 [Why no matrix row flips](#why-no-matrix-row-flips).
 
+The runs below are recorded in that manifest under `unacceptedRuns`, not
+`evidence`. The `evidence` array is reserved for accepted, gate-covering
+evidence and is enforced as such by
+`:app:verifyImmersionStatsReleaseValidationMetadata`, which requires
+`result: "pass"`, a non-empty `covers` list of matrix keys, and artifacts at
+immutable HTTPS URLs with SHA-256 values. These runs satisfy none of those
+three conditions, so putting them there would be a false claim — and the
+validator correctly rejects the attempt.
+
 ## Environment
 
 | Property | Value |

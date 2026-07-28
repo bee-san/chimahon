@@ -141,8 +141,12 @@ Artifacts and checksums: `docs/implementation/evidence/2026-07-28-api26/`.
 - Every one of the 17 entries in
   `docs/immersion-stats-release-validation.json` remains `false`, and
   `releaseGate` remains `blocked`. The three 2026-07-28 runs are recorded
-  there as evidence objects with `"decision": "recorded-not-accepted"` and
-  `"qualifiesMatrixEntry": false`.
+  under `unacceptedRuns` with `"decision": "recorded-not-accepted"` and
+  `"qualifiesMatrixEntry": false`. The `evidence` array stays **empty**:
+  `:app:verifyImmersionStatsReleaseValidationMetadata` enforces that entries
+  there are accepted gate-covering evidence (`result: "pass"`, non-empty
+  `covers`, immutable HTTPS artifact URLs), which these runs are not. CI
+  correctly rejected the first attempt to file them as `evidence`.
 - **No matrix row was flipped by the 2026-07-28 runs, and none may be until
   they are re-run on a KVM-accelerated or physical device and reviewed.** The
   documented bar also requires a named reviewer and an explicit pass decision;

@@ -4,7 +4,9 @@
   "rollout": "opt-in-preview-with-legacy-dual-write",
   "releaseGate": "blocked",
   "reason": "Representative-device performance, accessibility, upgrade, migration, and end-to-end acceptance evidence is incomplete. The 2026-07-28 API 26 runs were executed on a software-emulated host without KVM and without reviewer sign-off, so no matrix entry qualifies.",
-  "evidence": [
+  "evidence": [],
+  "unacceptedRunsNote": "The 'evidence' array above is reserved for accepted, gate-covering evidence and is validated as such by :app:verifyImmersionStatsReleaseValidationMetadata (result must be pass, covers must name matrix keys, artifacts must be immutable HTTPS URLs). The runs below deliberately do not qualify and are recorded separately so they cannot be mistaken for release evidence.",
+  "unacceptedRuns": [
     {
       "id": "device-smoke-api26-2026-07-28",
       "requirement": "repository persistence and Overview query on device",
