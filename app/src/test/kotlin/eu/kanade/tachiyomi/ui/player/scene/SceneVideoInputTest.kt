@@ -62,13 +62,13 @@ class SceneVideoInputTest {
     }
 
     @Test
-    fun `AVIF command has the single bounded native recipe`() {
+    fun `AV1 encode writes raw MediaCodec packets`() {
         val input = supportedInput()
-        val arguments = SceneFfmpegArguments.animatedAvif(
+        val arguments = SceneFfmpegArguments.av1MediaCodecPackets(
             input = input,
             acquiredInputValue = "https://media.example/video.mp4",
             range = SceneTimeRange(1.25, 11.25),
-            outputFile = "/cache/output.avif",
+            outputFile = "/cache/output.obu",
             encoderName = TEST_AV1_ENCODER_NAME,
             tlsCaFile = "/files/cacert.pem",
         ).toList()
@@ -88,7 +88,7 @@ class SceneVideoInputTest {
             ),
         )
         assertTrue(arguments.containsAll(listOf("-ndk_codec", "1", "-pix_fmt", "yuv420p")))
-        assertTrue(arguments.containsAll(listOf("-frames:v", "80", "-loop", "0", "-f", "avif")))
+        assertTrue(arguments.containsAll(listOf("-frames:v", "80", "-f", "data")))
         assertTrue(
             arguments.containsAll(
                 listOf(
@@ -106,7 +106,36 @@ class SceneVideoInputTest {
         assertEquals(1, arguments.count { it == "-c:v" })
         assertEquals(SceneFfmpegArguments.FRAME_FILTER, arguments[arguments.indexOf("-vf") + 1])
         assertTrue(SceneFfmpegArguments.FRAME_FILTER.contains("force_divisible_by=16"))
-        assertFalse(arguments.any { it.contains("webp", ignoreCase = true) })
+        assertFalse(arguments.contains("avif"))
+        assertFalse(arguments.contains("-loop"))
+    }
+
+    @Test
+    fun `AVIF remux copies the normalized OBU stream`() {
+        assertEquals(
+            listOf(
+                "-f",
+                "obu",
+                "-framerate",
+                "8",
+                "-i",
+                "/cache/input.obu",
+                "-map",
+                "0:v:0",
+                "-c:v",
+                "copy",
+                "-loop",
+                "0",
+                "-f",
+                "avif",
+                "-y",
+                "/cache/output.avif",
+            ),
+            SceneFfmpegArguments.animatedAvifFromObu(
+                inputFile = "/cache/input.obu",
+                outputFile = "/cache/output.avif",
+            ).toList(),
+        )
     }
 
     @Test
@@ -115,11 +144,11 @@ class SceneVideoInputTest {
         val range = SceneTimeRange(1.25, 2.25)
         val caFile = "/files/cacert.pem"
         val commands = listOf(
-            SceneFfmpegArguments.animatedAvif(
+            SceneFfmpegArguments.av1MediaCodecPackets(
                 input = input,
                 acquiredInputValue = input.value,
                 range = range,
-                outputFile = "/cache/scene.avif",
+                outputFile = "/cache/scene.obu",
                 encoderName = TEST_AV1_ENCODER_NAME,
                 tlsCaFile = caFile,
             ),
@@ -147,11 +176,11 @@ class SceneVideoInputTest {
             .sentenceAudio(input, input.value, range, "/cache/audio.m4a", caFile)
             .toList()
         val video = SceneFfmpegArguments
-            .animatedAvif(
+            .av1MediaCodecPackets(
                 input = input,
                 acquiredInputValue = input.value,
                 range = range,
-                outputFile = "/cache/scene.avif",
+                outputFile = "/cache/scene.obu",
                 encoderName = TEST_AV1_ENCODER_NAME,
                 tlsCaFile = caFile,
             )
