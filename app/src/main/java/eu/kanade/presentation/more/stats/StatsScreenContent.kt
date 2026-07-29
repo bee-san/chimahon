@@ -4420,13 +4420,23 @@ private fun EmptyState() {
 private fun NoticeCard(text: String) {
     Surface(
         shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.tertiaryContainer,
+        color = MaterialTheme.colorScheme.secondaryContainer,
     ) {
-        Text(
-            text = text,
+        Row(
             modifier = Modifier.padding(14.dp),
-            color = MaterialTheme.colorScheme.onTertiaryContainer,
-        )
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Info,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+            Text(
+                text = text,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+        }
     }
 }
 
