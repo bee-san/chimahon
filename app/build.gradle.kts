@@ -32,7 +32,9 @@ android {
         buildConfigField("boolean", "UPDATER_ENABLED", enableUpdater.toString())
         buildConfigField("boolean", "HAS_LOCAL_OCR", hasLocalOcr.toString())
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Substitutes a plain Application so instrumented tests skip the Injekt graph, whose eager
+        // CookieManager init crashes on emulator images with a non-functional bundled WebView.
+        testInstrumentationRunner = "eu.kanade.tachiyomi.ui.player.scene.SceneDiagnosticRunner"
     }
 
     buildTypes {
@@ -242,7 +244,6 @@ dependencies {
 
     implementation(libs.bundles.sqlite)
 
-
     implementation(kotlinx.reflect)
     implementation(kotlinx.immutables)
 
@@ -338,6 +339,12 @@ dependencies {
     // Tests
     testImplementation(libs.bundles.test)
     testRuntimeOnly(libs.junit.platform.launcher)
+
+    // Instrumented tests: exercise the real FFmpegKit scene pipeline on a device/emulator, which
+    // JVM unit tests cannot do (no native FFmpeg, no MediaCodec).
+    androidTestImplementation(androidx.test.ext)
+    androidTestImplementation(androidx.test.espresso.core)
+    androidTestImplementation(kotlinx.coroutines.test)
 
     // For detecting memory leaks; see https://square.github.io/leakcanary/
     // debugImplementation(libs.leakcanary.android)

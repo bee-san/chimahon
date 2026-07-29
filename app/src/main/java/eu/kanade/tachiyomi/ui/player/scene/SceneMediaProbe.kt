@@ -3,10 +3,48 @@ package eu.kanade.tachiyomi.ui.player.scene
 import java.util.Locale
 
 internal object SceneMediaProbe {
-    fun inspect(output: String): Boolean {
+    /**
+     * Why [inspect] refused a stream. Kept as data rather than a log call so this object stays a
+     * pure JVM unit under test; the caller is responsible for logging it.
+     */
+    internal sealed interface Rejection {
+        val reason: String
+
+        data object ProtectionMarker : Rejection {
+            override val reason = "protection-marker"
+        }
+
+        data object NoPixelFormat : Rejection {
+            override val reason = "no-pix-fmt"
+        }
+
+        data class UnknownPixelFormat(val pixelFormat: String) : Rejection {
+            override val reason = "unknown-pix-fmt"
+        }
+
+        data class HighBitDepth(
+            val pixelFormat: String,
+            val bitsPerRawSample: Int?,
+            val profile: String,
+        ) : Rejection {
+            override val reason = "high-bit-depth"
+        }
+
+        data class Hdr(
+            val transfer: String,
+            val primaries: String,
+        ) : Rejection {
+            override val reason = "hdr"
+        }
+    }
+
+    fun inspect(output: String): Boolean = rejectionFor(output) == null
+
+    /** Returns null when the stream is usable, otherwise the specific gate that refused it. */
+    fun rejectionFor(output: String): Rejection? {
         val normalized = output.lowercase(Locale.ROOT)
         if (PROTECTION_MARKERS.any(normalized::contains)) {
-            return false
+            return Rejection.ProtectionMarker
         }
         val values = output.lineSequence()
             .mapNotNull { line ->
@@ -20,9 +58,9 @@ internal object SceneMediaProbe {
             }
             .toList()
         val pixelFormat = values.firstOrNull { it.first == "pix_fmt" }?.second
-            ?: return false
+            ?: return Rejection.NoPixelFormat
         if (pixelFormat in setOf("none", "unknown")) {
-            return false
+            return Rejection.UnknownPixelFormat(pixelFormat)
         }
         val rawBits = values.firstOrNull { it.first == "bits_per_raw_sample" }
             ?.second
@@ -33,13 +71,14 @@ internal object SceneMediaProbe {
         if (
             rawBits?.let { it > 8 } == true ||
             TEN_BIT_PIXEL_FORMAT.containsMatchIn(pixelFormat) ||
-            transfer in HDR_TRANSFERS ||
-            primaries == "bt2020" ||
             profile.contains("main 10")
         ) {
-            return false
+            return Rejection.HighBitDepth(pixelFormat, rawBits, profile)
         }
-        return true
+        if (transfer in HDR_TRANSFERS || primaries == "bt2020") {
+            return Rejection.Hdr(transfer, primaries)
+        }
+        return null
     }
 
     fun inspectAudio(output: String): Boolean {
