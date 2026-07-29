@@ -24,19 +24,9 @@ internal object SceneMediaProbe {
         if (pixelFormat in setOf("none", "unknown")) {
             return false
         }
-        val rawBits = values.firstOrNull { it.first == "bits_per_raw_sample" }
-            ?.second
-            ?.toIntOrNull()
         val transfer = values.firstOrNull { it.first == "color_transfer" }?.second.orEmpty()
         val primaries = values.firstOrNull { it.first == "color_primaries" }?.second.orEmpty()
-        val profile = values.firstOrNull { it.first == "profile" }?.second.orEmpty()
-        if (
-            rawBits?.let { it > 8 } == true ||
-            TEN_BIT_PIXEL_FORMAT.containsMatchIn(pixelFormat) ||
-            transfer in HDR_TRANSFERS ||
-            primaries == "bt2020" ||
-            profile.contains("main 10")
-        ) {
+        if (transfer in HDR_TRANSFERS || primaries == "bt2020") {
             return false
         }
         return true
@@ -48,6 +38,5 @@ internal object SceneMediaProbe {
     }
 
     private val HDR_TRANSFERS = setOf("smpte2084", "arib-std-b67")
-    private val TEN_BIT_PIXEL_FORMAT = Regex("(p0(?:10|12|16)|p(?:9|10|12|14|16)(?:le|be)?)(?:$|[^0-9])")
     private val PROTECTION_MARKERS = setOf("cenc", "cbcs", "crypto", "encrypted", "encryption", "drm")
 }
