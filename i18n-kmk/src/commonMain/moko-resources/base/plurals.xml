@@ -57,8 +57,4 @@
         <item quantity="one">%1$s source unit</item>
         <item quantity="other">%1$s source units</item>
     </plurals>
-    <plurals name="stats_word_count">
-        <item quantity="one">%1$s word</item>
-        <item quantity="other">%1$s words</item>
-    </plurals>
 </resources>
