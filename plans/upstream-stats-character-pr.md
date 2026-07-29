@@ -1,7 +1,7 @@
 # Upstreaming immersion statistics to Chimahon — character-level scope
 
-Author: prepared 2026-07-29 (revised 2026-07-29 after scope decision to retain cards,
-goals, and portable-archive sync)
+Author: prepared 2026-07-29 (revised 2026-07-29: retain cards, goals, and
+portable-archive sync; restructure as a single PR with an ordered commit sequence)
 Target upstream: `sohilsayed/chimahon`, branch `main` (currently `2f648f0a68`)
 Source of truth for all existing code: `origin/archive/fork-main-2026-07-29` (`2371e6a57f`)
 Merge base with upstream: `a9f7def66b`
@@ -11,7 +11,7 @@ Merge base with upstream: `a9f7def66b`
 ## 0. Executive summary
 
 The fork contains a complete immersion-statistics subsystem: **78,581 insertions across
-471 files** relative to the merge base. This is far too large to land as one pull request.
+471 files** relative to the merge base.
 
 This plan does three things:
 
@@ -22,12 +22,34 @@ This plan does three things:
 2. **Fixes a real upgrade-breaking defect** discovered while preparing this plan
    (§2, migration numbering). This is not optional polish — shipping without it crashes
    existing installs on upgrade.
-3. **Sequences the work into 9 reviewable PRs**, each independently compilable and
-   testable.
+3. **Lands as a single pull request built from 14 ordered commits**, each of which
+   compiles and passes tests on its own, so the branch is reviewable commit-by-commit and
+   bisectable.
 
-Estimated landed size: **~66,000 insertions** (down from 78,581), of which ~21,000 is
+Estimated landed size: **~59,700 insertions** (down from 78,581), of which ~21,600 is
 tests. The reduction comes from removing vocabulary (~4,000), fork infrastructure
-(~5,000), and internal process artifacts (~4,000).
+(~5,000), internal process artifacts (~4,000), and lookup/FTS machinery (~5,900).
+
+### Delivery shape: one PR, 14 commits
+
+The user asked for a single PR rather than a series. That is workable here, but the commit
+boundaries then carry the entire review burden, so they are not negotiable in the way a
+squashed branch would allow. Three rules make a PR this size reviewable:
+
+1. **Every commit compiles and passes `:domain:test :data:test :app:testDebugUnitTest`.**
+   Do not stage a commit that only builds once a later one lands. This is what makes
+   `git bisect` usable if a regression appears after merge.
+2. **Pure code movement never mixes with logic change.** Commit 11 is a move-only split of
+   a 6,234-line file; it must contain zero behavioural edits so the reviewer can skip its
+   diff after confirming it is a rename.
+3. **The migration fix is commit 1, alone.** It is the only commit that can corrupt an
+   existing install, and it must be reviewable without 40,000 lines of Kotlin around it.
+
+**Be honest with the maintainer about the tradeoff.** A ~60,000-line PR is hard to review
+in one sitting no matter how well the commits are organised. Offer in the PR description
+to split it into stages on request — the commit boundaries in §3 are already the split
+points, so honouring that request costs nothing but rebasing. If the maintainer would
+rather review stages from the start, that preference should win.
 
 ### What is being kept vs dropped
 
@@ -339,7 +361,7 @@ carrying the fork's migrations:
 Conversely, any user who applied the fork's `47.sqm` never got `search_history` at all,
 so upstream's search feature breaks for them.
 
-### The fix (mandatory, PR 1)
+### The fix (mandatory, commit 1)
 
 1. **Restore `47.sqm` byte-for-byte from upstream.** A shipped migration is immutable.
    ```bash
@@ -361,7 +383,7 @@ so upstream's search feature breaks for them.
    | fork `47.sqm` | Base tables: title, session, source unit, event, exposure, character, character occurrence, daily/lifetime rollup, applied event, rollup state, tombstone, exclusion, retention, import ledger, goal + check-in + achievement, anki operation/snapshot/item, sync peer. |
    | `48.sqm`, `49.sqm`, `50.sqm`, `51.sqm` | Session, source-unit, and lookup column additions. Take the session/source-unit ones; skip lookup columns (table dropped). |
    | **`52.sqm`** | Anki snapshot capability columns (`capability_state`, `provider_version`, `item_count`, `note_count`, `mature_interval_days`, `is_current`, `supports_*`); Anki item card fields; **`immersion_anki_character` table** + index. Note it also *drops* `immersion_anki_item.character_code_point` — so define the final table without it. |
-   | `53.sqm` | `immersion_daily_rollup.provenance_state` + `replay_state`; `immersion_lifetime_rollup.replay_state`; **`immersion_event.local_date`** + index; **`immersion_rollup_dirty` table** — the dirty-range queue PR 4 depends on. |
+   | `53.sqm` | `immersion_daily_rollup.provenance_state` + `replay_state`; `immersion_lifetime_rollup.replay_state`; **`immersion_event.local_date`** + index; **`immersion_rollup_dirty` table** — the dirty-range queue commit 8 depends on. |
    | **`55.sqm`** | `immersion_merge_conflict` + index (merge quarantine). |
    | `58.sqm` | Counter/state backfills — fold in the *end state*, drop the `UPDATE`s (a fresh table needs no backfill). |
    | **`59.sqm`** | `immersion_portable_merge_checkpoint` + index (merge idempotency). |
@@ -451,17 +473,42 @@ WHERE success = 1 AND note_id IS NOT NULL AND type IN ('CREATE', 'UPDATE');
 ```
 
 ---
+## 3. Commit sequence (one PR, 14 commits)
 
-## 3. PR sequence
+Branch: `stats/immersion-character-scope` off `upstream/main`.
 
-Nine PRs. Each must compile, pass `spotlessCheck`, and pass its own tests standalone.
-PRs 1→4 are a strict dependency chain; 5, 6, 7 depend on 4; 8 and 9 depend on 6.
+Each commit below must independently satisfy the gates in §7.1. The **Verify** column
+names the cheapest command that proves that specific commit; run the full gate set before
+pushing.
 
-### PR 1 — Migration correctness and schema foundation
+| # | Commit subject | Main LOC | Test LOC | Verify |
+|---|---|---:|---:|---|
+| 1 | `fix(data): restore shipped migration 47 and renumber immersion schema` | ~1,800 | ~300 | `:data:test` |
+| 2 | `feat(stats): add immersion domain contracts and value types` | ~5,200 | ~2,600 | `:domain:test` |
+| 3 | `feat(stats): add character indexing and normalization` | ~1,300 | ~1,400 | `:domain:test` |
+| 4 | `feat(stats): add capture recorder and session state machine` | ~2,500 | ~1,000 | `:domain:test` |
+| 5 | `feat(data): persist immersion sessions, sources, and characters` | ~3,000 | ~2,500 | `:data:test` |
+| 6 | `feat(data): add immersion analytics, goal, and Anki queries` | ~2,800 | ~2,500 | `:data:test` |
+| 7 | `feat(data): add immersion deletion, title mutation, and archive merge` | ~2,500 | ~2,500 | `:data:test` |
+| 8 | `feat(stats): add incremental rollup engine and background jobs` | ~2,500 | ~1,500 | `:app:testDebugUnitTest` |
+| 9 | `feat(stats): capture manga, novel, and video immersion sessions` | ~4,000 | ~2,000 | `:app:testDebugUnitTest` |
+| 10 | `feat(stats): record Anki card operations and sync card inventory` | ~1,500 | ~800 | `:app:testDebugUnitTest` |
+| 11 | `refactor(stats): split stats screen content by section` | 0 | 0 | `assembleDebug` |
+| 12 | `feat(stats): add statistics screens for characters, titles, and sessions` | ~6,500 | ~1,800 | `:app:testDebugUnitTest` |
+| 13 | `feat(stats): add stats maintenance, deletion, and legacy import` | ~2,500 | ~1,200 | `:app:testDebugUnitTest` |
+| 14 | `feat(stats): add portable statistics archive export and merge` | ~2,000 | ~1,500 | `:app:testDebugUnitTest` |
+|  | **Total** | **~38,100** | **~21,600** | |
 
-**Scope.** Restore upstream `47.sqm`. Delete fork `63.sqm`. Add one new `48.sqm` with the
-schema from §2. Add `immersion.sq` queries for surviving tables only. No Kotlin
-behaviour change beyond generated SQLDelight types.
+Commit 11 is deliberately `0 / 0`: it is a pure file move (§commit 11).
+
+---
+
+### Commit 1 — `fix(data): restore shipped migration 47 and renumber immersion schema`
+
+**The only commit that can break an existing install. Keep it alone and first.**
+
+Restore `47.sqm` byte-for-byte from upstream, delete the fork's `63.sqm`, and add one new
+`48.sqm` carrying the whole character-scope schema per §2.
 
 **Files.**
 - `data/src/main/sqldelight/tachiyomi/migrations/47.sqm` (restored from upstream)
@@ -469,17 +516,16 @@ behaviour change beyond generated SQLDelight types.
 - `data/src/main/sqldelight/tachiyomi/data/immersion.sq` (new, reduced from 6,766)
 - delete `data/src/main/sqldelight/tachiyomi/migrations/63.sqm`
 
-**Tests.** Migration-upgrade test: a database at 47 upgrades to 48 with `search_history`
-intact (§7.3). The single most valuable test in the series.
+**Tests.** The migration-upgrade test from §7.3 — a database at 47 upgrades to 48 with
+`search_history` intact. The single most valuable test in the branch.
 
-**Review size.** ~1,800 lines, almost all declarative SQL. Deliberately the smallest PR
-because it carries the most risk.
+Almost all declarative SQL. No Kotlin behaviour change beyond generated SQLDelight types.
 
 ---
 
-### PR 2 — Domain contracts and value types
+### Commit 2 — `feat(stats): add immersion domain contracts and value types`
 
-**Scope.** Pure-Kotlin domain layer. No Android dependencies, no persistence.
+Pure-Kotlin domain layer. No Android dependencies, no persistence, no I/O.
 
 **Keep** (from `domain/src/main/java/tachiyomi/domain/immersion/`):
 - `model/ImmersionTypes.kt` — ids, `LanguageTag`, `MediaKind`, `NonNegativeCounter`,
@@ -504,76 +550,119 @@ because it carries the most risk.
   `AnalyticsTemporalActivity`, `AnalyticsTitle*` (minus word acquisition),
   `AnalyticsSessionDetail`, `AnalyticsPage`, `AnalyticsResult`, `AnalyticsDataQuality`,
   **`AnalyticsGoalProgress`**, **`AnalyticsAnki*`** (minus word-maturity tiers).
-- `service/UnicodeCountPolicy.kt` — **critical**; defines what counts as a character.
 - `service/ImmersionStatsVersions.kt` — remove `TOKENIZER`.
-- `service/AnkiInventory.kt` — **keep** (capability probe + maturity classification).
-- `service/ImmersionExportService.kt` — **keep** (portable archive builder).
-- `service/ImmersionRecorderTime.kt`, `ImmersionSessionStateMachine.kt`,
-  `ImmersionCapturePolicy.kt`, `ImmersionAnalyticsCalendar.kt`,
-  `ImmersionStatsDiagnosticsStore.kt`
-- `service/ImmersionShadowReconciler.kt` — **keep**; reconciles legacy vs new counters,
-  needed by the one-time import (§1.5).
-- `interactor/GetLegacyAggregateTotals.kt` — **keep**.
+- `service/AnkiInventory.kt` — capability probe + maturity classification.
+- `service/ImmersionExportService.kt` — portable archive builder.
+- `service/ImmersionAnalyticsCalendar.kt`, `service/ImmersionStatsDiagnosticsStore.kt`
+- `service/ImmersionShadowReconciler.kt` — reconciles legacy vs new counters; needed by
+  the one-time import (§1.5).
+- `interactor/GetLegacyAggregateTotals.kt`
 - `repository/ImmersionRepositories.kt` — reduced interfaces (§4).
 - `repository/FeatureFlaggedImmersionRecorderRepository.kt`,
   `repository/ImmersionLegacyImportRepository.kt`
 
 **Drop:** `service/ImmersionInteractionTelemetry.kt` (lookup telemetry).
 
-`service/ImmersionIndexing.kt` — **keep**, tokenizer plumbing removed. Delete
-`ImmersionToken`, `TokenizationResult`, `ImmersionTokenizer`,
-`BoundaryImmersionTokenizer`, `toIndexedWord()`, `ImmersionLexemeNormalizer`. Keep
-`NormalizedText`, `SourceTextNormalizer`, `DefaultSourceTextNormalizer`,
-`indexCharacters()`, and the claim/retry/failure state machine. The `tokenizer == null`
-branch becomes the only branch — collapse it, keeping `IndexTerminalReason` for
-`RAW_TEXT_UNAVAILABLE`.
-
-**Tests.** Port `ImmersionTypesTest`, `ImmersionMetricsTest`, `SourceLocatorTest`,
+**Tests.** `ImmersionTypesTest`, `ImmersionMetricsTest`, `SourceLocatorTest`,
 `ImmersionCharacterAnalyticsTest`, `ImmersionStatsDeletionScopeTest`,
-`ImmersionTitleIdentityAdapterTest`, `UnicodeCountPolicyTest`,
-`DefaultSourceTextNormalizerTest`, `ImmersionIndexingTest` (minus word cases),
-`ImmersionRecorderTimeTest`, `ImmersionSessionStateMachineTest`,
-`ImmersionCapturePolicyTest`, `ImmersionAnalyticsCalendarTest`, `AnkiInventoryTest`,
-`ImmersionExportServiceTest`, `ImmersionShadowReconcilerTest`,
-`ImmersionStatsDiagnosticsStoreTest`, `GetLegacyAggregateTotalsTest`.
+`ImmersionTitleIdentityAdapterTest`, `AnkiInventoryTest`, `ImmersionExportServiceTest`,
+`ImmersionShadowReconcilerTest`, `ImmersionStatsDiagnosticsStoreTest`,
+`GetLegacyAggregateTotalsTest`, `ImmersionAnalyticsCalendarTest`.
 Delete `VocabularyFilterTest`, `ImmersionInteractionTelemetryTest`.
 
-**Review size.** ~9,000 main + ~5,000 tests. Reviewable: pure logic, no I/O, high test
-density.
+---
+
+### Commit 3 — `feat(stats): add character indexing and normalization`
+
+Split out from commit 2 because it is the heart of the scope decision and deserves its own
+diff.
+
+**Files.** `domain/.../service/ImmersionIndexing.kt`, `service/UnicodeCountPolicy.kt`.
+
+`UnicodeCountPolicy.kt` is **critical** — it defines what counts as a character.
+
+`ImmersionIndexing.kt` keeps `NormalizedText`, `SourceTextNormalizer`,
+`DefaultSourceTextNormalizer`, `indexCharacters()`, and the claim/retry/failure state
+machine. Delete `ImmersionToken`, `TokenizationResult`, `ImmersionTokenizer`,
+`BoundaryImmersionTokenizer`, `toIndexedWord()`, `ImmersionLexemeNormalizer`. The
+`tokenizer == null` branch becomes the only branch — collapse it, keeping
+`IndexTerminalReason` for `RAW_TEXT_UNAVAILABLE`.
+
+**Tests.** `UnicodeCountPolicyTest`, `DefaultSourceTextNormalizerTest`,
+`ImmersionIndexingTest` (minus word cases). Keep `ImmersionIndexingTest.kt:39` verbatim —
+it already asserts the character inventory with an empty tokenizer list and is the primary
+regression guard for §1.1.
 
 ---
 
-### PR 3 — Persistence layer
+### Commit 4 — `feat(stats): add capture recorder and session state machine`
 
-**Scope.** `SqlDelightImmersionRepository` implementing PR 2's interfaces against PR 1's
-schema.
+**Files.** `domain/.../service/ImmersionRecorder.kt`, `DefaultImmersionRecorder.kt`,
+`ImmersionSessionStateMachine.kt`, `ImmersionRecorderTime.kt`,
+`ImmersionCapturePolicy.kt`, `ImmersionStatsPreferences.kt`.
 
-**Files.**
-- `data/src/main/java/tachiyomi/data/immersion/SqlDelightImmersionRepository.kt` —
-  reduced from 9,112 lines by removing ~93 word lines, the lookup table, word-maturity
-  aggregation, and the `"WORD"` tombstone branch. Expect **~8,300 lines**.
-- Column adapters for immersion types.
+Domain-only: the recorder interface, command types, session lifecycle, and the exposure
+and idle policies. Reader wiring lands in commit 9.
 
-**Tests.** `SqlDelightImmersionRepositoryTest.kt` — reduced from 8,347. The
-highest-value test file in the series: exercises real SQLite through SQLDelight. Keep
-every test for counter arithmetic, exactly-once event application, rollup correctness,
-session/title deletion, tombstones, deletion previews, character occurrence aggregation,
-card idempotency, and archive merge.
+**Feature flags.** `ImmersionStatsPreferences` currently defaults `captureEnabled = true`,
+`indexingEnabled = true`, `uiEnabled = false`. For upstream, **default all three to
+`false`** and let the maintainer choose the rollout. Capturing by default while the UI is
+hidden is defensible in a personal fork but a poor default to propose upstream — it writes
+to the user's database for a feature they cannot see. State this in the PR description.
 
-**Review size.** ~8,300 main + ~7,500 tests. **The largest PR by far.** Split it up
-front along the interface seam rather than waiting for the maintainer to ask:
+**Tests.** `DefaultImmersionRecorderTest`, `ImmersionSessionStateMachineTest`,
+`ImmersionRecorderTimeTest`, `ImmersionCapturePolicyTest`,
+`ImmersionStatsPreferencesTest`.
 
-- **3a** — `ImmersionRecorderRepository` + `ImmersionIndexRepository` + `ImmersionStatsRepository`
-- **3b** — `ImmersionAnalyticsRepository` + `ImmersionGoalRepository` + `ImmersionAnkiRepository`
-- **3c** — `ImmersionMaintenanceRepository` (deletion, title mutation, portable archive, merge)
-
-3c is the deletion + sync surface and deserves its own review pass.
+Invariant to preserve: **session start is atomic** (fixed in `36ab99b8e7`); keep the
+transaction boundary.
 
 ---
 
-### PR 4 — Rollup engine and background jobs
+### Commits 5–7 — persistence layer
 
-**Scope.** Incremental aggregation — the "so its fast" requirement.
+`SqlDelightImmersionRepository` is 9,112 lines in the fork and lands at ~8,300 after the
+cut. Split along the interface seam so each commit is a reviewable unit; all three touch
+the same file, so they must land in order.
+
+#### Commit 5 — `feat(data): persist immersion sessions, sources, and characters`
+
+`ImmersionRecorderRepository` + `ImmersionIndexRepository` + `ImmersionStatsRepository`,
+plus column adapters for immersion types.
+
+Covers session/title/source-unit writes, event append, exposure recording, index claim and
+result storage, and the Overview query.
+
+#### Commit 6 — `feat(data): add immersion analytics, goal, and Anki queries`
+
+`ImmersionAnalyticsRepository` + `ImmersionGoalRepository` + `ImmersionAnkiRepository`.
+
+Covers rollup reads, character paging and summaries, temporal activity, title trends and
+coverage, session paging and detail, goals, and the Anki card inventory plus character
+join.
+
+#### Commit 7 — `feat(data): add immersion deletion, title mutation, and archive merge`
+
+`ImmersionMaintenanceRepository` — deletion, previews, tombstones, title mutation and
+rollback, integrity validation and repair, heartbeat compaction, portable archive export
+and merge, merge conflict resolution.
+
+**The highest-risk commit in the branch after commit 1.** This is where a bug destroys
+user data. Also update `IMMERSION_PORTABLE_TABLES` and `IMMERSION_PRIVATE_TEXT_COLUMNS`
+per §1.4, and drop the `"WORD"` tombstone branch
+(`SqlDelightImmersionRepository.kt:8831`).
+
+**Tests (commits 5–7).** `SqlDelightImmersionRepositoryTest.kt`, reduced from 8,347 lines
+and split to match. The highest-value test file in the branch: it exercises real SQLite
+through SQLDelight. Keep every test for counter arithmetic, exactly-once event
+application, rollup correctness, session/title deletion, tombstones, deletion previews,
+character occurrence aggregation, card idempotency, and archive merge.
+
+---
+
+### Commit 8 — `feat(stats): add incremental rollup engine and background jobs`
+
+The "so its fast" requirement.
 
 **Files.**
 - `domain/.../service/ImmersionAnalyticsService.kt` (reduced, ~1,500 lines)
@@ -583,7 +672,7 @@ front along the interface seam rather than waiting for the maintainer to ask:
 - `app/.../mihon/feature/stats/repair/ImmersionRepairJob.kt`
 - `app/.../mihon/feature/stats/retention/ImmersionRetentionJob.kt`
 
-Drop: `indexing/DictionaryBackedJapaneseTokenizer.kt`.
+Drop `indexing/DictionaryBackedJapaneseTokenizer.kt`.
 
 **Design to preserve — do not simplify.** The dirty-range queue
 (`immersion_rollup_dirty`) plus the applied-event ledger (`immersion_applied_event`) is
@@ -597,13 +686,33 @@ is still needed when `normalization_version` changes.
 **Tests.** `ImmersionAnalyticsServiceTest.kt` (reduced). Add a test asserting a rollup
 rebuild is idempotent and that replaying an applied event does not double-count.
 
-**Review size.** ~2,500 main + ~1,500 tests.
+---
+
+### Commit 9 — `feat(stats): capture manga, novel, and video immersion sessions`
+
+First commit that changes user-visible behaviour (behind flags defaulting off).
+
+**Files.**
+- `app/.../mihon/feature/stats/recorder/ImmersionRecorderLifecycleCoordinator.kt`
+- `app/.../mihon/feature/stats/capture/MangaCaptureAdapter.kt` (1,103 lines)
+- `app/.../mihon/feature/stats/capture/VideoCaptureAdapter.kt` (1,165 lines)
+- `app/.../mihon/feature/stats/capture/VideoCaptureLifecycleCoordinator.kt`
+- `app/.../mihon/feature/stats/capture/StatsCaptureReconciliationReports.kt`
+- `chimahon/.../stats/capture/NovelCaptureAdapter.kt`
+- reader/player touchpoints, `KMKDomainModule.kt` registrations
+
+**Tests.** Capture adapter unit tests: idle timeout, replay/exposure policy, pause/resume,
+page revisits, reconciliation.
+
+In the PR description, list exactly which reader files are touched and how little changes
+in each — this is the commit a maintainer will scrutinise hardest for regression risk in
+existing reading flows.
 
 ---
 
-### PR 5 — Anki inventory sync and card capture
+### Commit 10 — `feat(stats): record Anki card operations and sync card inventory`
 
-**Scope.** Cards created/updated plus the character↔Anki join. Separated from PR 6 so the
+Cards created/updated plus the character↔Anki join. Separate commit so the
 external-provider integration reviews independently.
 
 **Files.**
@@ -624,68 +733,25 @@ external-provider integration reviews independently.
 learning, young, and mature cards. Say so plainly; do not imply the acceptance scenario
 passed.
 
-**Permission note.** The integration requires
-`com.ichi2.anki.permission.READ_WRITE_DATABASE`. It must degrade to `UNAVAILABLE` when
-absent or denied, never to zero counts.
+**Permission note.** Requires `com.ichi2.anki.permission.READ_WRITE_DATABASE`. Must
+degrade to `UNAVAILABLE` when absent or denied, never to zero counts.
 
-**Review size.** ~1,500 main + ~800 tests.
-
----
-
-### PR 6 — Capture integration
-
-**Scope.** Wire the recorder into readers. First PR that changes user-visible behaviour.
-
-**Files.**
-- `domain/.../service/ImmersionRecorder.kt`, `DefaultImmersionRecorder.kt`
-- `app/.../mihon/feature/stats/recorder/ImmersionRecorderLifecycleCoordinator.kt`
-- `app/.../mihon/feature/stats/capture/MangaCaptureAdapter.kt` (1,103 lines)
-- `app/.../mihon/feature/stats/capture/VideoCaptureAdapter.kt` (1,165 lines)
-- `app/.../mihon/feature/stats/capture/VideoCaptureLifecycleCoordinator.kt`
-- `app/.../mihon/feature/stats/capture/StatsCaptureReconciliationReports.kt`
-- `chimahon/.../stats/capture/NovelCaptureAdapter.kt`
-- `domain/.../service/ImmersionStatsPreferences.kt`
-- reader/player touchpoints, `KMKDomainModule.kt` registrations
-
-**Feature flags.** `ImmersionStatsPreferences` currently defaults `captureEnabled = true`,
-`indexingEnabled = true`, `uiEnabled = false`. For upstream, **default all three to
-`false`** and let the maintainer choose the rollout. Capturing by default while the UI is
-hidden is defensible in a personal fork but a poor default to propose upstream — it
-writes to the user's database for a feature they cannot see. State this explicitly in the
-PR description.
-
-**Tests.** Capture adapter unit tests: idle timeout, replay/exposure policy,
-pause/resume, page revisits, reconciliation.
-
-**Review size.** ~4,000 main + ~2,000 tests. Flag clearly which reader files are touched
-and how little changes in each.
+**Invariant.** Cards count once per note — the unique partial index on
+`(note_id, type) WHERE success = 1` is the guard. Add a test that a repeated create for
+the same note does not inflate `cards_created`.
 
 ---
 
-### PR 7 — Statistics UI
+### Commit 11 — `refactor(stats): split stats screen content by section`
 
-**Scope.** Overview, Activity, Titles, Characters, Sessions, Goals, Anki tabs.
+**Move-only. Zero logic change. Zero net new lines.**
 
-**Files.**
-- `app/.../presentation/more/stats/StatsScreenContent.kt` — **must be split, see below**
-- `StatsScreenState.kt` (reduced enums), `StatsTitlesContent.kt`,
-  `StatsFilterSelection.kt`, `components/StatsItem.kt`, `data/StatsData.kt`
-- `app/.../ui/stats/StatsScreen.kt`, `StatsScreenModel.kt` (2,688 → ~2,400),
-  `StatsTitlesScreen.kt`, `StatsCharacterPresentation.kt`,
-  `StatsOverviewMetricPresentation.kt`, `StatsAnkiPresentation.kt`,
-  `StatsGoalFactory.kt`, `StatsGoalForecastPresentation.kt`, `StatsComparison.kt`,
-  `StatsDurationParts.kt`, `StatsPaging.kt`, `StatsFilterMapping.kt`,
-  `StatsFeatureGates.kt`, `StatsSourceNavigator.kt`, `StatsTitleMetadataResolver.kt`,
-  `StatsRecentsPrivacy.kt`, `StatsReaderIdleTimeout.kt`
-- `i18n-kmk/src/commonMain/moko-resources/base/strings.xml` — ~588 of 619 `stats_*`
-  strings (drop the 31 vocabulary ones)
-- `presentation/more/MoreScreen.kt` — stats entry point + preview toggle
+Upstream's `StatsScreenContent.kt` is 686 lines; the fork's is 6,234, of which only ~158
+are vocabulary — so it would still be ~6,000 after the cut. A 6,000-line Compose file is
+the single most likely reason a PR this size stalls in review.
 
-Drop: `StatsHealthParityExport.kt` (fork release-evidence export).
-
-**Mandatory file split.** `StatsScreenContent.kt` is 6,234 lines and only ~158 are
-vocabulary, so it stays ~6,000 after the cut. A 6,000-line Compose file is the single
-most likely reason this PR stalls. **Split by tab as part of this PR:**
+Split it first, as its own commit, so the reviewer can confirm it is a rename and skip the
+diff:
 
 ```
 presentation/more/stats/
@@ -699,11 +765,43 @@ presentation/more/stats/
 └── sections/AnkiSection.kt
 ```
 
-Mirror the existing `StatsSection` enum so the mapping is one-to-one and reviewable.
-Keep each file under ~1,000 lines. This is a mechanical move — do it as a **separate
-first commit** within PR 7 (pure code movement, no logic change) so the reviewer can diff
-the split independently from the vocabulary removal. State in the PR that commit 1 is
-move-only.
+Mirror the existing `StatsSection` enum one-to-one. Keep each file under ~1,000 lines.
+
+**Ordering note.** This commit lands *before* the UI commit, so it splits the file as it
+arrives rather than splitting a file that upstream does not yet have. In practice: author
+commit 12's content already split, then reorder so the mechanical move is isolated. State
+in the commit body: *"Pure code movement. No behavioural change. Verified with
+`git diff --stat` showing equal insertions and deletions."*
+
+**Verify.** `assembleDebug` plus a byte-identical-render check: no test should change.
+
+---
+
+### Commit 12 — `feat(stats): add statistics screens for characters, titles, and sessions`
+
+Overview, Activity, Titles, Characters, Sessions, Goals, Anki tabs.
+
+**Files.**
+- `presentation/more/stats/sections/*.kt` (content, post-split)
+- `StatsScreenState.kt` (reduced enums), `StatsTitlesContent.kt`,
+  `StatsFilterSelection.kt`, `components/StatsItem.kt`, `data/StatsData.kt`
+- `ui/stats/StatsScreen.kt`, `StatsScreenModel.kt` (2,688 → ~2,400),
+  `StatsTitlesScreen.kt`, `StatsCharacterPresentation.kt`,
+  `StatsOverviewMetricPresentation.kt`, `StatsAnkiPresentation.kt`,
+  `StatsGoalFactory.kt`, `StatsGoalForecastPresentation.kt`, `StatsComparison.kt`,
+  `StatsDurationParts.kt`, `StatsPaging.kt`, `StatsFilterMapping.kt`,
+  `StatsFeatureGates.kt`, `StatsSourceNavigator.kt`, `StatsTitleMetadataResolver.kt`,
+  `StatsRecentsPrivacy.kt`, `StatsReaderIdleTimeout.kt`
+- `i18n-kmk/src/commonMain/moko-resources/base/strings.xml` — ~588 of 619 `stats_*`
+  strings (drop the 31 vocabulary ones)
+- `presentation/more/MoreScreen.kt` — stats entry point + preview toggle
+
+Drop `StatsHealthParityExport.kt` (fork release-evidence export).
+
+**Enum reduction.** Delete `VOCABULARY` and `VOCABULARY_GROWTH` from `StatsSection`,
+`VOCABULARY` from `StatsTab`, and `NEW_WORDS` from `StatsTrendMetric`. **`GOALS` and
+`ANKI` stay.** `StatsFeatureGates.kt` keeps its shape — `enabledStatsTabs(goalsEnabled,
+ankiEnabled)` is still exactly the right gate.
 
 **i18n rule.** Only ever edit `i18n-kmk/src/commonMain/moko-resources/**/base/`. Never
 touch non-`base` locale folders — translations come from Weblate. The fork correctly
@@ -711,21 +809,19 @@ touched only `base/strings.xml` and `base/plurals.xml`; preserve that.
 
 **Tests.** Port `app/src/test/.../ui/stats/` minus vocabulary cases. Keep
 `StatsGoalFactoryTest`, `StatsGoalForecastTest`, `StatsAnkiPresentationTest`,
-`StatsFeatureGatesTest`. Add a test that an unknown goal metric hides the goal rather
-than crashing (§1.3).
-
-**Review size.** ~6,500 main + ~1,800 tests, across ~8 files after the split.
+`StatsFeatureGatesTest`. Add a test that an unknown goal metric hides the goal rather than
+crashing (§1.3).
 
 ---
 
-### PR 8 — Deletion, maintenance, and legacy import
+### Commit 13 — `feat(stats): add stats maintenance, deletion, and legacy import`
 
-**Scope.** The requested deletion features plus data continuity.
+The requested deletion features plus data continuity.
 
 **Files.**
-- `app/.../ui/stats/StatsMaintenanceScreen.kt` (978) + `…ScreenModel.kt` (413)
-- `app/.../ui/stats/StatsTitleMaintenanceScreen.kt` (537) + `…ScreenModel.kt` (189)
-- `app/.../ui/stats/StatsDeletionScopeInput.kt`
+- `ui/stats/StatsMaintenanceScreen.kt` (978) + `…ScreenModel.kt` (413)
+- `ui/stats/StatsTitleMaintenanceScreen.kt` (537) + `…ScreenModel.kt` (189)
+- `ui/stats/StatsDeletionScopeInput.kt`
 - `app/.../mihon/feature/stats/legacy/LegacyStatsImporter.kt`, `LegacyStatsImportJob.kt`
 
 **Deletion surface to land** (all already implemented in
@@ -757,25 +853,27 @@ fail, both look like bugs until explained:
    Device-verified: raw-text deletion cleared 2 rows while gross characters stayed at 20
    and sessions at 2.
 
-**Legacy import** per §1.5: one-time, ledger-guarded, `legacy_import = 1`, no dual-write.
-
-**Review size.** ~2,500 main + ~1,200 tests.
+**Legacy import** per §1.5: one-time, ledger-guarded via `immersion_import_ledger`,
+marking rows `legacy_import = 1`, no dual-write.
 
 ---
 
-### PR 9 — Portable archive export, merge, and multi-device sync
+### Commit 14 — `feat(stats): add portable statistics archive export and merge`
 
-**Scope.** The requested sync feature. Last because it depends on everything and is the
-most intricate to review.
+The requested sync feature. Last because it depends on everything else and is the most
+intricate to review.
 
 **Files.**
 - Export/merge UI in settings (data & storage)
-- `domain/.../service/ImmersionExportService.kt` wiring (already in PR 2)
 - Merge conflict resolution UI
-- `IMMERSION_PORTABLE_TABLES` + `IMMERSION_PRIVATE_TEXT_COLUMNS` updates (§1.4)
+- `ImmersionExportService.kt` wiring (the service itself landed in commit 2)
 
 **Must include:**
-- `formatVersion` bump with a typed rejection for unknown versions (§1.4).
+- `formatVersion` bump with a **typed rejection** for unknown versions.
+  `mergePortableArchive` already `require`s every archive table to be in the allowlist
+  (`SqlDelightImmersionRepository.kt:2992`), so a fork-era archive containing
+  `immersion_word` will fail that check — make it an explained rejection rather than a
+  bare `IllegalArgumentException`.
 - Raw-text opt-in: `includesRawText` on the archive, with
   `IMMERSION_PRIVATE_TEXT_COLUMNS` redaction when false. Raw text is the user's reading
   content — exporting it must be an explicit choice.
@@ -790,10 +888,7 @@ verification, resumable checkpoint. The device evidence in §1.4 is the model.
 settings UI. The device run modelled the second device with `pm clear` between two
 instrumentation phases at the repository layer. State this limitation plainly.
 
-**Review size.** ~2,000 main + ~1,500 tests.
-
 ---
-
 ## 4. Reduced repository interfaces
 
 Target surface (from `ImmersionRepositories.kt`, currently 478 lines):
@@ -815,7 +910,7 @@ ImmersionAnalyticsRepository    — keep: availableDateRange, dailyRollups,
                                   wordOccurrences, characterContainingWords,
                                   titleWordAcquisition, sourceSearch
 
-ImmersionMaintenanceRepository  — keep the full surface in PR 8 + PR 9
+ImmersionMaintenanceRepository  — keep the full surface in commits 7, 13, and 14
                                   (incl. exportPortableArchive, mergePortableArchive,
                                   resolveMergeConflictsKeepingLocal)
                                 — drop: setWordExclusions
@@ -835,7 +930,7 @@ Two deliberate asymmetries:
 
 ---
 
-## 5. What to exclude from every PR
+## 5. What to exclude from the PR entirely
 
 | Item | Reason |
 |---|---|
@@ -867,8 +962,8 @@ Each was established the hard way; each is load-bearing. Do not "simplify" any o
 4. **Deletion is exactly-once and converging.** Device-verified: deleting one of two
    sessions moved sessions 2 → 1 and gross characters 20 → 8; a repeated delete returned
    no preview and left totals unchanged.
-5. **Deleting provenance preserves counters** (PR 8).
-6. **Deletion writes tombstones**, and merge honours them (PR 8, §1.4).
+5. **Deleting provenance preserves counters** (commit 13).
+6. **Deletion writes tombstones**, and merge honours them (commits 7 and 13, §1.4).
 7. **Capability gaps are explicit.** A missing dictionary, absent or unpermitted
    AnkiDroid, or an unindexed unit must surface as *unavailable* or *partial* — never as a
    silent zero. This is why `IndexTerminalReason`, `indexing_status`, and
@@ -882,14 +977,14 @@ Each was established the hard way; each is load-bearing. Do not "simplify" any o
 12. **Character counting is Unicode-scalar based**, excludes marks, selectors,
     punctuation, and symbols, and is defined solely by
     `DefaultUnicodeCountPolicy.isCountable()`. Covered by `ImmersionIndexingTest.kt:39`.
-13. **Rollups are incremental and dirty-range driven** (PR 4).
-14. **Raw text never leaves the device without explicit opt-in** (PR 9).
+13. **Rollups are incremental and dirty-range driven** (commit 8).
+14. **Raw text never leaves the device without explicit opt-in** (commit 14).
 
 ---
 
 ## 7. Verification plan
 
-### 7.1 Per-PR gates (mandatory, in order)
+### 7.1 Per-commit gates (mandatory, in order)
 
 ```bash
 ./gradlew spotlessApply
@@ -912,7 +1007,7 @@ ordering issue with the generated `locales_config.xml` (see
 Confirm the *archive* branch builds green in this environment before cutting anything, so
 later failures are attributable to the reduction rather than pre-existing state.
 
-### 7.3 Migration upgrade test (PR 1 — highest priority)
+### 7.3 Migration upgrade test (commit 1 — highest priority)
 
 The §2 defect is invisible to unit tests that start from a fresh schema. Write an
 instrumented or Robolectric test that:
@@ -942,7 +1037,7 @@ Be precise in PR descriptions. From five instrumentation runs on 2026-07-28
 - Scale: 2,500 source units × 40 CJK code points = 100,000 gross characters. Database
   growth **8,024,304 bytes ≈ 3,209 B per source unit**. Timeline returned 120 of 120
   buckets and reconciled exactly with Overview.
-- Live AnkiDroid 2.24.0 capability probe, unmocked (§PR 5).
+- Live AnkiDroid 2.24.0 capability probe, unmocked (commit 10).
 - Deletion convergence, scenario 33.6 (repository layer).
 - Merge convergence, idempotency, and tombstone rejection, scenario 33.7 (§1.4).
 
@@ -958,10 +1053,10 @@ Be precise in PR descriptions. From five instrumentation runs on 2026-07-28
 - TalkBack, 200% text/display, reduced motion, visual configuration matrix.
 - Upgrade/migration on a real device — exactly the §2 risk.
 
-Before opening PR 1, run the migration upgrade test on a **real device or a
+Before pushing commit 1, run the migration upgrade test on a **real device or a
 KVM-accelerated emulator**. It is the one gap that maps directly to a shipping crash.
 
-### 7.5 Manual smoke checklist per PR
+### 7.5 Manual smoke checklist (run on the finished branch)
 
 - Fresh install → no crash; statistics entry point hidden (flags default off).
 - Enable stats → every tab renders; empty state is explicit, not a bare zero.
@@ -1004,59 +1099,52 @@ unnecessary markers read as vendored code.
 generally do not. Match upstream's prevailing style and settle the licensing question
 before adding `STATS-LICENSE.md`.
 
-**Commit hygiene.** Author each PR as a small number of logically coherent commits, not
-the fork's 69-commit development archaeology. The `fix(stats): harden …` sequence
-documents debugging, not a reviewable narrative. The one exception: PR 7's file split
-should be its own move-only commit (§PR 7).
+**Commit hygiene.** The 14 commits in §3 replace the fork's 69-commit development
+archaeology. The `fix(stats): harden …` sequence documents debugging, not a reviewable
+narrative — do not carry it over. Commit 11 is the one commit that must stay purely
+mechanical.
 
 ---
 
-## 9. Ordering, sizing, and risk
+## 9. Risk register
 
-| PR | Title | Main LOC | Test LOC | Risk | Blocks |
-|---|---|---:|---:|---|---|
-| 1 | Migration correctness + schema | ~1,800 | ~300 | **High** | all |
-| 2 | Domain contracts | ~9,000 | ~5,000 | Low | 3,4 |
-| 3a | Persistence: recorder, index, stats | ~3,000 | ~2,500 | Medium | 4 |
-| 3b | Persistence: analytics, goals, anki | ~2,800 | ~2,500 | Medium | 4,7 |
-| 3c | Persistence: maintenance, archive, merge | ~2,500 | ~2,500 | **High** | 8,9 |
-| 4 | Rollups + jobs | ~2,500 | ~1,500 | Medium | 7 |
-| 5 | Anki inventory + card capture | ~1,500 | ~800 | Medium | 7 |
-| 6 | Capture integration | ~4,000 | ~2,000 | Medium | — |
-| 7 | Statistics UI (with tab split) | ~6,500 | ~1,800 | Low | 8 |
-| 8 | Deletion + legacy import | ~2,500 | ~1,200 | Medium | — |
-| 9 | Portable archive + sync | ~2,000 | ~1,500 | **High** | — |
-|  | **Total** | **~38,100** | **~21,600** | | |
+Ordered by consequence, not by position in the sequence.
 
-vs. 78,581 insertions on the archive branch — a ~24% reduction. Smaller than the
-character-only variant of this plan (which cut ~44%) because cards, goals, and sync are
-retained.
+| Risk | Commit | Consequence if wrong | Mitigation |
+|---|---|---|---|
+| Migration collision (§2) | 1 | **App cannot open its database after upgrade.** | Restore upstream `47.sqm`; upgrade test on real hardware (§7.3); CI guard that no migration ≤47 differs from upstream. |
+| Deletion or merge defect | 7, 13, 14 | **Silent user data loss or resurrection of deleted data.** | Keep tombstones and the applied-event ledger; port every existing deletion/merge test; do not simplify the three merge behaviours in §1.4. |
+| Archive `formatVersion` handling | 14 | Fork-era archive crashes the merge instead of being rejected. | Typed rejection with an explained message; test with a synthetic old archive. |
+| Card double-counting | 10 | Inflated `cards_created`. | Preserve the unique partial index on `(note_id, type) WHERE success = 1`; add a repeat-create test. |
+| Reader regression | 9 | Existing reading flows break for users who never enable stats. | Flags default `false`; enumerate touched reader files in the PR description. |
+| Review stall | 11, 12 | PR sits unreviewed because a 6,000-line Compose file is unreadable. | Move-only split commit landed first; every section file under ~1,000 lines. |
+| Unknown goal metric | 12 | Crash loading a goal whose metric was removed. | `resolveStatsGoal` already returns `null` for unknown metrics (`StatsGoalFactory.kt:239`); verify null hides the goal and add a test. |
+| Performance on real hardware | all | Timings never measured on an accelerated host (§7.4). | State plainly as unverified; byte growth (3,209 B/source unit) is deterministic and *is* measured. |
 
-**Risk notes.**
-- PR 1 is small but carries nearly all the correctness risk. Do not bundle it.
-- PR 3c holds deletion + merge — the two places where a bug destroys user data.
-- PR 9's `formatVersion` bump must reject fork-era archives cleanly, not crash.
-- PR 6 changes reader behaviour; ship with flags defaulting off.
-- PR 7's success depends on the tab split landing as a move-only commit.
+**Size context.** ~38,100 main + ~21,600 test lines, vs. 78,581 insertions on the archive
+branch — a ~24% reduction. Smaller than a character-only cut (~44%) because cards, goals,
+and sync are retained. Note the PR *replaces* upstream functionality that is much smaller:
+upstream's `StatsScreenContent.kt` is 686 lines, `StatsScreenModel.kt` 699,
+`StatsScreenState.kt` 29, `StatsScreen.kt` 95.
 
-**Talk to the maintainer before writing PR 1.** A ~60,000-line feature series is a
-significant ask, and this *replaces existing upstream functionality*:
-`StatsScreenModel.kt`, `StatsScreenContent.kt`, `MangaStatsSheet.kt`,
-`ReadingStatsWidget.kt`, plus JSON storage in `MangaStatsStorage.kt` /
-`AnkiStatsStorage.kt`. That is a product decision, not just a code review. Open an issue
-first that: describes the scope, links the archive branch, shows the 3,209 B/source-unit
-growth measurement, and flags the migration-47 collision as a bug found in the fork. Get
-agreement on direction before investing in PR 1.
+**Open the issue before writing commit 1.** A ~60,000-line PR is a significant ask, and
+this *replaces existing upstream functionality*: `StatsScreenModel.kt`,
+`StatsScreenContent.kt`, `MangaStatsSheet.kt`, `ReadingStatsWidget.kt`, plus JSON storage
+in `MangaStatsStorage.kt` / `AnkiStatsStorage.kt`. That is a product decision, not just a
+code review. The issue should: describe the scope, link the archive branch, show the
+3,209 B/source-unit growth measurement, flag the migration-47 collision as a bug found in
+the fork, and ask whether the maintainer wants one PR or staged PRs. Get agreement on
+direction first.
 
 ---
 
 ## 10. Concrete first steps
 
 ```bash
-# 1. Work from the archive, branch off current upstream
+# 1. Work from the archive, branch off current upstream. ONE branch for all 14 commits.
 cd /local/home/skerraut/work/chimahon-release-evidence
 git fetch upstream --prune
-git switch -c stats/character-scope upstream/main
+git switch -c stats/immersion-character-scope upstream/main
 
 # 2. Restore the shipped migration the fork overwrote (the §2 blocker)
 git checkout upstream/main -- data/src/main/sqldelight/tachiyomi/migrations/47.sqm
@@ -1082,11 +1170,36 @@ done | less
 git diff --exit-code upstream/main -- data/src/main/sqldelight/tachiyomi/migrations/ \
   ':!*/48.sqm' && echo "migrations below 48 are pristine"
 
-# 5. Gates
+# 5. Gates, then commit 1 on its own
 ./gradlew spotlessApply && ./gradlew spotlessCheck
 ./gradlew :data:test
 ./gradlew assembleDebug
+git add data/src/main/sqldelight
+git commit -m "fix(data): restore shipped migration 47 and renumber immersion schema"
+
+# 6. Repeat per commit in §3: stage only that commit's files, run the gates, commit.
+#    Never push a commit that does not build on its own.
 ```
+
+Verifying the branch before opening the PR — every commit must build, so check them all,
+not just the tip:
+
+```bash
+# assert each commit compiles and tests green (slow, but this is the whole point)
+git rebase --exec './gradlew spotlessCheck :domain:test :data:test :app:testDebugUnitTest' \
+  upstream/main
+
+# assert commit 11 is move-only: insertions must equal deletions
+git show --stat <commit-11-sha> | tail -1
+
+# assert no migration at or below 47 was touched anywhere on the branch
+git diff --exit-code upstream/main -- data/src/main/sqldelight/tachiyomi/migrations/ \
+  ':!*/48.sqm'
+```
+
+`git rebase --exec` over 14 commits will take a long time. Run it once before opening the
+PR and again after any force-push that reorders history — it is the only way to honour the
+"every commit builds" promise rather than merely asserting it.
 
 Everything referenced here is on `origin/archive/fork-main-2026-07-29`. Retrieve any file
 with:
