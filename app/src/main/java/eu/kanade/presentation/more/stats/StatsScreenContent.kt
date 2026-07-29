@@ -653,6 +653,8 @@ private fun OverviewTab(
                 section = state.sections.sessions,
                 onRetry = { onSectionRetry(StatsSection.SESSIONS) },
             ) { result ->
+                // Skip the heading entirely rather than leaving it stranded above nothing.
+                if (result.value.items.isEmpty()) return@SectionFrame
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     SectionTitle(stringResource(KMR.strings.stats_recent_sessions))
                     result.value.items.take(3).forEach { session ->
@@ -813,6 +815,10 @@ private fun ActivityHeatmap(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        // The grid is only informative once something has been recorded: with no active
+        // day it renders as a lone empty cell under a calendar-aligned blank gap, which
+        // says less than the summary line above already does.
+        if (activeDays == 0) return@Column
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -887,8 +893,11 @@ private fun OverviewSummary(
 ) {
     val overview = result.value
     val metrics = overview.comparison.current
+    // With nothing recorded yet the partial-day notice and the comparison card both
+    // reduce to "no activity", so only the comparison card is shown.
+    val hasActivity = metrics.activeTime.value > 0L || metrics.sessions.value > 0L
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        if (overview.period.isPartialCurrentDay) {
+        if (overview.period.isPartialCurrentDay && hasActivity) {
             NoticeCard(stringResource(KMR.strings.stats_partial_day))
         }
         ComparisonCard(overview)
@@ -1035,6 +1044,7 @@ private fun ComparisonCard(overview: AnalyticsOverview) {
         }
     }
     Surface(
+        modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.secondaryContainer,
     ) {
