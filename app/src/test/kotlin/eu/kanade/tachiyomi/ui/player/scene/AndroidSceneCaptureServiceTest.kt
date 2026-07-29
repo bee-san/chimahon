@@ -18,7 +18,7 @@ class AndroidSceneCaptureServiceTest {
     lateinit var tempDirectory: File
 
     @Test
-    fun `successful capture uses exact bounded AVIF command`() = runTest {
+    fun `successful capture normalizes AV1 packets then remuxes them to animated AVIF`() = runTest {
         val executor = RecordingExecutor(writeOutput = true)
         val service = service(
             executor = executor,
@@ -30,10 +30,23 @@ class AndroidSceneCaptureServiceTest {
         val animated = result as AnkiScreenshotPreparation.Animated
         assertEquals("avif", animated.animation.extension)
         assertTrue(animated.animation.preferredBaseName.startsWith("chimahon_scene_"))
+        assertEquals(2, executor.ffmpegArguments.size)
         assertArrayEquals(
-            expectedAvifArguments(animated.animation.file.absolutePath),
-            executor.ffmpegArguments,
+            expectedAv1Arguments(animated.animation.file.absolutePath.replaceAfterLast('.', "obu")),
+            executor.ffmpegArguments[0],
         )
+        assertArrayEquals(
+            expectedAvifRemuxArguments(
+                animated.animation.file.absolutePath.replaceAfterLast('.', "obu"),
+                animated.animation.file.absolutePath,
+            ),
+            executor.ffmpegArguments[1],
+        )
+        val intermediate = File(
+            animated.animation.file.parentFile,
+            "${animated.animation.file.nameWithoutExtension}.obu",
+        )
+        assertFalse(intermediate.exists())
         animated.animation.file.delete()
     }
 
@@ -110,7 +123,7 @@ class AndroidSceneCaptureServiceTest {
         )
     }
 
-    private fun expectedAvifArguments(output: String): Array<String> {
+    private fun expectedAv1Arguments(output: String): Array<String> {
         return arrayOf(
             "-codec_whitelist",
             SceneFfmpegArguments.ALLOWED_INPUT_DECODERS,
@@ -151,6 +164,25 @@ class AndroidSceneCaptureServiceTest {
             "1",
             "-pix_fmt",
             "yuv420p",
+            "-f",
+            "data",
+            "-y",
+            output,
+        )
+    }
+
+    private fun expectedAvifRemuxArguments(input: String, output: String): Array<String> {
+        return arrayOf(
+            "-f",
+            "obu",
+            "-framerate",
+            "8",
+            "-i",
+            input,
+            "-map",
+            "0:v:0",
+            "-c:v",
+            "copy",
             "-loop",
             "0",
             "-f",
@@ -165,7 +197,7 @@ class AndroidSceneCaptureServiceTest {
     ) : SceneCommandExecutor {
         var probeCalls = 0
         var ffmpegCalls = 0
-        var ffmpegArguments: Array<String> = emptyArray()
+        val ffmpegArguments = mutableListOf<Array<String>>()
 
         override suspend fun executeFfmpeg(
             arguments: Array<String>,
@@ -173,9 +205,14 @@ class AndroidSceneCaptureServiceTest {
         ): SceneCommandResult {
             return try {
                 ffmpegCalls++
-                ffmpegArguments = arguments
+                ffmpegArguments += arguments
                 if (writeOutput) {
-                    File(arguments.last()).writeBytes(byteArrayOf(1, 2, 3))
+                    val output = File(arguments.last())
+                    val bytes = when (output.extension) {
+                        "obu" -> mediaCodecAv1PacketStream()
+                        else -> byteArrayOf(1, 2, 3)
+                    }
+                    output.writeBytes(bytes)
                 }
                 SceneCommandResult.Success()
             } finally {
