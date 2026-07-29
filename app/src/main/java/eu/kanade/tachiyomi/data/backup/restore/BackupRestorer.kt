@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.data.backup.restore
 
 import android.content.Context
 import android.net.Uri
+import android.text.format.Formatter
 import eu.kanade.tachiyomi.data.backup.BackupDecoder
 import eu.kanade.tachiyomi.data.backup.BackupNotifier
 import eu.kanade.tachiyomi.data.backup.models.BackupAnime
@@ -28,8 +29,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import mihon.feature.stats.indexing.ImmersionIndexJob
 import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.domain.history.interactor.UpsertSearchHistory
+import tachiyomi.domain.immersion.model.ImmersionPortableArchive
+import tachiyomi.domain.immersion.model.ImmersionPortableCellKind
+import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
 import tachiyomi.i18n.MR
 import tachiyomi.i18n.kmk.KMR
 import uy.kohesive.injekt.Injekt
@@ -60,6 +65,7 @@ class BackupRestorer(
     // Chimahon -->
     private val novelRestorer: eu.kanade.tachiyomi.data.backup.restore.restorers.NovelRestorer = eu.kanade.tachiyomi.data.backup.restore.restorers.NovelRestorer(context),
     private val upsertSearchHistory: UpsertSearchHistory = Injekt.get(),
+    private val immersionMaintenanceRepository: ImmersionMaintenanceRepository = Injekt.get(),
     // Chimahon <--
 ) {
 
@@ -140,6 +146,9 @@ class BackupRestorer(
         if (options.history && backup.backupSearchHistory.isNotEmpty()) {
             restoreAmount += 1
         }
+        if (options.immersionStats && backup.backupImmersionStats != null) {
+            restoreAmount += 1
+        }
         // Chimahon <--
 
         coroutineScope {
@@ -180,6 +189,9 @@ class BackupRestorer(
             }
             if (options.history && backup.backupSearchHistory.isNotEmpty()) {
                 restoreSearchHistory(backup.backupSearchHistory)
+            }
+            if (options.immersionStats) {
+                backup.backupImmersionStats?.let { restoreImmersionStats(it) }
             }
             // Chimahon <--
 
@@ -464,6 +476,71 @@ class BackupRestorer(
         }
     }
 
+    /**
+     * Merges a portable archive rather than overwriting, so restoring onto a
+     * device that has kept reading does not discard the newer activity.
+     *
+     * The free-space check is deliberately conservative: the merge writes into the
+     * database while the archive is still resident, so it needs roughly twice the
+     * archive's size plus headroom, and failing early is far kinder than failing
+     * mid-merge.
+     */
+    private fun CoroutineScope.restoreImmersionStats(archive: ImmersionPortableArchive) = launch {
+        ensureActive()
+        val requiredBytes = archive.estimatedRestoreBytes()
+            .coerceAtMost((Long.MAX_VALUE - RESTORE_HEADROOM_BYTES) / 2)
+            .times(2)
+            .plus(RESTORE_HEADROOM_BYTES)
+        require(context.filesDir.usableSpace >= requiredBytes) {
+            context.stringResource(
+                KMR.strings.stats_restore_low_space,
+                Formatter.formatFileSize(context, requiredBytes),
+            )
+        }
+        val report = immersionMaintenanceRepository.mergePortableArchive(
+            archive = archive,
+            mergedAtEpochMillis = System.currentTimeMillis(),
+        )
+        check(report.verification.isHealthy) {
+            context.stringResource(KMR.strings.stats_restore_verification_failed)
+        }
+        // Conflicts are quarantined rather than applied, so the restore succeeds
+        // but the user is told that some rows need attention.
+        if (report.quarantinedConflicts > 0) {
+            errors += Date() to context.stringResource(
+                KMR.strings.stats_backup_conflicts,
+                report.quarantinedConflicts,
+            )
+        }
+        ImmersionIndexJob.start(context)
+        restoreProgress += 1
+        with(notifier) {
+            showRestoreProgress(
+                context.stringResource(KMR.strings.stats_immersion_title),
+                restoreProgress,
+                restoreAmount,
+                isSync,
+            ).show(Notifications.ID_RESTORE_PROGRESS)
+        }
+    }
+
+    private fun ImmersionPortableArchive.estimatedRestoreBytes(): Long =
+        tables.sumOf { table ->
+            table.rows.sumOf { row ->
+                row.cells.sumOf { cell ->
+                    when (cell.kind) {
+                        ImmersionPortableCellKind.NULL -> 1L
+                        ImmersionPortableCellKind.TEXT ->
+                            cell.textValue.orEmpty().encodeToByteArray().size.toLong()
+                        ImmersionPortableCellKind.INTEGER,
+                        ImmersionPortableCellKind.REAL,
+                        -> Long.SIZE_BYTES.toLong()
+                        ImmersionPortableCellKind.BLOB -> cell.blobValue?.size?.toLong() ?: 0L
+                    }
+                }
+            }
+        }
+
     private fun CoroutineScope.restoreSearchHistory(
         history: List<eu.kanade.tachiyomi.data.backup.models.BackupSearchHistory>,
     ) = launch {
@@ -505,5 +582,10 @@ class BackupRestorer(
             // Empty
         }
         return File("")
+    }
+
+    private companion object {
+        /** Slack above the estimated merge cost, so a restore fails before it starts. */
+        const val RESTORE_HEADROOM_BYTES = 16L * 1024L * 1024L
     }
 }

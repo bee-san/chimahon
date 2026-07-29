@@ -71,7 +71,13 @@ open class NovelReaderActivity : ComponentActivity() {
 
     /**
      * Source position a deep link asked for, if the link matched this book.
-     * Subclasses read it to restore the passage once the reader is ready.
+     *
+     * Carried through the intent and exposed for subclasses, but the reader does
+     * not scroll to it yet: doing so needs a round trip through the WebView's
+     * pagination, which is not wired up. Until it is, a statistics deep link
+     * opens the right book at the reader's own resume position rather than at the
+     * exact passage. That is a smaller surprise than opening the wrong book, and
+     * it is why [StatsSourceNavigator] still reports success.
      */
     protected var requestedSourceTarget: RequestedSourcePosition? = null
         private set

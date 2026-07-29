@@ -232,6 +232,12 @@ class PlayerActivity : BaseActivity() {
         }
     }
 
+    /**
+     * Position a statistics deep link asked to resume from, consumed by the first
+     * [setVideo] so a later return to the episode resumes normally instead.
+     */
+    private var requestedStartPositionMillis: Long? = null
+
     @SuppressLint("MissingSuperCall")
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
@@ -269,6 +275,9 @@ class PlayerActivity : BaseActivity() {
         val hostList = intent.getStringExtra("hostList") ?: ""
         val hostIndex = intent.getIntExtra("hostIndex", -1)
         val vidIndex = intent.getIntExtra("vidIndex", -1)
+        requestedStartPositionMillis = intent
+            .takeIf { it.hasExtra(EXTRA_START_POSITION_MILLIS) }
+            ?.getLongExtra(EXTRA_START_POSITION_MILLIS, 0L)
         if (animeId == -1L || episodeId == -1L) {
             val standaloneVideo = intent.toStandaloneVideo()
             if (standaloneVideo != null) {
@@ -1343,6 +1352,9 @@ class PlayerActivity : BaseActivity() {
             viewModel.currentEpisode.value?.let { episode ->
                 val preservePos = playerPreferences.preserveWatchingPosition().get()
                 val resumePosition = position
+                    // Consumed once: a deep link positions the first load only, so
+                    // returning to the episode later resumes where the user stopped.
+                    ?: requestedStartPositionMillis?.also { requestedStartPositionMillis = null }
                     ?: if (episode.seen && !preservePos) {
                         0L
                     } else {

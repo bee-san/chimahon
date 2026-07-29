@@ -338,6 +338,8 @@
     <string name="stats_apply">Apply</string>
     <string name="stats_available">Available</string>
     <string name="stats_average_per_active_day">Average per active day</string>
+    <string name="stats_restore_low_space">Immersion-statistics restore needs at least %1$s of free app storage.</string>
+    <string name="stats_restore_verification_failed">Immersion-statistics restore did not pass its integrity checks.</string>
     <string name="stats_backup_conflicts">%1$d conflicting immersion-statistics rows were quarantined for review.</string>
     <string name="stats_basis_gross">Gross exposure</string>
     <string name="stats_basis_net">Net progress</string>
