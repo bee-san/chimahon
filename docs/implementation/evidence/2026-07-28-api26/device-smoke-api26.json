@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "appCommit": "2151ec33c2",
+  "buildType": "debug",
+  "applicationId": "app.chimahon.dev",
+  "deviceModel": "Android SDK built for x86_64",
+  "deviceProduct": "sdk_gphone_x86_64",
+  "apiLevel": 26,
+  "androidRelease": "8.0.0",
+  "abi": "x86_64",
+  "testedAtEpochMillis": 1785249700989,
+  "repositoryWriteNanos": 552176818,
+  "repositoryOverviewQueryNanos": 34254136,
+  "databaseBytes": 487888,
+  "decision": "pass"
+}

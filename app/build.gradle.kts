@@ -367,6 +367,10 @@ dependencies {
     // Tests
     testImplementation(libs.bundles.test)
     testRuntimeOnly(libs.junit.platform.launcher)
+    androidTestImplementation(androidx.test.ext)
+    androidTestImplementation(androidx.test.espresso.core)
+    androidTestImplementation(androidx.test.runner)
+    androidTestImplementation(androidx.test.uiautomator)
 
     // For detecting memory leaks; see https://square.github.io/leakcanary/
     // debugImplementation(libs.leakcanary.android)

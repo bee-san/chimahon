@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "evidenceKind": "device-scale-growth-and-timeline",
+  "appCommit": "2151ec33c2",
+  "buildType": "debug",
+  "applicationId": "app.chimahon.dev",
+  "deviceModel": "Android SDK built for x86_64",
+  "deviceProduct": "sdk_gphone_x86_64",
+  "apiLevel": 26,
+  "androidRelease": "8.0.0",
+  "abi": "x86_64",
+  "testedAtEpochMillis": 1785249905075,
+  "sourceUnitCount": 2500,
+  "charactersPerSourceUnit": 40,
+  "grossCharacters": 100000,
+  "estimatedRawTextBytes": 300000,
+  "databaseBytesBefore": 458512,
+  "databaseBytesAfter": 8482816,
+  "databaseGrowthBytes": 8024304,
+  "databaseBytesPerSourceUnit": 3209,
+  "fixtureWriteNanos": 139250151622,
+  "overviewQueryNanos": 7281351,
+  "timelineQueryNanos": 3423035128,
+  "timelineBucketsRequested": 120,
+  "timelineBucketsReturned": 120,
+  "timelineKnownnessAvailable": true,
+  "measurementCaveats": [
+    "Durations are indicative only unless the host reports hardware acceleration; software-emulated devices are not a representative performance target."
+  ],
+  "decision": "measured"
+}

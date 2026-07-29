@@ -1,0 +1,19 @@
+{
+  "scenario": "33.6 privacy and deletion",
+  "grossCharactersBefore": 20,
+  "rawTextRowsCleared": 2,
+  "grossCharactersAfterRawTextDeletion": 20,
+  "countersPreservedAfterRawTextDeletion": true,
+  "sessionsAfterSessionDeletion": 1,
+  "grossCharactersAfterSessionDeletion": 8,
+  "repeatedDeletionWasNoOp": true,
+  "schemaVersion": 1,
+  "evidenceKind": "device-acceptance-scenario",
+  "appCommit": "66b10f0186",
+  "buildType": "debug",
+  "apiLevel": 26,
+  "androidRelease": "8.0.0",
+  "abi": "x86_64",
+  "note": "Functional convergence scenario with no latency assertions; valid on a software-emulated device.",
+  "decision": "pass"
+}
