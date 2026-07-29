@@ -444,7 +444,7 @@
     <string name="stats_delete_raw_text_summary">Keep aggregate totals and stable source hashes while removing searchable excerpts.</string>
     <string name="stats_delete_raw_text_warning">Delete %1$s private text records? Aggregate statistics will remain. This cannot be undone without a full-text backup.</string>
     <string name="stats_delete_scoped">Delete selected statistics</string>
-    <string name="stats_delete_scoped_preview">Preview: %1$s sessions · %2$s active · %3$s gross characters · %4$s source units · %5$s words · %6$s characters · %7$s affected goals. Confirm only if this matches your intended scope.</string>
+    <string name="stats_delete_scoped_preview">Preview: %1$s sessions · %2$s active · %3$s gross characters · %4$s source units · %5$s characters · %6$s affected goals. Confirm only if this matches your intended scope.</string>
     <string name="stats_delete_scoped_summary">Delete matching sessions by date, title, media, profile, or language while retaining all other statistics.</string>
     <string name="stats_delete_scoped_warning">Choose at least one valid filter. Filters are combined, and only matching sessions are deleted. An empty or invalid form can never trigger a full reset.</string>
     <string name="stats_delete_session">Delete session</string>
@@ -464,10 +464,10 @@
     <string name="stats_export_aggregate_json">Aggregate JSON</string>
     <string name="stats_export_characters_csv">Characters CSV</string>
     <string name="stats_export_data">Export stats data</string>
-    <string name="stats_export_data_summary">Versioned aggregate, event, vocabulary, and character exports, plus a privacy-safe health and parity report.</string>
+    <string name="stats_export_data_summary">Versioned aggregate, event, and character exports.</string>
     <string name="stats_export_events_json">Sessions and events JSON without source text</string>
     <string name="stats_export_raw_text">Full event JSON with retained source text</string>
-    <string name="stats_export_raw_text_warning">This export contains private reading text and lookup context. Share it only with people and services you trust.</string>
+    <string name="stats_export_raw_text_warning">This export contains private reading text. Share it only with people and services you trust.</string>
     <string name="stats_filter_all">All</string>
     <string name="stats_filter_maturity">Maturity: %1$s</string>
     <string name="stats_filter_provenance">Source data: %1$s</string>
@@ -529,7 +529,7 @@
     <string name="stats_include_rereads">Include rereads and replays</string>
     <string name="stats_indexing_coverage">Indexing coverage</string>
     <string name="stats_indexing_enabled">Index retained source text</string>
-    <string name="stats_indexing_enabled_summary">Build vocabulary, character, and source-search data from retained text.</string>
+    <string name="stats_indexing_enabled_summary">Build character statistics from retained text.</string>
     <string name="stats_integrity">Integrity</string>
     <string name="stats_integrity_healthy">All checked invariants pass.</string>
     <string name="stats_integrity_needs_repair">One or more invariants need repair.</string>
@@ -606,7 +606,7 @@
     <string name="stats_range_thirty_days">30 days</string>
     <string name="stats_range_today">Today</string>
     <string name="stats_range_year">365 days</string>
-    <string name="stats_raw_text_disclosure_message">Chimahon can keep passages, OCR, subtitles, and lookup text on this device to build vocabulary, character, and source drill-down stats. Nothing is retained until you choose. You can change this later, including 30-day and one-year options, in Stats data and privacy.</string>
+    <string name="stats_raw_text_disclosure_message">Chimahon can keep passages, OCR, and subtitles on this device to build character statistics and let you jump back to where you read something. Nothing is retained until you choose. You can change this later, including 30-day and one-year options, in Stats data and privacy.</string>
     <string name="stats_raw_text_disclosure_title">Choose source-text privacy</string>
     <string name="stats_raw_text_storage">Retained source text</string>
     <string name="stats_raw_text_storage_value">%1$s source units · %2$s</string>
@@ -614,7 +614,7 @@
     <string name="stats_reader_idle_timeout_summary">Stop counting active reader time after %1$s without interaction.</string>
     <string name="stats_reading_speed">Reading speed</string>
     <string name="stats_rebuild_index">Rebuild word and character index</string>
-    <string name="stats_rebuild_index_summary">Reprocess retained source text for vocabulary and character analytics.</string>
+    <string name="stats_rebuild_index_summary">Reprocess retained source text for character analytics.</string>
     <string name="stats_rebuild_rollups">Rebuild aggregate statistics</string>
     <string name="stats_rebuild_rollups_summary">Recalculate derived daily and lifetime totals from source events.</string>
     <string name="stats_recent_sessions">Recent sessions</string>
@@ -623,7 +623,7 @@
     <string name="stats_refresh">Refresh statistics</string>
     <string name="stats_removed">Removed</string>
     <string name="stats_reset_all">Reset all immersion statistics</string>
-    <string name="stats_reset_all_summary">Erase sessions, source text, vocabulary, Anki cache, goals, and derived totals. Deletion tombstones remain for sync safety.</string>
+    <string name="stats_reset_all_summary">Erase sessions, source text, characters, Anki cache, goals, and derived totals. Deletion tombstones remain for sync safety.</string>
     <string name="stats_reset_all_warning">Erase %1$s sessions and %2$s gross characters? Export a backup first if you may want this data later. This action cannot be undone and tombstones will prevent old synced copies from restoring it.</string>
     <string name="stats_retention_never">Do not retain source text</string>
     <string name="stats_retention_one_year">Keep for one year</string>
@@ -777,7 +777,6 @@
     <string name="stats_unicode_code_point">Code point: %1$s</string>
     <string name="stats_unicode_name">Unicode name: %1$s</string>
     <string name="stats_unicode_script">Script: %1$s</string>
-    <string name="stats_unique_words">Unique words</string>
     <string name="stats_unknown">Unknown</string>
     <string name="stats_unread">Unread</string>
     <string name="stats_view_all">View all</string>
