@@ -112,6 +112,29 @@ android {
             buildConfigField("boolean", "TELEMETRY_INCLUDED", "false")
             buildConfigField("boolean", "UPDATER_ENABLED", enableUpdater.toString())
         }
+        // KMK -->
+        // Side-by-side fork build. Uses its own application ID, app name, and
+        // launcher colour so it installs alongside an existing Chimahon
+        // release instead of replacing it. Signed with the debug key, so it can
+        // never upgrade over an official install.
+        create("fork") {
+            initWith(release)
+
+            applicationIdSuffix = ".fork"
+
+            versionNameSuffix = "${debug.versionNameSuffix}-fork"
+            signingConfig = debug.signingConfig
+
+            isMinifyEnabled = false
+            isShrinkResources = false
+
+            matchingFallbacks.addAll(commonMatchingFallbacks)
+
+            buildConfigField("String", "BUILD_TIME", "\"${getBuildTime(useLastCommitTime = false)}\"")
+            buildConfigField("boolean", "TELEMETRY_INCLUDED", "false")
+            buildConfigField("boolean", "UPDATER_ENABLED", "false")
+        }
+        // KMK <--
         create("benchmark") {
             initWith(release)
 

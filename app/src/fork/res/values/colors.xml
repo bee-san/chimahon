@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Distinct launcher background so the fork is visually separable from
+         an official Chimahon install on the same device. -->
+    <color name="ic_launcher">#ff7c4dff</color>
+</resources>
