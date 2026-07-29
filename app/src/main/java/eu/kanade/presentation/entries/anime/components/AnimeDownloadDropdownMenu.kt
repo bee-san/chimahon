@@ -6,9 +6,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.DpOffset
-import eu.kanade.presentation.entries.DownloadAction
 import eu.kanade.presentation.components.DefaultDropdownMenuOffset
 import eu.kanade.presentation.components.DropdownMenu
+import eu.kanade.presentation.entries.DownloadAction
 import kotlinx.collections.immutable.persistentListOf
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.i18n.pluralStringResource

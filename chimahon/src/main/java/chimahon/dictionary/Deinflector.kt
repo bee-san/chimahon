@@ -76,7 +76,7 @@ interface Deinflector {
     fun wrapResults(
         originalQuery: String,
         candidates: List<String>,
-        terms: List<chimahon.TermResult>
+        terms: List<chimahon.TermResult>,
     ): List<chimahon.LookupResult> {
         val termsByText = terms.groupBy { it.expression }
         return candidates.flatMap { candidate ->

@@ -471,18 +471,15 @@ class AnimeScreen(
         getAnimeUrl(anime_, source_)?.let { url ->
             val animeSourceScreenProvider = source_ as? AnimeSourceScreenProvider
             navigator.push(
-                if (animeSourceScreenProvider != null)
-                {
+                if (animeSourceScreenProvider != null) {
                     animeSourceScreenProvider.createBrowseScreen(null, anime_?.url)
-                }
-                else
-                {
+                } else {
                     WebViewScreen(
                         url = url,
                         initialTitle = anime_?.title,
                         sourceId = source_?.id,
                     )
-                }
+                },
             )
         }
     }

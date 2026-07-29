@@ -34,9 +34,9 @@ import androidx.core.content.getSystemService
 import eu.kanade.presentation.theme.TachiyomiTheme
 import eu.kanade.tachiyomi.ui.base.activity.BaseActivity
 import eu.kanade.tachiyomi.util.view.setComposeContent
-import tachiyomi.core.common.i18n.stringResource as contextStringResource
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.i18n.stringResource
+import tachiyomi.core.common.i18n.stringResource as contextStringResource
 
 class ScreenLookupPermissionActivity : BaseActivity() {
 

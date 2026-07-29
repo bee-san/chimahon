@@ -46,7 +46,9 @@ internal fun getDictionaryBootstrapHtml(
             }
           </style>
         """.trimIndent()
-    } else ""
+    } else {
+        ""
+    }
 
     val fontFaceCss = if (fontUrl != null) {
         """
@@ -60,14 +62,19 @@ internal fun getDictionaryBootstrapHtml(
         """.trimIndent()
     } else if (fontFamily.isNotBlank()) {
         var ff = fontFamily
-        if (ff == "System Serif") ff = "serif"
-        else if (ff == "System Sans-Serif") ff = "sans-serif"
+        if (ff == "System Serif") {
+            ff = "serif"
+        } else if (ff == "System Sans-Serif") {
+            ff = "sans-serif"
+        }
         """
           :root, body, #entries {
             font-family: '$ff' !important;
           }
         """.trimIndent()
-    } else ""
+    } else {
+        ""
+    }
 
     val dynamicThemeCss = if (colorScheme != null) {
         val accentHex = "#%06X".format(0xFFFFFF and colorScheme.primary.toArgb())
@@ -93,7 +100,9 @@ internal fun getDictionaryBootstrapHtml(
             }
           </style>
         """
-    } else ""
+    } else {
+        ""
+    }
 
     val eInkAttr = if (eInkMode) "true" else "false"
     val paginatedScrollingAttr = if (paginatedScrolling) "true" else "false"

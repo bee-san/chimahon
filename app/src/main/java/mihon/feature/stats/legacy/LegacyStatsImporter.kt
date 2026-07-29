@@ -66,7 +66,7 @@ class LegacyStatsImporter(
             results += repository.importLegacyBatch(plan.batch)
         }
 
-        loadGlobalDocument(FileNames.mangaStats, LegacyImportSourceKind.MANGA_JSON)?.let { document ->
+        loadGlobalDocument(FileNames.MANGA_STATS, LegacyImportSourceKind.MANGA_JSON)?.let { document ->
             val plans = planManga(document)
             plans.forEach { plan ->
                 issues += plan.issues
@@ -75,7 +75,7 @@ class LegacyStatsImporter(
             }
         }
 
-        loadGlobalDocument(FileNames.ankiStats, LegacyImportSourceKind.ANKI_JSON)?.let { document ->
+        loadGlobalDocument(FileNames.ANKI_STATS, LegacyImportSourceKind.ANKI_JSON)?.let { document ->
             val plans = planAnki(document)
             plans.forEach { plan ->
                 issues += plan.issues
@@ -211,13 +211,13 @@ class LegacyStatsImporter(
             ?.filter(File::isDirectory)
             ?.sortedBy(File::getName)
             ?.mapNotNull { bookDirectory ->
-                val file = File(bookDirectory, FileNames.statistics)
+                val file = File(bookDirectory, FileNames.STATISTICS)
                 if (!file.isFile) return@mapNotNull null
                 val metadata = BookStorage.loadMetadata(bookDirectory)
                 val novelId = metadata?.id?.takeIf(String::isNotBlank) ?: bookDirectory.name
                 val profile = dictionaryPreferences.profileResolver.resolve(novelId = novelId)
                 LegacySourceDocument(
-                    sourceKey = "novels/${bookDirectory.name}/${FileNames.statistics}",
+                    sourceKey = "novels/${bookDirectory.name}/${FileNames.STATISTICS}",
                     kind = LegacyImportSourceKind.NOVEL_JSON,
                     bytes = file.readBytes(),
                     novel = LegacyTitleDescriptor(

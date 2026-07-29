@@ -40,7 +40,9 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,21 +61,19 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.collections.immutable.ImmutableList
-import tachiyomi.i18n.MR
-import tachiyomi.presentation.core.i18n.stringResource
-import androidx.compose.runtime.produceState
-import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import tachiyomi.domain.history.interactor.DeleteSearchHistory
 import tachiyomi.domain.history.interactor.GetSearchHistory
 import tachiyomi.domain.history.interactor.UpsertSearchHistory
 import tachiyomi.domain.history.model.SearchHistory
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
+import tachiyomi.i18n.MR
+import tachiyomi.presentation.core.i18n.stringResource
 import tachiyomi.presentation.core.util.clearFocusOnSoftKeyboardHide
 import tachiyomi.presentation.core.util.runOnEnterKeyPressed
 import tachiyomi.presentation.core.util.secondaryItemAlpha
 import tachiyomi.presentation.core.util.showSoftKeyboard
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
 
 const val SEARCH_DEBOUNCE_MILLIS = 250L
 

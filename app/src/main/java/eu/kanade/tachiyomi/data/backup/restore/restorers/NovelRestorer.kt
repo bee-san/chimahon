@@ -14,7 +14,7 @@ import uy.kohesive.injekt.api.get
 
 class NovelRestorer(
     private val context: Context,
-    private val novelCategoryStorage: com.canopus.chimareader.data.NovelCategoryStorage = Injekt.get()
+    private val novelCategoryStorage: com.canopus.chimareader.data.NovelCategoryStorage = Injekt.get(),
 ) {
 
     fun restore(
@@ -44,7 +44,7 @@ class NovelRestorer(
                     cover = backupNovel.cover ?: localMetadata.cover,
                     lang = backupNovel.lang ?: localMetadata.lang,
                     isGhost = if (hasImportedContent) false else localMetadata.isGhost,
-                    categoryIds = mergeCategoryIds(localMetadata.categoryIds, backupCategoryIds)
+                    categoryIds = mergeCategoryIds(localMetadata.categoryIds, backupCategoryIds),
                 )
                 BookStorage.saveMetadata(updatedMetadata, bookDir)
             }
@@ -56,7 +56,7 @@ class NovelRestorer(
                     chapterIndex = backupNovel.chapterIndex,
                     progress = backupNovel.progress,
                     characterCount = backupNovel.characterCount,
-                    lastModified = backupNovel.lastModified
+                    lastModified = backupNovel.lastModified,
                 )
                 BookStorage.saveBookmark(newBookmark, bookDir)
             }
@@ -79,7 +79,7 @@ class NovelRestorer(
                             altMinReadingSpeed = backupStat.altMinReadingSpeed,
                             lastReadingSpeed = backupStat.lastReadingSpeed,
                             maxReadingSpeed = backupStat.maxReadingSpeed,
-                            lastStatisticModified = backupStat.lastStatisticModified
+                            lastStatisticModified = backupStat.lastStatisticModified,
                         )
                         statsUpdated = true
                     }
@@ -94,8 +94,8 @@ class NovelRestorer(
                             altMinReadingSpeed = backupStat.altMinReadingSpeed,
                             lastReadingSpeed = backupStat.lastReadingSpeed,
                             maxReadingSpeed = backupStat.maxReadingSpeed,
-                            lastStatisticModified = backupStat.lastStatisticModified
-                        )
+                            lastStatisticModified = backupStat.lastStatisticModified,
+                        ),
                     )
                     statsUpdated = true
                 }
@@ -118,7 +118,7 @@ class NovelRestorer(
                 hash = novelId,
                 isGhost = true,
                 lang = backupNovel.lang,
-                categoryIds = backupCategoryIds
+                categoryIds = backupCategoryIds,
             )
             BookStorage.saveMetadata(metadata, bookDir)
 
@@ -128,7 +128,7 @@ class NovelRestorer(
                     chapterIndex = backupNovel.chapterIndex,
                     progress = backupNovel.progress,
                     characterCount = backupNovel.characterCount,
-                    lastModified = backupNovel.lastModified
+                    lastModified = backupNovel.lastModified,
                 )
                 BookStorage.saveBookmark(newBookmark, bookDir)
             }
@@ -145,7 +145,7 @@ class NovelRestorer(
                         altMinReadingSpeed = it.altMinReadingSpeed,
                         lastReadingSpeed = it.lastReadingSpeed,
                         maxReadingSpeed = it.maxReadingSpeed,
-                        lastStatisticModified = it.lastStatisticModified
+                        lastStatisticModified = it.lastStatisticModified,
                     )
                 }
                 BookStorage.saveStatistics(stats, bookDir)

@@ -53,8 +53,8 @@ import eu.kanade.tachiyomi.ui.browse.BrowseTab
 import eu.kanade.tachiyomi.ui.browse.BrowseViewMode
 import eu.kanade.tachiyomi.ui.dictionary.DictionaryTab
 import eu.kanade.tachiyomi.ui.download.DownloadQueueScreen
-import eu.kanade.tachiyomi.ui.history.HistoryTab
 import eu.kanade.tachiyomi.ui.entries.anime.AnimeTab
+import eu.kanade.tachiyomi.ui.history.HistoryTab
 import eu.kanade.tachiyomi.ui.library.LibraryTab
 import eu.kanade.tachiyomi.ui.library.LibraryViewMode
 import eu.kanade.tachiyomi.ui.library.novels.NovelsTab

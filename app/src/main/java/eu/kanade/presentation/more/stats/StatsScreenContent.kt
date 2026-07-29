@@ -82,6 +82,7 @@ import androidx.compose.ui.unit.sp
 import chimahon.anki.AnkiProfile
 import eu.kanade.presentation.more.stats.data.StatsData
 import eu.kanade.presentation.more.stats.data.StatsType
+import eu.kanade.tachiyomi.util.lang.toCountString
 import tachiyomi.i18n.MR
 import tachiyomi.i18n.sy.SYMR
 import tachiyomi.presentation.core.components.material.SECONDARY_ALPHA
@@ -92,7 +93,6 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.util.Locale
-import eu.kanade.tachiyomi.util.lang.toCountString
 
 @Composable
 fun StatsScreenContent(
@@ -281,7 +281,6 @@ private fun FiltersRow(
     }
 }
 
-
 @Composable
 private fun DateNavigation(
     scale: StatsDateScale,
@@ -293,7 +292,7 @@ private fun DateNavigation(
     val label = remember(scale, offset) {
         val now = LocalDate.now()
         val dateFormatter = DateTimeFormatter.ofPattern("MMM d")
-        
+
         when (scale) {
             StatsDateScale.Day -> {
                 when (offset) {
@@ -453,15 +452,21 @@ private fun HeroSection(
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val spacing = size.width / historyPoints.size
                 val barWidth = spacing * 0.5f
-                
+
                 historyPoints.forEachIndexed { index, point ->
                     val barHeight = (point.value.toFloat() / maxVal.toFloat().coerceAtLeast(1f)) * size.height
                     val x = index * spacing + spacing / 2 - barWidth / 2
                     val y = size.height - barHeight
-                    
+
                     val isSelected = point.dateOffset == state.dateOffset
                     drawRoundRect(
-                        color = if (isSelected) primaryColor else if (point.value > 0) primaryColor.copy(alpha = 0.3f) else inactiveColor,
+                        color = if (isSelected) {
+                            primaryColor
+                        } else if (point.value > 0) {
+                            primaryColor.copy(alpha = 0.3f)
+                        } else {
+                            inactiveColor
+                        },
                         topLeft = Offset(x, y),
                         size = Size(barWidth, barHeight.coerceAtLeast(4.dp.toPx())),
                         cornerRadius = CornerRadius(6.dp.toPx()),
@@ -469,7 +474,7 @@ private fun HeroSection(
                 }
             }
         }
-        
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -499,7 +504,7 @@ private fun StatsGrid(
     onLibraryCardClick: (() -> Unit)? = null,
 ) {
     val iconColor = MaterialTheme.colorScheme.primary
-    
+
     Column(
         modifier = Modifier
             .padding(horizontal = 20.dp, vertical = 24.dp)
@@ -516,7 +521,7 @@ private fun StatsGrid(
                     MetricCard(MetricData(state.overview.ankiCardsAdded.toCountString(), "Added cards", null, Icons.Outlined.Style, iconColor))
                 }
             }
-            
+
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Box(modifier = Modifier.weight(1f)) {
                     MetricCard(MetricData(state.overview.charactersRead.toCountString(), "Characters read", null, Icons.Outlined.TextFields, iconColor))

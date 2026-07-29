@@ -2,10 +2,10 @@ package com.canopus.chimareader.ttusync
 
 import android.content.Context
 import android.util.Log
-import com.canopus.chimareader.data.Bookmark
 import com.canopus.chimareader.data.BookInfo
 import com.canopus.chimareader.data.BookMetadata
 import com.canopus.chimareader.data.BookStorage
+import com.canopus.chimareader.data.Bookmark
 import com.canopus.chimareader.data.ChapterInfo
 import com.canopus.chimareader.data.SasayakiPlaybackData
 import com.canopus.chimareader.data.Statistics
@@ -17,7 +17,10 @@ class TtuSyncManager(
     private val authManager: TtuOAuthManager,
     private val settingsRepository: SyncSettingsRepository,
     private val driveClient: TtuDriveClient = TtuDriveClient(context, authManager),
-    private val json: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true },
+    private val json: Json = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+    },
 ) {
 
     val settingsFlow: kotlinx.coroutines.flow.Flow<SyncSettings>

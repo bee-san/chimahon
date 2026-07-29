@@ -20,9 +20,9 @@ import kotlinx.collections.immutable.ImmutableSet
 import kotlinx.coroutines.delay
 import mihon.domain.extensionrepo.model.ExtensionRepo
 import tachiyomi.i18n.MR
-// import tachiyomi.i18n.ank.AMR
 import tachiyomi.presentation.core.i18n.stringResource
 import kotlin.time.Duration.Companion.seconds
+// import tachiyomi.i18n.ank.AMR
 
 @Composable
 fun ExtensionRepoCreateDialog(

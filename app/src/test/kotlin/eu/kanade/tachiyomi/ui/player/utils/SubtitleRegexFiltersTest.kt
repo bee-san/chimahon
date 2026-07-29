@@ -29,7 +29,7 @@ class SubtitleRegexFiltersTest {
             (
                 "- (\u5b50\u4f9b\u305f\u3061) \u308f\u30fc\u3044\uff01\n" +
                     "- (\u30ca\u30df) \u5de8\u4eba\u65cf\u306e\u5b50\u4f9b\uff1f"
-            ).applySubtitleRegexFilters(options(removeSpeakerNames = true)),
+                ).applySubtitleRegexFilters(options(removeSpeakerNames = true)),
         )
     }
 

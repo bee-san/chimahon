@@ -269,7 +269,7 @@ class SasayakiPlayer(
     }
 
     private fun savePlayback() {
-        BookStorage.save(playback, rootDir, FileNames.sasayakiPlayback)
+        BookStorage.save(playback, rootDir, FileNames.SASAYAKI_PLAYBACK)
     }
 
     fun teardown() {

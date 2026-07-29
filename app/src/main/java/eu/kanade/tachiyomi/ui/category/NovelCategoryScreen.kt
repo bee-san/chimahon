@@ -121,7 +121,7 @@ class NovelCategoryScreen : Screen() {
                                 name = categoryName,
                                 order = category.order.toLong(),
                                 flags = category.flags,
-                                hidden = false
+                                hidden = false,
                             )
                             CategoryListItem(
                                 modifier = Modifier.animateItem(),

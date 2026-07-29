@@ -292,5 +292,4 @@ object NovelMigration {
         val directory: File,
         val metadata: BookMetadata,
     )
-
 }

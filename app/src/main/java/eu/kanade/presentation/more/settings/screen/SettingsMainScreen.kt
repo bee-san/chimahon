@@ -118,8 +118,9 @@ object SettingsMainScreen : Screen() {
                     buildMainEntries().filter { entry ->
                         when (entry) {
                             is MainEntry.Header -> true
-                            is MainEntry.Item -> entry.item.screen !is SearchableSettings ||
-                                entry.item.screen.isEnabled()
+                            is MainEntry.Item ->
+                                entry.item.screen !is SearchableSettings ||
+                                    entry.item.screen.isEnabled()
                         }
                     }
                 }

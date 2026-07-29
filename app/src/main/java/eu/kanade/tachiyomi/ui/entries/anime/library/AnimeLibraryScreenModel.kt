@@ -5,10 +5,11 @@ import cafe.adriel.voyager.core.model.StateScreenModel
 import cafe.adriel.voyager.core.model.screenModelScope
 import eu.kanade.core.preference.PreferenceMutableState
 import eu.kanade.core.preference.asState
+import eu.kanade.core.util.fastFilterNot
 import eu.kanade.presentation.entries.DownloadAction
 import eu.kanade.presentation.library.components.LibraryToolbarTitle
-import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.AnimeSource
+import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.data.animedownload.AnimeDownloadManager
 import eu.kanade.tachiyomi.data.cache.AnimeBackgroundCache
 import eu.kanade.tachiyomi.data.cache.AnimeCoverCache
@@ -37,7 +38,6 @@ import tachiyomi.core.common.preference.CheckboxState
 import tachiyomi.core.common.preference.TriState
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.core.common.util.lang.launchNonCancellable
-import eu.kanade.core.util.fastFilterNot
 import tachiyomi.domain.category.interactor.GetAnimeCategories
 import tachiyomi.domain.category.interactor.SetAnimeCategories
 import tachiyomi.domain.category.model.AnimeCategory
@@ -56,7 +56,6 @@ import tachiyomi.domain.library.model.LibraryGroup
 import tachiyomi.domain.library.model.LibrarySort
 import tachiyomi.domain.library.model.sort
 import tachiyomi.domain.library.service.AnimeLibraryPreferences
-import tachiyomi.domain.source.anime.model.AnimeSource as DomainAnimeSource
 import tachiyomi.domain.source.anime.service.AnimeSourceManager
 import tachiyomi.domain.track.anime.interactor.GetTracksPerAnime
 import tachiyomi.domain.track.anime.model.AnimeTrack
@@ -64,6 +63,7 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.text.Collator
 import java.util.Locale
+import tachiyomi.domain.source.anime.model.AnimeSource as DomainAnimeSource
 
 class AnimeLibraryScreenModel(
     private val getLibraryAnime: GetLibraryAnime = Injekt.get(),
@@ -104,6 +104,7 @@ class AnimeLibraryScreenModel(
             ) { values ->
                 @Suppress("UNCHECKED_CAST")
                 val libraryAnime = values[0] as List<LibraryAnime>
+
                 @Suppress("UNCHECKED_CAST")
                 val categories = values[1] as List<AnimeCategory>
                 val searchQuery = values[2] as String?
@@ -116,8 +117,10 @@ class AnimeLibraryScreenModel(
                 val filterFillermarked = values[9] as TriState
                 val groupType = values[10] as Int
                 val categorizedDisplaySettings = values[11] as Boolean
+
                 @Suppress("UNCHECKED_CAST")
                 val trackMap = values[12] as Map<Long, List<AnimeTrack>>
+
                 @Suppress("UNCHECKED_CAST")
                 val trackingFilters = values[13] as Map<Long, TriState>
 
@@ -207,7 +210,6 @@ class AnimeLibraryScreenModel(
                 mutableState.update { it.copy(showContinueWatchingButton = show) }
             }
             .launchIn(screenModelScope)
-
     }
 
     fun search(query: String?) {

@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.di
 
 import android.app.Application
+import com.canopus.chimareader.data.NovelReaderSettings
 import eu.kanade.domain.base.BasePreferences
 import eu.kanade.domain.connections.service.ConnectionsPreferences
 import eu.kanade.domain.source.service.SourcePreferences
@@ -10,8 +11,8 @@ import eu.kanade.domain.ui.UiPreferences
 import eu.kanade.tachiyomi.core.security.PrivacyPreferences
 import eu.kanade.tachiyomi.core.security.SecurityPreferences
 import eu.kanade.tachiyomi.network.NetworkPreferences
-import eu.kanade.tachiyomi.ui.dictionary.DictionaryPreferences
 import eu.kanade.tachiyomi.torrentServer.TorrentServerPreferences
+import eu.kanade.tachiyomi.ui.dictionary.DictionaryPreferences
 import eu.kanade.tachiyomi.ui.player.settings.AdvancedPlayerPreferences
 import eu.kanade.tachiyomi.ui.player.settings.AudioPreferences
 import eu.kanade.tachiyomi.ui.player.settings.DecoderPreferences
@@ -19,7 +20,6 @@ import eu.kanade.tachiyomi.ui.player.settings.GesturePreferences
 import eu.kanade.tachiyomi.ui.player.settings.PlayerPreferences
 import eu.kanade.tachiyomi.ui.player.settings.SubtitlePreferences
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
-import com.canopus.chimareader.data.NovelReaderSettings
 import eu.kanade.tachiyomi.util.system.isDebugBuildType
 import tachiyomi.core.common.preference.AndroidPreferenceStore
 import tachiyomi.core.common.preference.PreferenceStore

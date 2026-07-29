@@ -11,8 +11,6 @@ import eu.kanade.tachiyomi.data.download.DownloadProvider
 import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.util.lang.compareToCaseInsensitiveNaturalOrder
-import tachiyomi.domain.storage.service.StorageManager
-import tachiyomi.source.local.isLocal
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,6 +33,8 @@ import tachiyomi.domain.chapter.repository.ChapterRepository
 import tachiyomi.domain.manga.model.Manga
 import tachiyomi.domain.manga.repository.MangaRepository
 import tachiyomi.domain.source.service.SourceManager
+import tachiyomi.domain.storage.service.StorageManager
+import tachiyomi.source.local.isLocal
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import chimahon.ocr.OcrTextBlock as ChimahonOcrTextBlock
@@ -256,7 +256,7 @@ class OcrManager(
 
     suspend fun runPendingQueue(stopRequested: () -> Boolean) = kotlinx.coroutines.supervisorScope {
         val dictPrefs = Injekt.get<eu.kanade.tachiyomi.ui.dictionary.DictionaryPreferences>()
-        
+
         val prefJob = launch {
             dictPrefs.parallelOcrLimit().changes().collect {
                 triggerChannel.trySend(Unit)
@@ -266,7 +266,7 @@ class OcrManager(
         try {
             while (!stopRequested()) {
                 val parallelLimit = dictPrefs.parallelOcrLimit().get()
-                
+
                 val runnableTasks = ocrStore.getAll().filter { it.status.isRunnable() }
                 val nextTask = runnableTasks.firstOrNull { !runningJobs.containsKey(it.chapterId) }
 
@@ -620,7 +620,7 @@ class OcrManager(
                                     vertical = it.vertical,
                                     lineGeometries = it.lineGeometries?.map { lg ->
                                         chimahon.ocr.OcrLineGeometry(lg.xmin, lg.ymin, lg.xmax, lg.ymax, lg.rotation)
-                                    }
+                                    },
                                 )
                             },
                             language = OcrLanguage.JAPANESE.bcp47,

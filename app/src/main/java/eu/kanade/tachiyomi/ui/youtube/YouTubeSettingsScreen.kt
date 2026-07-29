@@ -92,7 +92,7 @@ class YouTubeSettingsScreen : Screen {
                 ) {
                     Checkbox(
                         checked = addNewChannelsToLibrary,
-                        onCheckedChange = null
+                        onCheckedChange = null,
                     )
 
                     Text(

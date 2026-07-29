@@ -1,13 +1,16 @@
 package eu.kanade.presentation.more.stats
 
 import androidx.compose.runtime.Immutable
+import chimahon.anki.AnkiProfile
 import eu.kanade.presentation.more.stats.data.StatsData
 import eu.kanade.presentation.more.stats.data.StatsType
 
-import chimahon.anki.AnkiProfile
-
 enum class StatsDateScale {
-    Day, Week, Month, Year, AllTime
+    Day,
+    Week,
+    Month,
+    Year,
+    AllTime,
 }
 
 sealed interface StatsScreenState {

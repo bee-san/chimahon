@@ -18,15 +18,6 @@ import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
-import androidx.compose.runtime.rememberCoroutineScope
-import eu.kanade.presentation.components.SearchHistoryRow
-import kotlinx.coroutines.launch
-import tachiyomi.domain.history.interactor.DeleteSearchHistory
-import tachiyomi.domain.history.interactor.GetSearchHistory
-import tachiyomi.domain.history.interactor.UpsertSearchHistory
-import tachiyomi.domain.history.model.SearchHistory
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.HorizontalDivider
@@ -42,6 +33,7 @@ import androidx.compose.runtime.NonRestartableComposable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -57,20 +49,28 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import cafe.adriel.voyager.navigator.LocalNavigator
 import cafe.adriel.voyager.navigator.currentOrThrow
+import eu.kanade.presentation.components.SearchHistoryRow
 import eu.kanade.presentation.components.UpIcon
+import eu.kanade.presentation.more.settings.Preference
 import eu.kanade.presentation.more.settings.screen.player.PlayerSettingsAdvancedScreen
 import eu.kanade.presentation.more.settings.screen.player.PlayerSettingsAudioScreen
 import eu.kanade.presentation.more.settings.screen.player.PlayerSettingsDecoderScreen
 import eu.kanade.presentation.more.settings.screen.player.PlayerSettingsGesturesScreen
 import eu.kanade.presentation.more.settings.screen.player.PlayerSettingsPlayerScreen
 import eu.kanade.presentation.more.settings.screen.player.PlayerSettingsSubtitleScreen
-import eu.kanade.presentation.more.settings.Preference
 import eu.kanade.presentation.util.Screen
+import kotlinx.coroutines.launch
+import tachiyomi.domain.history.interactor.DeleteSearchHistory
+import tachiyomi.domain.history.interactor.GetSearchHistory
+import tachiyomi.domain.history.interactor.UpsertSearchHistory
+import tachiyomi.domain.history.model.SearchHistory
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.components.material.Scaffold
 import tachiyomi.presentation.core.i18n.stringResource
 import tachiyomi.presentation.core.screens.EmptyScreen
 import tachiyomi.presentation.core.util.runOnEnterKeyPressed
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
 import cafe.adriel.voyager.core.screen.Screen as VoyagerScreen
 
 class SettingsSearchScreen : Screen() {

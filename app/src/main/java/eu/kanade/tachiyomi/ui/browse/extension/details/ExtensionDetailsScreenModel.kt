@@ -27,9 +27,9 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import logcat.LogPriority
-import tachiyomi.domain.source.service.SourceManager
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import tachiyomi.core.common.util.system.logcat
+import tachiyomi.domain.source.service.SourceManager
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 

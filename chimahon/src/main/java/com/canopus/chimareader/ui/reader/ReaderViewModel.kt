@@ -143,7 +143,7 @@ class ReaderLoaderViewModel(
         val root = rootUrl ?: return
         val doc = BookStorage.loadEpub(root)
         val bookCopy = book.copy(lastAccess = System.currentTimeMillis())
-        BookStorage.save(bookCopy, root, FileNames.metadata)
+        BookStorage.save(bookCopy, root, FileNames.METADATA)
         document = doc
     }
 }
@@ -187,7 +187,11 @@ class ReaderViewModel(
     var einkRefreshColor by mutableStateOf("BLACK")
 
     private val ttuSyncManager: TtuSyncManager? by lazy {
-        try { Injekt.get<TtuSyncManager>() } catch (_: Exception) { null }
+        try {
+            Injekt.get<TtuSyncManager>()
+        } catch (_: Exception) {
+            null
+        }
     }
     private var syncExportJob: kotlinx.coroutines.Job? = null
     var isSyncing: Boolean = false
@@ -754,7 +758,7 @@ class ReaderViewModel(
                 lastModified = System.currentTimeMillis(),
             ),
             rootUrl,
-            FileNames.bookmark,
+            FileNames.BOOKMARK,
         )
         lastSavedChapterIndex = index
         lastSavedProgress = progress

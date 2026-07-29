@@ -48,7 +48,6 @@ import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ProvideTextStyle
-import androidx.compose.material3.SuggestionChipDefaults as SuggestionChipDefaultsM3
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -83,7 +82,6 @@ import coil3.request.ImageRequest
 import coil3.request.crossfade
 import eu.kanade.domain.ui.UiPreferences
 import eu.kanade.presentation.components.DropdownMenu
-
 import eu.kanade.presentation.entries.components.DotSeparatorText
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.animesource.model.SAnime
@@ -105,6 +103,7 @@ import uy.kohesive.injekt.api.get
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import kotlin.math.roundToInt
+import androidx.compose.material3.SuggestionChipDefaults as SuggestionChipDefaultsM3
 import tachiyomi.domain.entries.anime.model.AnimeCover as DomainAnimeCover
 
 private val whitespaceLineRegex = Regex("[\\r\\n]{2,}", setOf(RegexOption.MULTILINE))

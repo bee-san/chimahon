@@ -26,6 +26,7 @@ import eu.kanade.tachiyomi.data.backup.models.BackupFeed
 import eu.kanade.tachiyomi.data.backup.models.BackupManga
 import eu.kanade.tachiyomi.data.backup.models.BackupPreference
 import eu.kanade.tachiyomi.data.backup.models.BackupSavedSearch
+import eu.kanade.tachiyomi.data.backup.models.BackupSearchHistory
 import eu.kanade.tachiyomi.data.backup.models.BackupSource
 import eu.kanade.tachiyomi.data.backup.models.BackupSourcePreferences
 import kotlinx.serialization.protobuf.ProtoBuf
@@ -40,6 +41,8 @@ import tachiyomi.domain.entries.anime.interactor.GetAnimeSeasonsByParentId
 import tachiyomi.domain.entries.anime.interactor.GetFavoriteAnime
 import tachiyomi.domain.entries.anime.model.Anime
 import tachiyomi.domain.entries.anime.repository.AnimeRepository
+import tachiyomi.domain.history.interactor.GetSearchHistory
+import tachiyomi.domain.history.model.SearchHistory
 import tachiyomi.domain.manga.interactor.GetFavorites
 import tachiyomi.domain.manga.interactor.GetMergedManga
 import tachiyomi.domain.manga.model.Manga
@@ -52,9 +55,6 @@ import java.text.SimpleDateFormat
 import java.time.Instant
 import java.util.Date
 import java.util.Locale
-import eu.kanade.tachiyomi.data.backup.models.BackupSearchHistory
-import tachiyomi.domain.history.interactor.GetSearchHistory
-import tachiyomi.domain.history.model.SearchHistory
 
 class BackupCreator(
     private val context: Context,

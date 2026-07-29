@@ -2,12 +2,12 @@ package eu.kanade.tachiyomi.ui.browse.source
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Row
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.TravelExplore
 import androidx.compose.material.icons.outlined._18UpRating
-import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
@@ -114,8 +114,8 @@ fun Screen.sourcesTab(
                                     "application/x-rar", "application/x-cbr",
                                     "application/x-7z-compressed", "application/x-cb7",
                                     "application/x-tar", "application/x-cbt",
-                                    "application/epub+zip", "application/json", "application/octet-stream"
-                                )
+                                    "application/epub+zip", "application/json", "application/octet-stream",
+                                ),
                             )
                         },
                     ) {
@@ -146,7 +146,7 @@ fun Screen.sourcesTab(
                         is PendingImportData.Folder -> ImportHandler.importMangaFolder(context, data.uri, folderName)
                     }
                 }
-            }
+            },
         )
     }
 

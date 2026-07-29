@@ -27,12 +27,12 @@ import eu.kanade.tachiyomi.data.animedownload.AnimeDownloadManager
 import eu.kanade.tachiyomi.data.cache.AnimeBackgroundCache
 import eu.kanade.tachiyomi.data.cache.CoverCache
 import eu.kanade.tachiyomi.data.notification.Notifications
-import eu.kanade.tachiyomi.util.system.setForegroundSafely
 import eu.kanade.tachiyomi.source.model.UpdateStrategy
 import eu.kanade.tachiyomi.util.storage.getUriCompat
 import eu.kanade.tachiyomi.util.system.createFileInCacheDir
 import eu.kanade.tachiyomi.util.system.isConnectedToWifi
 import eu.kanade.tachiyomi.util.system.isRunning
+import eu.kanade.tachiyomi.util.system.setForegroundSafely
 import eu.kanade.tachiyomi.util.system.workManager
 import exh.util.WorkerUtil
 import kotlinx.coroutines.CancellationException
@@ -43,18 +43,18 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import logcat.LogPriority
-import tachiyomi.domain.episode.interactor.FilterEpisodesForDownload
 import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.core.common.preference.getAndSet
 import tachiyomi.core.common.util.lang.withIOContext
 import tachiyomi.core.common.util.system.logcat
+import tachiyomi.data.source.NoResultsException
 import tachiyomi.domain.category.model.AnimeCategory
 import tachiyomi.domain.entries.anime.interactor.FetchInterval
 import tachiyomi.domain.entries.anime.interactor.GetAnime
 import tachiyomi.domain.entries.anime.interactor.GetAnimeSeasonsByParentId
 import tachiyomi.domain.entries.anime.interactor.GetLibraryAnime
-import tachiyomi.data.source.NoResultsException
 import tachiyomi.domain.entries.anime.model.Anime
+import tachiyomi.domain.episode.interactor.FilterEpisodesForDownload
 import tachiyomi.domain.episode.model.Episode
 import tachiyomi.domain.library.model.LibraryAnime
 import tachiyomi.domain.library.service.LibraryPreferences
@@ -294,9 +294,9 @@ class AnimeLibraryUpdateJob(private val context: Context, workerParams: WorkerPa
                                         }
                                     } catch (e: Throwable) {
                                         val errorMessage = when (e) {
-                                        is NoResultsException -> context.stringResource(
-                                            MR.strings.no_episodes_error,
-                                        )
+                                            is NoResultsException -> context.stringResource(
+                                                MR.strings.no_episodes_error,
+                                            )
                                             is AnimeSourceNotInstalledException -> context.stringResource(
                                                 MR.strings.loader_not_implemented_error,
                                             )
