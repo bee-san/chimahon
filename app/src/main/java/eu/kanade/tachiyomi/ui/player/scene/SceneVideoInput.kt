@@ -163,7 +163,7 @@ internal object SceneVideoInputResolver {
 }
 
 internal object SceneFfmpegArguments {
-    fun animatedAvif(
+    fun av1MediaCodecPackets(
         input: SceneVideoInputSpec,
         acquiredInputValue: String,
         range: SceneTimeRange,
@@ -201,13 +201,35 @@ internal object SceneFfmpegArguments {
             add("1")
             add("-pix_fmt")
             add("yuv420p")
-            add("-loop")
-            add("0")
             add("-f")
-            add("avif")
+            add("data")
             add("-y")
             add(outputFile)
         }.toTypedArray()
+    }
+
+    fun animatedAvifFromObu(
+        inputFile: String,
+        outputFile: String,
+    ): Array<String> {
+        return arrayOf(
+            "-f",
+            "obu",
+            "-framerate",
+            FRAME_RATE.toInt().toString(),
+            "-i",
+            inputFile,
+            "-map",
+            "0:v:0",
+            "-c:v",
+            "copy",
+            "-loop",
+            "0",
+            "-f",
+            "avif",
+            "-y",
+            outputFile,
+        )
     }
 
     fun videoProbe(

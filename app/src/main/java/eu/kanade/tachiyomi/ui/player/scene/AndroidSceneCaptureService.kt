@@ -8,6 +8,7 @@ import chimahon.anki.AnkiMediaNaming
 import chimahon.anki.AnkiScreenshotPreparation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
@@ -47,25 +48,45 @@ internal class AndroidSceneCaptureService private constructor(
             val lease = inputAcquirer.acquire(input)
                 ?: return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
             sceneDirectory.mkdirs()
-            val output = File(sceneDirectory, "${UUID.randomUUID()}.avif")
-            val inputCleanup = SceneNativeCleanup(lease::close)
-            val outputCleanup = SceneNativeCleanup(output::delete)
+            val outputBaseName = UUID.randomUUID().toString()
+            val intermediate = File(sceneDirectory, "$outputBaseName.obu")
+            val output = File(sceneDirectory, "$outputBaseName.avif")
             var transferred = false
             try {
-                val result = commandExecutor.executeFfmpeg(
-                    SceneFfmpegArguments.animatedAvif(
-                        input = input,
-                        acquiredInputValue = lease.ffmpegValue,
-                        range = range,
-                        outputFile = output.absolutePath,
-                        encoderName = encoderName,
-                        tlsCaFile = lease.tlsCaFile,
-                    ),
-                ) {
-                    inputCleanup.nativeFinished()
-                    outputCleanup.nativeFinished()
+                val encodeResult = withContext(NonCancellable) {
+                    commandExecutor.executeFfmpeg(
+                        SceneFfmpegArguments.av1MediaCodecPackets(
+                            input = input,
+                            acquiredInputValue = lease.ffmpegValue,
+                            range = range,
+                            outputFile = intermediate.absolutePath,
+                            encoderName = encoderName,
+                            tlsCaFile = lease.tlsCaFile,
+                        ),
+                    )
                 }
-                when (result) {
+                when (encodeResult) {
+                    SceneCommandResult.Failed -> {
+                        return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
+                    }
+                    is SceneCommandResult.Success -> Unit
+                }
+                val normalized = intermediate
+                    .takeIf { it.isFile && it.length() in 1..MAX_INTERMEDIATE_BYTES }
+                    ?.readBytes()
+                    ?.let(MediaCodecAv1StreamNormalizer::normalize)
+                    ?: return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
+                intermediate.writeBytes(normalized)
+
+                val remuxResult = withContext(NonCancellable) {
+                    commandExecutor.executeFfmpeg(
+                        SceneFfmpegArguments.animatedAvifFromObu(
+                            inputFile = intermediate.absolutePath,
+                            outputFile = output.absolutePath,
+                        ),
+                    )
+                }
+                when (remuxResult) {
                     SceneCommandResult.Failed -> {
                         return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
                     }
@@ -90,8 +111,9 @@ internal class AndroidSceneCaptureService private constructor(
             } catch (_: Exception) {
                 AnkiScreenshotPreparation.Failed(stillFallback = null)
             } finally {
-                inputCleanup.release()
-                if (!transferred) outputCleanup.release()
+                lease.close()
+                intermediate.delete()
+                if (!transferred) output.delete()
             }
         }
     }
@@ -113,6 +135,7 @@ internal class AndroidSceneCaptureService private constructor(
     internal companion object {
         private const val SCENE_CACHE_DIRECTORY = "chimahon_scene_capture"
         private const val MAX_OUTPUT_DIMENSION = 640
+        private const val MAX_INTERMEDIATE_BYTES = 12L * 1024L * 1024L
 
         fun forTests(
             sceneDirectory: File,
