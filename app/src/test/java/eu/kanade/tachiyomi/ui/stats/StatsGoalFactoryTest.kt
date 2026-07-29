@@ -192,6 +192,33 @@ class StatsGoalFactoryTest {
         count.value shouldBe 90_000.0
     }
 
+    /**
+     * A user upgrading from a build that tracked words may hold a goal on a metric
+     * this build no longer computes. Those metrics were dropped because
+     * `ReadingMetrics` cannot produce them, so a surviving goal must resolve to
+     * null and be hidden -- not crash, and not sit at zero progress forever with
+     * no explanation.
+     */
+    @Test
+    fun `a goal on a metric this build no longer tracks is refused`() {
+        listOf("new_words", "lookups", "words", "unique_words", "not_a_metric").forEach { metric ->
+            createGoal(values = values(metric = metric)).shouldBeNull()
+        }
+    }
+
+    @Test
+    fun `every offered goal metric still resolves`() {
+        STATS_GOAL_METRICS.forEach { metric ->
+            val kind = when (metric) {
+                "manual" -> StatsGoalKind.MANUAL
+                else -> StatsGoalKind.DAILY
+            }
+            check(createGoal(values = values(kind = kind, metric = metric)) != null) {
+                "Goal metric '$metric' is offered in the picker but does not resolve"
+            }
+        }
+    }
+
     private fun createGoal(
         values: StatsGoalEditorValues,
         scope: StatsGoalScope = scope(),
