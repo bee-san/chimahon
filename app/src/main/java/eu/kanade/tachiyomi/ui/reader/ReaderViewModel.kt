@@ -1327,6 +1327,11 @@ class ReaderViewModel @JvmOverloads constructor(
         cancelOcrScan()
         ocrScannedChapterIds.clear()
         mutableState.update { it.copy(ocrSource = source) }
+        // Re-run OCR with the newly selected source right away instead of waiting for the
+        // next page change to restart the chapter scan.
+        if (isOcrEnabled()) {
+            getSelectedReaderPage()?.let { scanOcrPages(it) }
+        }
         return true
     }
 
