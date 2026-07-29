@@ -29,6 +29,11 @@ data class AnkiProfile(
     val ankiCropMode: String = "full",
     val ankiCropPreset: String = "full",
     val ankiSyncOnCreate: Boolean = false,
+    val ankiStatsExpressionField: String = "",
+    val ankiStatsReadingField: String = "",
+    val ankiStatsCharacterField: String = "",
+    val ankiStatsMatureIntervalDays: Int = 21,
+    val ankiStatsMaturityAggregation: String = "MAX_INTERVAL",
     // Dictionary configuration
     val dictionaryOrder: List<String> = emptyList(),
     val enabledDictionaries: Set<String> = emptySet(), // empty = all enabled
@@ -58,6 +63,11 @@ data class AnkiProfile(
         put("ankiCropMode", ankiCropMode)
         put("ankiCropPreset", ankiCropPreset)
         put("ankiSyncOnCreate", ankiSyncOnCreate)
+        put("ankiStatsExpressionField", ankiStatsExpressionField)
+        put("ankiStatsReadingField", ankiStatsReadingField)
+        put("ankiStatsCharacterField", ankiStatsCharacterField)
+        put("ankiStatsMatureIntervalDays", ankiStatsMatureIntervalDays)
+        put("ankiStatsMaturityAggregation", ankiStatsMaturityAggregation)
         put("dictionaryOrder", JSONArray(dictionaryOrder))
         put("enabledDictionaries", JSONArray(enabledDictionaries.toList()))
         put("dictionaryCollapseMode", dictionaryCollapseMode)
@@ -97,6 +107,14 @@ data class AnkiProfile(
             ankiCropMode = json.optString("ankiCropMode", "full"),
             ankiCropPreset = json.optString("ankiCropPreset", "full"),
             ankiSyncOnCreate = json.optBoolean("ankiSyncOnCreate", false),
+            ankiStatsExpressionField = json.optString("ankiStatsExpressionField", ""),
+            ankiStatsReadingField = json.optString("ankiStatsReadingField", ""),
+            ankiStatsCharacterField = json.optString("ankiStatsCharacterField", ""),
+            ankiStatsMatureIntervalDays = json.optInt("ankiStatsMatureIntervalDays", 21).coerceAtLeast(1),
+            ankiStatsMaturityAggregation = json.optString(
+                "ankiStatsMaturityAggregation",
+                "MAX_INTERVAL",
+            ),
             dictionaryOrder = json.optJSONArray("dictionaryOrder")
                 ?.let { arr -> (0 until arr.length()).map { arr.getString(it) } }
                 ?: emptyList(),

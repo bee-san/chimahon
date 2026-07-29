@@ -272,4 +272,10 @@
     <string name="ocr_source_mokuro">Mokuro</string>
     <string name="ocr_source_google_lens">Google Lens</string>
     <string name="ocr_source_local">Local</string>
+
+    <!-- Immersion statistics -->
+    <string name="stats_goal_reminder_channel">Immersion goal reminders</string>
+    <string name="stats_goal_reminder_title">Today’s immersion goals</string>
+    <string name="backup_option_immersion_stats">Immersion statistics</string>
+    <string name="backup_option_immersion_raw_text">Retained source text (private)</string>
 </resources>

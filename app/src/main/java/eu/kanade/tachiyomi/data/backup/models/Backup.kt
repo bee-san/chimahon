@@ -60,5 +60,6 @@ data class Backup(
     @ProtoNumber(701) var backupNovelCategories: List<BackupNovelCategory> = emptyList(),
     @ProtoNumber(710) var backupMangaStats: List<com.canopus.chimareader.data.MangaStats> = emptyList(),
     @ProtoNumber(711) var backupAnkiStats: List<com.canopus.chimareader.data.AnkiStats> = emptyList(),
+    @ProtoNumber(712) var backupImmersionStats: tachiyomi.domain.immersion.model.ImmersionPortableArchive? = null,
     // Chimahon <--
 )

@@ -23,6 +23,8 @@ data class BackupOptions(
     // SY <--
     // Chimahon -->
     val novels: Boolean = true,
+    val immersionStats: Boolean = true,
+    val immersionRawText: Boolean = false,
     // Chimahon <--
     val animeEntries: Boolean = true,
 ) {
@@ -46,10 +48,22 @@ data class BackupOptions(
         novels,
         // Chimahon <--
         animeEntries,
+        // Chimahon -->
+        immersionStats,
+        immersionRawText,
+        // Chimahon <--
     )
 
     fun canCreate() =
-        libraryEntries || animeEntries || categories || appSettings || extensionStores || sourceSettings || savedSearchesFeeds || novels
+        libraryEntries ||
+            animeEntries ||
+            categories ||
+            appSettings ||
+            extensionStores ||
+            sourceSettings ||
+            savedSearchesFeeds ||
+            novels ||
+            immersionStats
 
     companion object {
         val libraryOptions = persistentListOf(
@@ -138,6 +152,19 @@ data class BackupOptions(
                 setter = { options, enabled -> options.copy(privateSettings = enabled) },
                 enabled = { it.appSettings || it.sourceSettings },
             ),
+            // Chimahon -->
+            Entry(
+                label = KMR.strings.backup_option_immersion_stats,
+                getter = BackupOptions::immersionStats,
+                setter = { options, enabled -> options.copy(immersionStats = enabled) },
+            ),
+            Entry(
+                label = KMR.strings.backup_option_immersion_raw_text,
+                getter = BackupOptions::immersionRawText,
+                setter = { options, enabled -> options.copy(immersionRawText = enabled) },
+                enabled = { it.immersionStats },
+            ),
+            // Chimahon <--
         )
 
         fun fromBooleanArray(array: BooleanArray) = BackupOptions(
@@ -157,6 +184,8 @@ data class BackupOptions(
             // SY <--
             // Chimahon -->
             novels = array.getOrElse(12) { true },
+            immersionStats = array.getOrElse(14) { true },
+            immersionRawText = array.getOrElse(15) { false },
             // Chimahon <--
             animeEntries = array.getOrElse(13) { true },
         )

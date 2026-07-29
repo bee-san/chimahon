@@ -18,6 +18,8 @@ data class SyncSettings(
     // SY <--
     // Chimahon -->
     val novels: Boolean = true,
+    val immersionStats: Boolean = true,
+    val immersionRawText: Boolean = false,
     // Chimahon <--
     val animeEntries: Boolean = true,
 )
