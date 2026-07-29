@@ -8,7 +8,6 @@ import chimahon.anki.AnkiMediaNaming
 import chimahon.anki.AnkiScreenshotPreparation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
@@ -51,20 +50,25 @@ internal class AndroidSceneCaptureService private constructor(
             val outputBaseName = UUID.randomUUID().toString()
             val intermediate = File(sceneDirectory, "$outputBaseName.obu")
             val output = File(sceneDirectory, "$outputBaseName.avif")
+            val inputCleanup = SceneNativeCleanup(lease::close)
+            val intermediateCleanup = SceneNativeCleanup(intermediate::delete)
+            var outputCleanup: SceneNativeCleanup? = null
             var transferred = false
             try {
-                val encodeResult = withContext(NonCancellable) {
-                    commandExecutor.executeFfmpeg(
-                        SceneFfmpegArguments.av1MediaCodecPackets(
-                            input = input,
-                            acquiredInputValue = lease.ffmpegValue,
-                            range = range,
-                            outputFile = intermediate.absolutePath,
-                            encoderName = encoderName,
-                            tlsCaFile = lease.tlsCaFile,
-                        ),
-                    )
+                val encodeResult = commandExecutor.executeFfmpeg(
+                    SceneFfmpegArguments.av1MediaCodecPackets(
+                        input = input,
+                        acquiredInputValue = lease.ffmpegValue,
+                        range = range,
+                        outputFile = intermediate.absolutePath,
+                        encoderName = encoderName,
+                        tlsCaFile = lease.tlsCaFile,
+                    ),
+                ) {
+                    inputCleanup.nativeFinished()
+                    intermediateCleanup.nativeFinished()
                 }
+                inputCleanup.release()
                 when (encodeResult) {
                     SceneCommandResult.Failed -> {
                         return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
@@ -78,13 +82,17 @@ internal class AndroidSceneCaptureService private constructor(
                     ?: return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
                 intermediate.writeBytes(normalized)
 
-                val remuxResult = withContext(NonCancellable) {
-                    commandExecutor.executeFfmpeg(
-                        SceneFfmpegArguments.animatedAvifFromObu(
-                            inputFile = intermediate.absolutePath,
-                            outputFile = output.absolutePath,
-                        ),
-                    )
+                val currentOutputCleanup = SceneNativeCleanup(output::delete)
+                outputCleanup = currentOutputCleanup
+                val finishIntermediateRemuxUse = intermediateCleanup.retainNativeUse()
+                val remuxResult = commandExecutor.executeFfmpeg(
+                    SceneFfmpegArguments.animatedAvifFromObu(
+                        inputFile = intermediate.absolutePath,
+                        outputFile = output.absolutePath,
+                    ),
+                ) {
+                    finishIntermediateRemuxUse()
+                    currentOutputCleanup.nativeFinished()
                 }
                 when (remuxResult) {
                     SceneCommandResult.Failed -> {
@@ -111,9 +119,11 @@ internal class AndroidSceneCaptureService private constructor(
             } catch (_: Exception) {
                 AnkiScreenshotPreparation.Failed(stillFallback = null)
             } finally {
-                lease.close()
-                intermediate.delete()
-                if (!transferred) output.delete()
+                inputCleanup.release()
+                intermediateCleanup.release()
+                if (!transferred) {
+                    outputCleanup?.release() ?: output.delete()
+                }
             }
         }
     }

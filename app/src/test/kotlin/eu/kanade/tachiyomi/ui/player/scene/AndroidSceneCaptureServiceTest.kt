@@ -4,7 +4,14 @@ import android.graphics.Bitmap
 import chimahon.anki.AnkiScreenshotPreparation
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -79,6 +86,32 @@ class AndroidSceneCaptureServiceTest {
 
         assertTrue(result is AnkiScreenshotPreparation.Failed)
         assertTrue(sceneDirectory.listFiles().isNullOrEmpty())
+    }
+
+    @Test
+    fun `cancellation reaches native remux and defers file cleanup until native return`() = runTest {
+        val executor = RecordingExecutor(writeOutput = true, suspendRemux = true)
+        val service = service(executor = executor)
+        val preparation = launch { service.prepare(request()) }
+        withContext(Dispatchers.Default) {
+            withTimeout(5_000) { executor.remuxStarted.await() }
+        }
+        val remuxArguments = executor.ffmpegArguments.last()
+        val intermediate = File(remuxArguments[remuxArguments.indexOf("-i") + 1])
+        val output = File(remuxArguments.last())
+
+        preparation.cancelAndJoin()
+        withContext(Dispatchers.Default) {
+            withTimeout(5_000) { executor.cancellationObserved.await() }
+        }
+
+        assertTrue(intermediate.isFile)
+        assertTrue(output.isFile)
+
+        executor.finishNative()
+
+        assertFalse(intermediate.exists())
+        assertFalse(output.exists())
     }
 
     private fun service(
@@ -194,26 +227,39 @@ class AndroidSceneCaptureServiceTest {
 
     private class RecordingExecutor(
         private val writeOutput: Boolean,
+        private val suspendRemux: Boolean = false,
     ) : SceneCommandExecutor {
         var probeCalls = 0
         var ffmpegCalls = 0
         val ffmpegArguments = mutableListOf<Array<String>>()
+        val remuxStarted = CompletableDeferred<Unit>()
+        val cancellationObserved = CompletableDeferred<Unit>()
+        private lateinit var onRemuxFinished: () -> Unit
 
         override suspend fun executeFfmpeg(
             arguments: Array<String>,
             onNativeFinished: () -> Unit,
         ): SceneCommandResult {
-            return try {
-                ffmpegCalls++
-                ffmpegArguments += arguments
-                if (writeOutput) {
-                    val output = File(arguments.last())
-                    val bytes = when (output.extension) {
-                        "obu" -> mediaCodecAv1PacketStream()
-                        else -> byteArrayOf(1, 2, 3)
-                    }
-                    output.writeBytes(bytes)
+            ffmpegCalls++
+            ffmpegArguments += arguments
+            val output = File(arguments.last())
+            if (writeOutput) {
+                val bytes = when (output.extension) {
+                    "obu" -> mediaCodecAv1PacketStream()
+                    else -> byteArrayOf(1, 2, 3)
                 }
+                output.writeBytes(bytes)
+            }
+            if (suspendRemux && output.extension == "avif") {
+                onRemuxFinished = onNativeFinished
+                remuxStarted.complete(Unit)
+                return suspendCancellableCoroutine { continuation ->
+                    continuation.invokeOnCancellation {
+                        cancellationObserved.complete(Unit)
+                    }
+                }
+            }
+            return try {
                 SceneCommandResult.Success()
             } finally {
                 onNativeFinished()
@@ -232,6 +278,10 @@ class AndroidSceneCaptureServiceTest {
             } finally {
                 onNativeFinished()
             }
+        }
+
+        fun finishNative() {
+            onRemuxFinished()
         }
     }
 
