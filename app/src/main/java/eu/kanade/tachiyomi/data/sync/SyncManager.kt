@@ -19,6 +19,10 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.protobuf.ProtoBuf
 import logcat.LogPriority
 import logcat.logcat
+import mihon.feature.stats.sync.filterImmersionStatsForRestore
+import mihon.feature.stats.sync.hasRestorableRemoteSyncData
+import mihon.feature.stats.sync.hasSameSyncPayloadAs
+import mihon.feature.stats.sync.hasSyncEntriesOrImmersionStats
 import tachiyomi.core.common.util.system.logcat
 import tachiyomi.data.Chapters
 import tachiyomi.data.DatabaseHandler
@@ -100,6 +104,8 @@ class SyncManager(
             // SY <--
             // Chimahon -->
             novels = syncOptions.novels,
+            immersionStats = syncOptions.immersionStats,
+            immersionRawText = syncOptions.immersionRawText,
             // Chimahon <--
             animeEntries = syncOptions.animeEntries,
         )
@@ -129,6 +135,7 @@ class SyncManager(
             // Chimahon -->
             backupNovels = backupCreator.backupNovels(backupOptions),
             backupNovelCategories = backupCreator.backupNovelCategories(backupOptions),
+            backupImmersionStats = backupCreator.backupImmersionStats(backupOptions),
             // Chimahon <--
         )
         logcat(LogPriority.DEBUG) { "End create backup" }
@@ -174,7 +181,9 @@ class SyncManager(
             return
         }
 
-        if (remoteBackup == syncData.backup) {
+        val remoteBackupForRestore = remoteBackup.filterImmersionStatsForRestore(syncOptions.immersionStats)
+
+        if (remoteBackupForRestore.hasSameSyncPayloadAs(syncData.backup)) {
             // nothing changed
             logcat(LogPriority.DEBUG) { "Skip restore due to remote was overwrite from local" }
             syncPreferences.lastSyncTimestamp().set(Date().time)
@@ -183,10 +192,7 @@ class SyncManager(
         }
 
         // Stop the sync early if the remote backup is null or empty
-        if (remoteBackup.backupManga.isEmpty() &&
-            remoteBackup.backupAnime.isEmpty() &&
-            remoteBackup.backupNovels.isEmpty()
-        ) {
+        if (!remoteBackup.hasSyncEntriesOrImmersionStats()) {
             notifier.showSyncError("No data found on remote server.")
             return
         }
@@ -216,14 +222,12 @@ class SyncManager(
             // Chimahon -->
             backupNovels = remoteBackup.backupNovels,
             backupNovelCategories = remoteBackup.backupNovelCategories,
+            backupImmersionStats = remoteBackupForRestore.backupImmersionStats,
             // Chimahon <--
         )
 
         // It's local sync no need to restore data. (just update remote data)
-        if (filteredFavorites.isEmpty() &&
-            remoteBackup.backupAnime.isEmpty() &&
-            remoteBackup.backupNovels.isEmpty()
-        ) {
+        if (!hasRestorableRemoteSyncData(filteredFavorites, remoteBackupForRestore)) {
             // update the sync timestamp
             syncPreferences.lastSyncTimestamp().set(Date().time)
             notifier.showSyncSuccess("Sync completed successfully")
@@ -243,6 +247,7 @@ class SyncManager(
                     libraryEntries = true,
                     extensionStores = true,
                     novels = true,
+                    immersionStats = syncOptions.immersionStats,
                     animeEntries = true,
                 ),
             )

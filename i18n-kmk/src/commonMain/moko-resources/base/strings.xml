@@ -781,8 +781,6 @@
     <string name="stats_unknown">Unknown</string>
     <string name="stats_unread">Unread</string>
     <string name="stats_view_all">View all</string>
-    <string name="stats_vocabulary_exclusions">Vocabulary exclusions</string>
-    <string name="stats_vocabulary_exclusions_summary">Excluded word identities are omitted from vocabulary growth, coverage, and Anki denominators, but source occurrence history remains. Manage and reverse exclusions from Statistics → Vocabulary → Excluded.</string>
     <string name="stats_weekday_activity">By weekday</string>
     <string name="stats_weekly">Weekly</string>
 </resources>
