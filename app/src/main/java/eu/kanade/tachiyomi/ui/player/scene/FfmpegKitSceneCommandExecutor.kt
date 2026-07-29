@@ -37,24 +37,52 @@ internal interface SceneCommandExecutor {
 internal class SceneNativeCleanup(
     private val cleanup: () -> Unit,
 ) {
-    private val nativeFinished = AtomicBoolean(false)
-    private val released = AtomicBoolean(false)
-    private val cleaned = AtomicBoolean(false)
+    private val lock = Any()
+    private val initialNativeFinished = AtomicBoolean(false)
+    private var activeNativeUses = 1
+    private var released = false
+    private var cleaned = false
 
     fun nativeFinished() {
-        nativeFinished.set(true)
-        cleanIfReady()
+        finishNativeUse(initialNativeFinished)
+    }
+
+    fun retainNativeUse(): () -> Unit {
+        synchronized(lock) {
+            check(!released) { "Cannot retain a released native resource" }
+            activeNativeUses++
+        }
+        val finished = AtomicBoolean(false)
+        return {
+            finishNativeUse(finished)
+        }
     }
 
     fun release() {
-        released.set(true)
-        cleanIfReady()
+        val shouldClean = synchronized(lock) {
+            released = true
+            markCleanIfReady()
+        }
+        if (shouldClean) runCatching(cleanup)
     }
 
-    private fun cleanIfReady() {
-        if (nativeFinished.get() && released.get() && cleaned.compareAndSet(false, true)) {
-            runCatching(cleanup)
+    private fun finishNativeUse(finished: AtomicBoolean) {
+        if (finished.compareAndSet(false, true)) {
+            val shouldClean = synchronized(lock) {
+                check(activeNativeUses > 0)
+                activeNativeUses--
+                markCleanIfReady()
+            }
+            if (shouldClean) runCatching(cleanup)
         }
+    }
+
+    private fun markCleanIfReady(): Boolean {
+        if (activeNativeUses == 0 && released && !cleaned) {
+            cleaned = true
+            return true
+        }
+        return false
     }
 }
 
