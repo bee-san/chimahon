@@ -4523,24 +4523,6 @@ private fun SectionTitle(text: String) {
 }
 
 @Composable
-private fun InventoryCoverageCard(unique: Long?, quality: AnalyticsDataQuality) {
-    Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            MetricLine(
-                stringResource(KMR.strings.stats_unique_words),
-                unique?.let(::formatCount) ?: stringResource(KMR.strings.stats_unavailable),
-            )
-            MetricLine(
-                stringResource(KMR.strings.stats_indexing_coverage),
-                quality.indexingCompletion?.let(::formatPercent)
-                    ?: stringResource(KMR.strings.stats_unavailable),
-            )
-            MetricLine(stringResource(KMR.strings.stats_anki_state), capabilityLabel(quality.ankiState))
-        }
-    }
-}
-
-@Composable
 private fun CoverageLine(label: String, known: Long, encountered: Long) {
     val ratio = if (encountered == 0L) null else known.toDouble() / encountered
     MetricLine(

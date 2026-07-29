@@ -103,7 +103,6 @@ import tachiyomi.domain.immersion.model.ImmersionTitleMutationType
 import tachiyomi.domain.immersion.model.IndexTerminalReason
 import tachiyomi.domain.immersion.model.IndexWorkItem
 import tachiyomi.domain.immersion.model.IndexedCharacter
-import tachiyomi.domain.immersion.model.IndexedWord
 import tachiyomi.domain.immersion.model.LanguageTag
 import tachiyomi.domain.immersion.model.LegacyAggregateRow
 import tachiyomi.domain.immersion.model.LegacyImportBatch

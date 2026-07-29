@@ -157,7 +157,6 @@ enum class AnalyticsQueryFamily {
     OVERVIEW,
     TRENDS,
     TITLES,
-    VOCABULARY,
     CHARACTERS,
     SESSIONS,
     GOALS,

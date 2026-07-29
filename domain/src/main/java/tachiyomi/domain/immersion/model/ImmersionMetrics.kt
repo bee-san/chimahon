@@ -56,11 +56,6 @@ data class ReadingMetrics(
         private const val MILLIS_PER_HOUR = 3_600_000.0
         private const val TEN_THOUSAND = 10_000.0
 
-        private fun ratio(numerator: Long, denominator: Long): Double? {
-            if (denominator == 0L) return null
-            return numerator.toDouble() / denominator.toDouble()
-        }
-
         private fun ratePer(numerator: Long, denominator: Long, scale: Double): Double? {
             if (denominator <= 0L || numerator < 0L) return null
             return numerator.toDouble() / denominator.toDouble() * scale

@@ -383,35 +383,6 @@ data class ImmersionReindexRequest(
 }
 
 @Serializable
-data class IndexedWord(
-    val id: String,
-    val languageTag: LanguageTag,
-    val normalizedHeadword: String,
-    val normalizedReading: String = "",
-    val displayHeadword: String,
-    val displayReading: String? = null,
-    val partOfSpeech: String? = null,
-    val tokenizationConfidence: Double? = null,
-    val frequencyCorpus: String? = null,
-    val frequencyRank: Long? = null,
-    val jlptLevel: Int? = null,
-    val gradeLevel: Int? = null,
-    val tokenOrdinal: Long,
-    val surfaceText: String? = null,
-    val sourceStart: Long? = null,
-    val sourceEnd: Long? = null,
-    val deinflectionRule: String? = null,
-) {
-    init {
-        require(id.isNotBlank()) { "Word ID cannot be blank" }
-        require(normalizedHeadword.isNotBlank()) { "Normalized headword cannot be blank" }
-        require(displayHeadword.isNotBlank()) { "Display headword cannot be blank" }
-        require(tokenOrdinal >= 0) { "Token ordinal cannot be negative" }
-        require(frequencyRank == null || frequencyRank > 0) { "Frequency rank must be positive" }
-    }
-}
-
-@Serializable
 data class IndexedCharacter(
     val codePoint: UnicodeCodePoint,
     val unicodeName: String?,
