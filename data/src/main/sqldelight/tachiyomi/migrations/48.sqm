@@ -378,9 +378,12 @@ CREATE TABLE immersion_anki_operation(
     FOREIGN KEY(source_unit_id) REFERENCES immersion_source_unit(id) ON DELETE SET NULL
 );
 
--- Makes card counting idempotent: a repeated successful create/update for the
--- same note cannot inflate cards_created / cards_updated.
-CREATE UNIQUE INDEX immersion_anki_operation_note_success_index
+-- Deliberately NOT unique. One note can legitimately carry several distinct
+-- successful operations of the same type -- two updates from different
+-- expressions both land on note_id with type 'UPDATE'. Idempotency is keyed on
+-- immersion_anki_operation.id instead, so a replayed operation is recognised by
+-- its own identity rather than being collapsed into an unrelated one.
+CREATE INDEX immersion_anki_operation_note_success_index
 ON immersion_anki_operation(note_id, type)
 WHERE success = 1 AND note_id IS NOT NULL AND type IN ('CREATE', 'UPDATE');
 

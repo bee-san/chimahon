@@ -38,12 +38,8 @@ data class ReadingMetrics(
     val characters: CharacterVolume = CharacterVolume(),
     val distinctCharacters: NonNegativeCounter = NonNegativeCounter.ZERO,
     val newCharacters: NonNegativeCounter = NonNegativeCounter.ZERO,
-    val wordsEncountered: NonNegativeCounter = NonNegativeCounter.ZERO,
-    val uniqueWords: NonNegativeCounter = NonNegativeCounter.ZERO,
-    val newWords: NonNegativeCounter = NonNegativeCounter.ZERO,
     val sourceUnits: NonNegativeCounter = NonNegativeCounter.ZERO,
     val sessions: NonNegativeCounter = NonNegativeCounter.ZERO,
-    val successfulLookups: NonNegativeCounter = NonNegativeCounter.ZERO,
     val cardsCreated: NonNegativeCounter = NonNegativeCounter.ZERO,
     val cardsUpdated: NonNegativeCounter = NonNegativeCounter.ZERO,
     val characterCoverage: CharacterCoverage = CharacterCoverage(),
@@ -53,20 +49,8 @@ data class ReadingMetrics(
         return ratePer(characterCount, activeTime.value, MILLIS_PER_HOUR)
     }
 
-    fun lookupRatePerTenThousandGrossCharacters(): Double? =
-        ratePer(successfulLookups.value, characters.gross.value, TEN_THOUSAND)
-
     fun miningRatePerTenThousandGrossCharacters(): Double? =
         ratePer(cardsCreated.value, characters.gross.value, TEN_THOUSAND)
-
-    fun noveltyRate(): Double? =
-        ratio(newWords.value, uniqueWords.value)
-
-    fun newWordsPerTenThousandGrossCharacters(): Double? =
-        ratePer(newWords.value, characters.gross.value, TEN_THOUSAND)
-
-    fun vocabularyDensityPerTenThousandGrossCharacters(): Double? =
-        ratePer(uniqueWords.value, characters.gross.value, TEN_THOUSAND)
 
     companion object {
         private const val MILLIS_PER_HOUR = 3_600_000.0

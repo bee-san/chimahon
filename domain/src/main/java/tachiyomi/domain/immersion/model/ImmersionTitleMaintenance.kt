@@ -84,7 +84,6 @@ data class ImmersionTitleMutationPreview(
     val sessions: Long,
     val events: Long,
     val sourceUnits: Long,
-    val lookups: Long,
     val ankiOperations: Long,
     val goals: Long,
     val conflictingSourceUnits: Long,
@@ -96,7 +95,6 @@ data class ImmersionTitleMutationPreview(
         require(sessions >= 0)
         require(events >= 0)
         require(sourceUnits >= 0)
-        require(lookups >= 0)
         require(ankiOperations >= 0)
         require(goals >= 0)
         require(conflictingSourceUnits >= 0)

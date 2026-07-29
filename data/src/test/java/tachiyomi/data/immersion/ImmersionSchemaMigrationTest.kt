@@ -107,28 +107,32 @@ class ImmersionSchemaMigrationTest {
     }
 
     /**
-     * Card counting stays idempotent because of a unique partial index on
-     * `(note_id, type)`. Without it a retried Anki create inflates
-     * `cards_created`, so assert the index survives the migration.
+     * One note can legitimately carry several distinct successful operations of
+     * the same type, so the index on `(note_id, type)` is deliberately not
+     * unique -- two updates driven by different expressions both land on the
+     * same note with type `UPDATE`. Idempotency is keyed on the operation's own
+     * id instead. A unique index here would silently reject the second real
+     * operation, so assert both are accepted.
      */
     @Test
-    fun `a repeated successful card operation for the same note is rejected`() {
+    fun `distinct successful operations for one note are both retained`() {
         withDriver { driver ->
             driver.migrate(from = IMMERSION_VERSION, to = IMMERSION_VERSION + 1)
 
-            fun insertCreate(id: String) = driver.execute(
+            fun insertUpdate(id: String) = driver.execute(
                 null,
                 """
                 INSERT INTO immersion_anki_operation(id, type, status, success, note_id, occurred_at)
-                VALUES ('$id', 'CREATE', 'SUCCESS', 1, 7, 0)
+                VALUES ('$id', 'UPDATE', 'SUCCESS', 1, 7, 0)
                 """.trimIndent(),
                 0,
             )
 
-            insertCreate("op-1")
-            runCatching { insertCreate("op-2") }.isFailure shouldBe true
+            insertUpdate("op-1")
+            insertUpdate("op-2")
 
-            driver.selectStrings("SELECT id FROM immersion_anki_operation") shouldBe listOf("op-1")
+            driver.selectStrings("SELECT id FROM immersion_anki_operation ORDER BY id") shouldBe
+                listOf("op-1", "op-2")
         }
     }
 

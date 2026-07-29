@@ -466,12 +466,8 @@ class ImmersionAnalyticsServiceTest {
         points.map { it.cumulativeMetrics.characters.gross.value } shouldBe listOf(140, 440)
         points.map { it.metrics.distinctCharacters.value } shouldBe listOf(3, 2)
         points.map { it.metrics.newCharacters.value } shouldBe listOf(3, 1)
-        points.map { it.metrics.uniqueWords.value } shouldBe listOf(3, 2)
-        points.map { it.metrics.newWords.value } shouldBe listOf(3, 1)
         points.map { it.cumulativeMetrics.distinctCharacters.value } shouldBe listOf(3, 4)
         points.map { it.cumulativeMetrics.newCharacters.value } shouldBe listOf(3, 4)
-        points.map { it.cumulativeMetrics.uniqueWords.value } shouldBe listOf(3, 4)
-        points.map { it.cumulativeMetrics.newWords.value } shouldBe listOf(3, 4)
     }
 
     @Test
@@ -933,7 +929,7 @@ class ImmersionAnalyticsServiceTest {
     }
 
     @Test
-    fun `novelty goals use cached query-time inventory over their full scoped range`() = runTest {
+    fun `new-character goals use cached query-time inventory over their full scoped range`() = runTest {
         val firstDay = LocalDateRange(date("2026-07-01"), date("2026-07-01"))
         val secondDay = LocalDateRange(date("2026-07-02"), date("2026-07-02"))
         val range = LocalDateRange(firstDay.start, secondDay.endInclusive)
@@ -944,15 +940,6 @@ class ImmersionAnalyticsServiceTest {
             ),
         )
         stubGoals(
-            goal(
-                id = "new-words",
-                metric = "new_words",
-                target = 20.0,
-                period = "TOTAL",
-                type = "DATE_BOUND_TOTAL",
-                startDate = range.start,
-                titleId = TITLE,
-            ),
             goal(
                 id = "new-characters",
                 metric = "new_characters",
@@ -971,28 +958,20 @@ class ImmersionAnalyticsServiceTest {
                 metrics = AnalyticsInventoryMetrics(
                     distinctCharacters = 2,
                     newCharacters = 2,
-                    uniqueWords = 1,
-                    newWords = 1,
                 ),
                 cumulative = AnalyticsInventoryMetrics(
                     distinctCharacters = 2,
                     newCharacters = 2,
-                    uniqueWords = 1,
-                    newWords = 1,
                 ),
             ),
             AnalyticsBucketInventory(
                 metrics = AnalyticsInventoryMetrics(
                     distinctCharacters = 1,
                     newCharacters = 1,
-                    uniqueWords = 2,
-                    newWords = 2,
                 ),
                 cumulative = AnalyticsInventoryMetrics(
                     distinctCharacters = 3,
                     newCharacters = 3,
-                    uniqueWords = 3,
-                    newWords = 3,
                 ),
             ),
         )
@@ -1002,7 +981,6 @@ class ImmersionAnalyticsServiceTest {
             .value
             .associateBy { it.goal.id }
 
-        progress.getValue("new-words").achieved shouldBe 3.0
         progress.getValue("new-characters").achieved shouldBe 3.0
         coVerify(exactly = 1) {
             repository.bucketInventoryMetrics(goalFilter, listOf(firstDay, secondDay))
@@ -1241,8 +1219,6 @@ class ImmersionAnalyticsServiceTest {
     private fun ankiSummary(snapshot: ImmersionAnkiSnapshot?) =
         AnalyticsAnkiSummary(
             snapshot = snapshot,
-            wordCoverageEncountered = 0,
-            wordCoverageKnown = 0,
             characterCoverageEncountered = 0,
             characterCoverageKnown = 0,
             reviewHistoryAvailable = false,
@@ -1336,8 +1312,6 @@ class ImmersionAnalyticsServiceTest {
             ),
             distinctCharacters = NonNegativeCounter(poisonedInventory),
             newCharacters = NonNegativeCounter(poisonedInventory),
-            uniqueWords = NonNegativeCounter(poisonedInventory),
-            newWords = NonNegativeCounter(poisonedInventory),
             sourceUnits = NonNegativeCounter(sourceUnits),
             sessions = NonNegativeCounter(1),
         ),
@@ -1352,8 +1326,6 @@ class ImmersionAnalyticsServiceTest {
     ) = AnalyticsInventoryMetrics(
         distinctCharacters = distinct,
         newCharacters = new,
-        uniqueWords = distinct,
-        newWords = new,
     )
 
     private fun date(value: String) = ImmersionLocalDate.parse(value)

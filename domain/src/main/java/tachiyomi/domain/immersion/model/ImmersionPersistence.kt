@@ -291,8 +291,6 @@ data class ImmersionOverview(
     val uniqueSourceCharacters: NonNegativeCounter,
     val netCharacters: NetCharacterProgress,
     val sourceUnits: NonNegativeCounter,
-    val words: NonNegativeCounter,
-    val lookups: NonNegativeCounter,
     val cardsCreated: NonNegativeCounter,
     val cardsUpdated: NonNegativeCounter,
     val sessions: NonNegativeCounter,

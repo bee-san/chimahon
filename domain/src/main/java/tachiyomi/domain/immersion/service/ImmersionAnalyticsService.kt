@@ -684,8 +684,6 @@ private fun ReadingMetrics.withInventory(inventory: AnalyticsInventoryMetrics): 
     copy(
         distinctCharacters = NonNegativeCounter(inventory.distinctCharacters),
         newCharacters = NonNegativeCounter(inventory.newCharacters),
-        uniqueWords = NonNegativeCounter(inventory.uniqueWords),
-        newWords = NonNegativeCounter(inventory.newWords),
         characterCoverage = CharacterCoverage(
             encounteredTargetScriptCharacters = NonNegativeCounter(inventory.distinctCharacters),
             representedInAnki = NonNegativeCounter(inventory.charactersRepresentedInAnki),
@@ -702,12 +700,8 @@ private operator fun ReadingMetrics.plus(other: ReadingMetrics): ReadingMetrics 
         ),
         distinctCharacters = distinctCharacters + other.distinctCharacters,
         newCharacters = newCharacters + other.newCharacters,
-        wordsEncountered = wordsEncountered + other.wordsEncountered,
-        uniqueWords = uniqueWords + other.uniqueWords,
-        newWords = newWords + other.newWords,
         sourceUnits = sourceUnits + other.sourceUnits,
         sessions = sessions + other.sessions,
-        successfulLookups = successfulLookups + other.successfulLookups,
         cardsCreated = cardsCreated + other.cardsCreated,
         cardsUpdated = cardsUpdated + other.cardsUpdated,
         characterCoverage = CharacterCoverage(
@@ -724,7 +718,6 @@ private fun ReadingMetrics.hasActivity(): Boolean =
     activeTime.value > 0 ||
         characters.gross.value > 0 ||
         sourceUnits.value > 0 ||
-        successfulLookups.value > 0 ||
         cardsCreated.value > 0
 
 private fun ratioChange(current: Long, previous: Long): Double? =
@@ -761,11 +754,6 @@ private fun titleComparator(
                     }
                 }
                 .thenByDescending { it.metrics.characters.valueFor(characterMetric) }
-                .thenBy { it.titleId.value }
-        AnalyticsTitleSort.NOVELTY ->
-            compareByDescending<AnalyticsTitleRow> { it.metrics.noveltyRate() != null }
-                .thenByDescending { it.metrics.noveltyRate() }
-                .thenByDescending { it.metrics.newWords.value }
                 .thenBy { it.titleId.value }
         AnalyticsTitleSort.MINING_RATE ->
             compareByDescending<AnalyticsTitleRow> {
@@ -1026,7 +1014,6 @@ private fun ImmersionGoal.progress(
             if (checkInsByDate[date]?.status == "COMPLETED") 1.0 else 0.0
         } else {
             when (metric) {
-                "new_words" -> inventoryByDate[date]?.newWords?.toDouble() ?: 0.0
                 "new_characters" -> inventoryByDate[date]?.newCharacters?.toDouble() ?: 0.0
                 else -> rowsByDate[date].orEmpty().sumOf { it.metrics.valueForGoal(metric) }
             }
@@ -1144,11 +1131,8 @@ private fun ReadingMetrics.valueForGoal(metric: String): Double = when (metric) 
     "unique_source_characters" -> characters.uniqueSource.value.toDouble()
     "net_characters" -> characters.netProgress.value.toDouble()
     "source_units" -> sourceUnits.value.toDouble()
-    "words" -> wordsEncountered.value.toDouble()
-    "new_words" -> newWords.value.toDouble()
     "new_characters" -> newCharacters.value.toDouble()
     "sessions" -> sessions.value.toDouble()
-    "lookups" -> successfulLookups.value.toDouble()
     "cards" -> cardsCreated.value.toDouble()
     else -> 0.0
 }

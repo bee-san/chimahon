@@ -15,9 +15,6 @@ class ImmersionMetricsTest {
                 uniqueSource = NonNegativeCounter(8_000),
                 netProgress = NetCharacterProgress(7_000),
             ),
-            uniqueWords = NonNegativeCounter(2_000),
-            newWords = NonNegativeCounter(500),
-            successfulLookups = NonNegativeCounter(20),
             cardsCreated = NonNegativeCounter(10),
             cardsUpdated = NonNegativeCounter(50),
             characterCoverage = CharacterCoverage(
@@ -29,22 +26,14 @@ class ImmersionMetricsTest {
         metrics.readingSpeedPerHour(CharacterMetric.GROSS)!! shouldBeExactly 20_000.0
         metrics.readingSpeedPerHour(CharacterMetric.UNIQUE_SOURCE)!! shouldBeExactly 16_000.0
         metrics.readingSpeedPerHour(CharacterMetric.NET_PROGRESS)!! shouldBeExactly 14_000.0
-        metrics.lookupRatePerTenThousandGrossCharacters()!! shouldBeExactly 20.0
         metrics.miningRatePerTenThousandGrossCharacters()!! shouldBeExactly 10.0
-        metrics.noveltyRate()!! shouldBeExactly 0.25
-        metrics.newWordsPerTenThousandGrossCharacters()!! shouldBeExactly 500.0
-        metrics.vocabularyDensityPerTenThousandGrossCharacters()!! shouldBeExactly 2_000.0
         metrics.characterCoverage.ratio()!! shouldBeExactly 0.8
     }
 
     @Test
     fun `zero or non-positive denominators are unavailable rather than zero`() {
         ReadingMetrics().readingSpeedPerHour(CharacterMetric.GROSS) shouldBe null
-        ReadingMetrics().lookupRatePerTenThousandGrossCharacters() shouldBe null
         ReadingMetrics().miningRatePerTenThousandGrossCharacters() shouldBe null
-        ReadingMetrics().noveltyRate() shouldBe null
-        ReadingMetrics().newWordsPerTenThousandGrossCharacters() shouldBe null
-        ReadingMetrics().vocabularyDensityPerTenThousandGrossCharacters() shouldBe null
         ReadingMetrics().characterCoverage.ratio() shouldBe null
 
         val backwardOnly = ReadingMetrics(

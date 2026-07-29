@@ -34,7 +34,6 @@ enum class AnalyticsTitleSort {
     MOST_TIME,
     MOST_CHARACTERS,
     READING_SPEED,
-    NOVELTY,
     MINING_RATE,
     PROGRESS,
 }
@@ -263,15 +262,11 @@ data class AnalyticsOverview(
 data class AnalyticsInventoryMetrics(
     val distinctCharacters: Long = 0,
     val newCharacters: Long = 0,
-    val uniqueWords: Long = 0,
-    val newWords: Long = 0,
     val charactersRepresentedInAnki: Long = 0,
 ) {
     init {
         require(distinctCharacters >= 0)
         require(newCharacters in 0..distinctCharacters)
-        require(uniqueWords >= 0)
-        require(newWords in 0..uniqueWords)
         require(charactersRepresentedInAnki in 0..distinctCharacters)
     }
 }
@@ -649,11 +644,9 @@ data class AnalyticsTimelineBucket(
     val grossCharacters: Long,
     val uniqueSourceCharacters: Long,
     val netCharacters: Long,
-    val lookupCount: Long,
     val cardsCreated: Long,
     val cardsUpdated: Long,
     val eventTypes: Set<EventType>,
-    val knownness: AnalyticsTimelineKnownness? = null,
 ) {
     init {
         require(startEpochMillis >= 0)
@@ -662,39 +655,9 @@ data class AnalyticsTimelineBucket(
         require(activeDurationMillis >= 0)
         require(grossCharacters >= 0)
         require(uniqueSourceCharacters >= 0)
-        require(lookupCount >= 0)
         require(cardsCreated >= 0)
         require(cardsUpdated >= 0)
     }
-}
-
-@Serializable
-data class AnalyticsTimelineKnownness(
-    val sourceExposures: Long,
-    val indexedSourceExposures: Long,
-    val ankiReadySourceExposures: Long,
-    val unknownWords: Long,
-    val newWords: Long,
-    val learningWords: Long,
-    val youngWords: Long,
-    val matureWords: Long,
-) {
-    init {
-        require(sourceExposures >= 0)
-        require(indexedSourceExposures in 0..sourceExposures)
-        require(ankiReadySourceExposures in 0..indexedSourceExposures)
-        require(unknownWords >= 0)
-        require(newWords >= 0)
-        require(learningWords >= 0)
-        require(youngWords >= 0)
-        require(matureWords >= 0)
-    }
-
-    val totalWords: Long
-        get() = unknownWords + newWords + learningWords + youngWords + matureWords
-
-    val knownWords: Long
-        get() = totalWords - unknownWords
 }
 
 @Serializable
@@ -839,12 +802,9 @@ data class AnalyticsAnkiTitleImpact(
 @Serializable
 data class AnalyticsAnkiSummary(
     val snapshot: ImmersionAnkiSnapshot?,
-    val wordCoverageEncountered: Long,
-    val wordCoverageKnown: Long,
     val characterCoverageEncountered: Long,
     val characterCoverageKnown: Long,
     val reviewHistoryAvailable: Boolean,
-    val maturityDistribution: Map<MaturityTier, Long> = emptyMap(),
     val cardsCreated: Long = 0,
     val cardsUpdated: Long = 0,
     val linkedOperationCount: Long = 0,
@@ -858,11 +818,8 @@ data class AnalyticsAnkiSummary(
     val minimumComparisonSampleSize: Int = 20,
 ) {
     init {
-        require(wordCoverageEncountered >= 0)
-        require(wordCoverageKnown in 0..wordCoverageEncountered)
         require(characterCoverageEncountered >= 0)
         require(characterCoverageKnown in 0..characterCoverageEncountered)
-        require(maturityDistribution.values.all { it >= 0 })
         require(cardsCreated >= 0)
         require(cardsUpdated >= 0)
         require(linkedOperationCount >= 0)

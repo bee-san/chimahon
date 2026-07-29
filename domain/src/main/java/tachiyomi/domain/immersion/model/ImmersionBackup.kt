@@ -156,9 +156,7 @@ data class ImmersionMergeEntityCounts(
     val sessions: Long,
     val events: Long,
     val sourceUnits: Long,
-    val words: Long,
     val characters: Long,
-    val lookups: Long,
     val ankiOperations: Long,
     val goals: Long,
 ) {
@@ -167,9 +165,7 @@ data class ImmersionMergeEntityCounts(
         require(sessions >= 0)
         require(events >= 0)
         require(sourceUnits >= 0)
-        require(words >= 0)
         require(characters >= 0)
-        require(lookups >= 0)
         require(ankiOperations >= 0)
         require(goals >= 0)
     }
@@ -181,7 +177,6 @@ data class ImmersionDeletionPreview(
     val activeDurationMillis: Long,
     val grossCharacters: Long,
     val sourceUnits: Long,
-    val words: Long,
     val characters: Long,
     val goals: Long = 0,
     val selectionDigest: String? = null,
@@ -192,7 +187,6 @@ data class ImmersionDeletionPreview(
         require(activeDurationMillis >= 0)
         require(grossCharacters >= 0)
         require(sourceUnits >= 0)
-        require(words >= 0)
         require(characters >= 0)
         require(goals >= 0)
         require((selectionDigest == null) == (databaseRevision == null)) {
@@ -215,7 +209,6 @@ data class ImmersionMaintenanceSummary(
     val sourceUnits: Long,
     val rawTextSourceUnits: Long,
     val rawTextBytes: Long,
-    val words: Long,
     val characters: Long,
     val quarantinedConflicts: Long,
     val lastRawTextCleanupAtEpochMillis: Long?,
@@ -227,9 +220,32 @@ data class ImmersionMaintenanceSummary(
         require(sourceUnits >= 0)
         require(rawTextSourceUnits >= 0)
         require(rawTextBytes >= 0)
-        require(words >= 0)
         require(characters >= 0)
         require(quarantinedConflicts >= 0)
         require(lastRawTextCleanupAtEpochMillis == null || lastRawTextCleanupAtEpochMillis >= 0)
     }
 }
+
+/** Why a portable archive cannot be merged. */
+enum class ImmersionArchiveRejection {
+    /** Written by a newer build than this one understands. */
+    UNSUPPORTED_FORMAT_VERSION,
+
+    /** Written against a newer database schema than this build understands. */
+    UNSUPPORTED_SCHEMA_VERSION,
+
+    /**
+     * Contains a table this build does not know, which is what a word-scoped
+     * archive from a build that tracked vocabulary looks like.
+     */
+    UNKNOWN_TABLE,
+}
+
+/**
+ * Thrown instead of a bare [IllegalArgumentException] so callers can explain to
+ * the user why an archive was refused rather than reporting a generic failure.
+ */
+class ImmersionArchiveException(
+    val rejection: ImmersionArchiveRejection,
+    message: String,
+) : IllegalArgumentException(message)

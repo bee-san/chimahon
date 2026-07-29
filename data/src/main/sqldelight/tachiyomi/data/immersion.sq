@@ -369,9 +369,12 @@ CREATE TABLE immersion_anki_operation(
     FOREIGN KEY(source_unit_id) REFERENCES immersion_source_unit(id) ON DELETE SET NULL
 );
 
--- Makes card counting idempotent: a repeated successful create/update for the
--- same note cannot inflate cards_created / cards_updated.
-CREATE UNIQUE INDEX immersion_anki_operation_note_success_index
+-- Deliberately NOT unique. One note can legitimately carry several distinct
+-- successful operations of the same type -- two updates from different
+-- expressions both land on note_id with type 'UPDATE'. Idempotency is keyed on
+-- immersion_anki_operation.id instead, so a replayed operation is recognised by
+-- its own identity rather than being collapsed into an unrelated one.
+CREATE INDEX immersion_anki_operation_note_success_index
 ON immersion_anki_operation(note_id, type)
 WHERE success = 1 AND note_id IS NOT NULL AND type IN ('CREATE', 'UPDATE');
 
@@ -2619,190 +2622,6 @@ character_facts AS (
 SELECT * FROM character_facts
 ORDER BY local_date, title_id, entity_kind, entity_key;
 
-selectImmersionAnalyticsCumulativeGrossEvents:
-WITH filtered_events AS (
-    SELECT
-        event.id AS event_id,
-        event.occurred_at,
-        event.sequence,
-        session.id AS session_id,
-        session.title_id,
-        event.gross_character_delta
-    FROM immersion_event AS event
-    JOIN immersion_session AS session ON session.id = event.session_id
-    LEFT JOIN immersion_source_exposure AS exposure ON exposure.event_id = event.id
-    WHERE
-        session.status != 'DELETED'
-        AND (
-            :filterDate = 0
-            OR event.local_date BETWEEN :startDate AND :endDate
-        )
-        AND (:filterMediaKinds = 0 OR session.media_kind IN :mediaKinds)
-        AND (:filterProfileIds = 0 OR session.profile_id IN :profileIds)
-        AND (:filterLanguageTags = 0 OR coalesce(session.language_tag, '') IN :languageTags)
-        AND (:filterTitleIds = 0 OR session.title_id IN :titleIds)
-        AND (:includeRereads = 1 OR exposure.event_id IS NULL OR exposure.replay_ordinal = 0)
-        AND (:includeLegacy = 1 OR session.legacy_import = 0)
-        AND (
-            :filterProvenance = 0
-            OR (
-                session.legacy_import = 1
-                AND 'LEGACY_AGGREGATE' IN :provenanceStates
-            )
-            OR (
-                session.legacy_import = 0
-                AND 'AVAILABLE' IN :provenanceStates
-            )
-        )
-)
-SELECT
-    event_id,
-    title_id,
-    CAST(
-        sum(gross_character_delta) OVER (
-            PARTITION BY title_id
-            ORDER BY occurred_at, session_id, sequence, event_id
-            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-        )
-        AS INTEGER
-    ) AS cumulative_gross_characters
-FROM filtered_events
-ORDER BY title_id, occurred_at, session_id, sequence, event_id;
-
-selectImmersionAnalyticsInventory:
-WITH filtered_exposure AS (
-    SELECT DISTINCT
-        exposure.source_unit_id,
-        event.occurred_at,
-        session.title_id
-    FROM immersion_source_exposure AS exposure
-    JOIN immersion_event AS event ON event.id = exposure.event_id
-    JOIN immersion_session AS session ON session.id = event.session_id
-    WHERE
-        session.status != 'DELETED'
-        AND (
-            :filterDate = 0
-            OR event.local_date BETWEEN :startDate AND :endDate
-        )
-        AND (:filterMediaKinds = 0 OR session.media_kind IN :mediaKinds)
-        AND (:filterProfileIds = 0 OR session.profile_id IN :profileIds)
-        AND (:filterLanguageTags = 0 OR coalesce(session.language_tag, '') IN :languageTags)
-        AND (:filterTitleIds = 0 OR session.title_id IN :titleIds)
-        AND (:includeRereads = 1 OR exposure.replay_ordinal = 0)
-        AND (:includeLegacy = 1 OR session.legacy_import = 0)
-        AND (
-            :filterProvenance = 0
-            OR (
-                session.legacy_import = 1
-                AND 'LEGACY_AGGREGATE' IN :provenanceStates
-            )
-            OR (
-                session.legacy_import = 0
-                AND 'AVAILABLE' IN :provenanceStates
-            )
-        )
-),
-character_metrics AS (
-    SELECT
-        count(DISTINCT character.code_point) AS distinct_characters,
-        count(DISTINCT CASE
-            WHEN character.first_seen_at = filtered_exposure.occurred_at THEN character.code_point
-        END) AS new_characters,
-        count(DISTINCT CASE
-            WHEN EXISTS (
-                SELECT 1
-                FROM immersion_anki_character AS anki_character
-                JOIN immersion_anki_snapshot AS snapshot
-                    ON snapshot.id = anki_character.snapshot_id
-                WHERE
-                    snapshot.is_current = 1
-                    AND (:filterProfileIds = 0 OR snapshot.profile_id IN :profileIds)
-                    AND anki_character.code_point = character.code_point
-            ) THEN character.code_point
-        END) AS characters_in_anki
-    FROM filtered_exposure
-    JOIN immersion_character_occurrence AS occurrence
-        ON occurrence.source_unit_id = filtered_exposure.source_unit_id
-    JOIN immersion_character AS character
-        ON character.code_point = occurrence.character_code_point
-)
-SELECT
-    coalesce(character_metrics.distinct_characters, 0) AS distinct_characters,
-    coalesce(character_metrics.new_characters, 0) AS new_characters,
-    coalesce(character_metrics.characters_in_anki, 0) AS characters_in_anki
-FROM character_metrics;
-
-selectImmersionAnalyticsTitleInventory:
-WITH filtered_exposure AS (
-    SELECT DISTINCT
-        exposure.source_unit_id,
-        event.occurred_at,
-        session.title_id
-    FROM immersion_source_exposure AS exposure
-    JOIN immersion_event AS event ON event.id = exposure.event_id
-    JOIN immersion_session AS session ON session.id = event.session_id
-    WHERE
-        session.status != 'DELETED'
-        AND (
-            :filterDate = 0
-            OR event.local_date BETWEEN :startDate AND :endDate
-        )
-        AND (:filterMediaKinds = 0 OR session.media_kind IN :mediaKinds)
-        AND (:filterProfileIds = 0 OR session.profile_id IN :profileIds)
-        AND (:filterLanguageTags = 0 OR coalesce(session.language_tag, '') IN :languageTags)
-        AND (:filterTitleIds = 0 OR session.title_id IN :titleIds)
-        AND (:includeRereads = 1 OR exposure.replay_ordinal = 0)
-        AND (:includeLegacy = 1 OR session.legacy_import = 0)
-        AND (
-            :filterProvenance = 0
-            OR (
-                session.legacy_import = 1
-                AND 'LEGACY_AGGREGATE' IN :provenanceStates
-            )
-            OR (
-                session.legacy_import = 0
-                AND 'AVAILABLE' IN :provenanceStates
-            )
-        )
-),
-titles AS (
-    SELECT DISTINCT title_id FROM filtered_exposure
-),
-character_metrics AS (
-    SELECT
-        filtered_exposure.title_id,
-        count(DISTINCT character.code_point) AS distinct_characters,
-        count(DISTINCT CASE
-            WHEN character.first_seen_at = filtered_exposure.occurred_at THEN character.code_point
-        END) AS new_characters,
-        count(DISTINCT CASE
-            WHEN EXISTS (
-                SELECT 1
-                FROM immersion_anki_character AS anki_character
-                JOIN immersion_anki_snapshot AS snapshot
-                    ON snapshot.id = anki_character.snapshot_id
-                WHERE
-                    snapshot.is_current = 1
-                    AND (:filterProfileIds = 0 OR snapshot.profile_id IN :profileIds)
-                    AND anki_character.code_point = character.code_point
-            ) THEN character.code_point
-        END) AS characters_in_anki
-    FROM filtered_exposure
-    JOIN immersion_character_occurrence AS occurrence
-        ON occurrence.source_unit_id = filtered_exposure.source_unit_id
-    JOIN immersion_character AS character
-        ON character.code_point = occurrence.character_code_point
-    GROUP BY filtered_exposure.title_id
-)
-SELECT
-    titles.title_id,
-    coalesce(character_metrics.distinct_characters, 0) AS distinct_characters,
-    coalesce(character_metrics.new_characters, 0) AS new_characters,
-    coalesce(character_metrics.characters_in_anki, 0) AS characters_in_anki
-FROM titles
-LEFT JOIN character_metrics ON character_metrics.title_id = titles.title_id
-ORDER BY titles.title_id;
-
 selectImmersionAnalyticsTitleMetadata:
 SELECT
     id,
@@ -4487,19 +4306,6 @@ SELECT
         ) THEN 1 ELSE 0 END
     ), 0) AS covered_count
 FROM encountered;
-
-selectImmersionAnkiMaturityDistribution:
-SELECT
-    item.maturity_tier,
-    count(DISTINCT item.card_id) AS item_count
-FROM immersion_anki_item AS item
-JOIN immersion_anki_snapshot AS snapshot ON snapshot.id = item.snapshot_id
-WHERE
-    snapshot.profile_id = :profileId
-    AND snapshot.is_current = 1
-    AND item.language_tag = :languageTag
-GROUP BY item.maturity_tier
-ORDER BY item.maturity_tier;
 
 selectImmersionAnalyticsAnkiCharacterCoverage:
 WITH encountered AS (
