@@ -1,8 +1,56 @@
 package eu.kanade.domain
 
+import chimahon.anki.AnkiDroidInventoryProvider
+import eu.kanade.domain.base.BasePreferences
+import eu.kanade.domain.sync.SyncPreferences
+import mihon.feature.stats.capture.clearStatsCaptureReconciliationReports
+import mihon.feature.stats.indexing.ImmersionIndexJob
+import mihon.feature.stats.indexing.SqlImmersionIndexExclusionPolicy
+import mihon.feature.stats.legacy.LegacyStatsImporter
+import mihon.feature.stats.recorder.ImmersionRecorderLifecycleCoordinator
+import mihon.feature.stats.repair.ImmersionRepairJob
+import mihon.feature.stats.rollup.ImmersionRollupJob
+import tachiyomi.data.immersion.SqlDelightImmersionRepository
 import tachiyomi.data.libraryUpdateError.LibraryUpdateErrorRepositoryImpl
 import tachiyomi.data.libraryUpdateError.LibraryUpdateErrorWithRelationsRepositoryImpl
 import tachiyomi.data.libraryUpdateErrorMessage.LibraryUpdateErrorMessageRepositoryImpl
+import tachiyomi.domain.immersion.interactor.GetLegacyAggregateTotals
+import tachiyomi.domain.immersion.model.AnkiOperationEvent
+import tachiyomi.domain.immersion.model.ExposureEvent
+import tachiyomi.domain.immersion.repository.FeatureFlaggedImmersionRecorderRepository
+import tachiyomi.domain.immersion.repository.ImmersionAnalyticsRepository
+import tachiyomi.domain.immersion.repository.ImmersionAnkiRepository
+import tachiyomi.domain.immersion.repository.ImmersionGoalRepository
+import tachiyomi.domain.immersion.repository.ImmersionIndexRepository
+import tachiyomi.domain.immersion.repository.ImmersionLegacyImportRepository
+import tachiyomi.domain.immersion.repository.ImmersionMaintenanceRepository
+import tachiyomi.domain.immersion.repository.ImmersionRecorderRepository
+import tachiyomi.domain.immersion.repository.ImmersionStatsRepository
+import tachiyomi.domain.immersion.repository.NoOpImmersionRecorderRepository
+import tachiyomi.domain.immersion.service.AnkiInventoryProvider
+import tachiyomi.domain.immersion.service.AnkiInventorySynchronizer
+import tachiyomi.domain.immersion.service.AnkiKnownnessResolver
+import tachiyomi.domain.immersion.service.AnkiOperationRecorder
+import tachiyomi.domain.immersion.service.AnkiOperationRepairWriter
+import tachiyomi.domain.immersion.service.DefaultAnkiOperationRecorder
+import tachiyomi.domain.immersion.service.DefaultImmersionRecorder
+import tachiyomi.domain.immersion.service.DefaultSourceTextNormalizer
+import tachiyomi.domain.immersion.service.ImmersionAnalyticsService
+import tachiyomi.domain.immersion.service.ImmersionDeviceIdProvider
+import tachiyomi.domain.immersion.service.ImmersionEventPersistenceObserver
+import tachiyomi.domain.immersion.service.ImmersionExportService
+import tachiyomi.domain.immersion.service.ImmersionIndexExclusionPolicy
+import tachiyomi.domain.immersion.service.ImmersionIndexingEngine
+import tachiyomi.domain.immersion.service.ImmersionRecorder
+import tachiyomi.domain.immersion.service.ImmersionRecorderConfiguration
+import tachiyomi.domain.immersion.service.ImmersionReindexController
+import tachiyomi.domain.immersion.service.ImmersionRepairScheduler
+import tachiyomi.domain.immersion.service.ImmersionShadowMonitor
+import tachiyomi.domain.immersion.service.ImmersionStatsDiagnosticsStore
+import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
+import tachiyomi.domain.immersion.service.PreferenceAnkiOperationRepairStore
+import tachiyomi.domain.immersion.service.PreferenceImmersionStatsDiagnosticsPersistence
+import tachiyomi.domain.immersion.service.SourceTextNormalizer
 import tachiyomi.domain.libraryUpdateError.interactor.DeleteLibraryUpdateErrors
 import tachiyomi.domain.libraryUpdateError.interactor.GetLibraryUpdateErrorWithRelations
 import tachiyomi.domain.libraryUpdateError.interactor.GetLibraryUpdateErrors
@@ -22,6 +70,138 @@ import uy.kohesive.injekt.api.get
 class KMKDomainModule : InjektModule {
 
     override fun InjektRegistrar.registerInjectables() {
+        // Immersion statistics -->
+        addSingletonFactory { ImmersionStatsPreferences(get()) }
+        addSingletonFactory {
+            ImmersionStatsDiagnosticsStore(
+                PreferenceImmersionStatsDiagnosticsPersistence(get()),
+            )
+        }
+        addSingletonFactory { ImmersionShadowMonitor() }
+        addSingletonFactory { PreferenceAnkiOperationRepairStore(get()) }
+        addSingletonFactory {
+            SqlDelightImmersionRepository(
+                handler = get(),
+                onAllStatsReset = {
+                    get<PreferenceAnkiOperationRepairStore>().clear()
+                    get<ImmersionStatsDiagnosticsStore>().clear()
+                    clearStatsCaptureReconciliationReports()
+                },
+                onSessionDeleted = { sessionId ->
+                    get<PreferenceAnkiOperationRepairStore>().removeForSession(sessionId)
+                    clearStatsCaptureReconciliationReports()
+                },
+            )
+        }
+        addSingletonFactory { NoOpImmersionRecorderRepository() }
+
+        // Capture is gated here rather than at each call site, so a disabled
+        // feature cannot write to the database from any code path.
+        addSingletonFactory<ImmersionRecorderRepository> {
+            val preferences = get<ImmersionStatsPreferences>()
+            FeatureFlaggedImmersionRecorderRepository(
+                delegate = get<SqlDelightImmersionRepository>(),
+                disabledDelegate = get<NoOpImmersionRecorderRepository>(),
+                isEnabled = { preferences.captureEnabled().get() },
+                diagnostics = get(),
+            )
+        }
+        addSingletonFactory<ImmersionIndexRepository> { get<SqlDelightImmersionRepository>() }
+        addSingletonFactory<ImmersionLegacyImportRepository> { get<SqlDelightImmersionRepository>() }
+        addSingletonFactory<ImmersionStatsRepository> { get<SqlDelightImmersionRepository>() }
+        addSingletonFactory<ImmersionAnalyticsRepository> { get<SqlDelightImmersionRepository>() }
+        addSingletonFactory<ImmersionMaintenanceRepository> { get<SqlDelightImmersionRepository>() }
+        addSingletonFactory<ImmersionGoalRepository> { get<SqlDelightImmersionRepository>() }
+        addSingletonFactory<ImmersionAnkiRepository> { get<SqlDelightImmersionRepository>() }
+        addSingletonFactory { ImmersionAnalyticsService(get(), get()) }
+        addSingletonFactory { ImmersionExportService(get(), get()) }
+        addSingletonFactory<AnkiInventoryProvider> { AnkiDroidInventoryProvider(get()) }
+        addSingletonFactory { AnkiInventorySynchronizer(get(), get()) }
+        addSingletonFactory { AnkiKnownnessResolver(get()) }
+        addSingletonFactory<SourceTextNormalizer> { DefaultSourceTextNormalizer() }
+        addSingletonFactory<ImmersionIndexExclusionPolicy> {
+            SqlImmersionIndexExclusionPolicy(get())
+        }
+        addSingletonFactory {
+            ImmersionIndexingEngine(
+                repository = get(),
+                normalizer = get(),
+                exclusionPolicy = get(),
+            )
+        }
+        addSingletonFactory { ImmersionReindexController(get(), get()) }
+        addSingletonFactory<ImmersionRecorder> {
+            val preferences = get<ImmersionStatsPreferences>()
+            val ankiRepairStore = get<PreferenceAnkiOperationRepairStore>()
+            DefaultImmersionRecorder(
+                repository = get<SqlDelightImmersionRepository>(),
+                deviceIdProvider = ImmersionDeviceIdProvider {
+                    get<SyncPreferences>().uniqueDeviceID()
+                },
+                captureEnabled = { preferences.captureEnabled().get() },
+                diagnostics = get(),
+                repairScheduler = ImmersionRepairScheduler { sessionId, reason ->
+                    ImmersionRepairJob.start(get(), sessionId, reason)
+                },
+                eventPersistenceObserver = ImmersionEventPersistenceObserver { events ->
+                    events.filterIsInstance<AnkiOperationEvent>().forEach {
+                        ankiRepairStore.remove(it.operationId)
+                    }
+                    if (events.any { it is ExposureEvent } && preferences.indexingEnabled().get()) {
+                        ImmersionIndexJob.start(get())
+                    }
+                    if (events.isNotEmpty()) {
+                        ImmersionRollupJob.start(get())
+                    }
+                },
+                configuration = ImmersionRecorderConfiguration(
+                    idleTimeoutMillis = preferences.readerIdleTimeoutSeconds().get() * 1_000L,
+                ),
+                idleTimeoutMillis = {
+                    preferences.readerIdleTimeoutSeconds().get().toLong().coerceAtLeast(1L) * 1_000L
+                },
+            )
+        }
+        addSingletonFactory<AnkiOperationRecorder> {
+            val statsPreferences = get<ImmersionStatsPreferences>()
+            val basePreferences = get<BasePreferences>()
+            DefaultAnkiOperationRecorder(
+                recorder = get(),
+                repairStore = get<PreferenceAnkiOperationRepairStore>(),
+                repairWriter = AnkiOperationRepairWriter {
+                    get<SqlDelightImmersionRepository>().repairAnkiOperation(it)
+                },
+                // Incognito must not record card operations, and a disabled
+                // integration must not queue repairs for later.
+                repairAllowed = {
+                    statsPreferences.captureEnabled().get() &&
+                        !basePreferences.incognitoMode().get()
+                },
+            )
+        }
+        addSingletonFactory {
+            ImmersionRecorderLifecycleCoordinator(
+                recorder = get(),
+                basePreferences = get(),
+                statsPreferences = get(),
+                ankiOperationRecorder = get(),
+                onAnkiRepairsPersisted = {
+                    ImmersionRollupJob.start(get())
+                },
+            )
+        }
+        addFactory { GetLegacyAggregateTotals(get()) }
+        addSingletonFactory {
+            LegacyStatsImporter(
+                application = get(),
+                repository = get(),
+                getManga = get(),
+                dictionaryPreferences = get(),
+                sourceManager = get(),
+            )
+        }
+        // Immersion statistics <--
+
         addSingletonFactory<LibraryUpdateErrorWithRelationsRepository> {
             LibraryUpdateErrorWithRelationsRepositoryImpl(get())
         }
