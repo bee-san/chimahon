@@ -1395,7 +1395,7 @@ private fun AnalyticsAnkiSummary.ankiReportCapabilities(): List<AnalyticsAnkiRep
     )
 }
 
-private val INVENTORY_GOAL_METRICS = setOf("new_words", "new_characters")
+private val INVENTORY_GOAL_METRICS = setOf("new_characters")
 private const val MINIMUM_ANKI_COMPARISON_SAMPLE_SIZE = 20
 
 private fun StatsFilter.stableHash(): String {
