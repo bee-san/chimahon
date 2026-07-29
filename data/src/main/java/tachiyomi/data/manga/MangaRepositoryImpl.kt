@@ -23,6 +23,13 @@ class MangaRepositoryImpl(
         return handler.awaitOne { mangasQueries.getMangaById(id, MangaMapper::mapManga) }
     }
 
+    override suspend fun getMangaByIds(ids: List<Long>): List<Manga> {
+        if (ids.isEmpty()) return emptyList()
+        return handler.awaitList {
+            mangasQueries.getMangaByIds(ids.distinct(), MangaMapper::mapManga)
+        }
+    }
+
     override suspend fun getMangaByIdAsFlow(id: Long): Flow<Manga> {
         return handler.subscribeToOne { mangasQueries.getMangaById(id, MangaMapper::mapManga) }
     }

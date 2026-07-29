@@ -29,15 +29,34 @@ open class NovelReaderActivity : ComponentActivity() {
         internal const val EXTRA_BOOK_DIR = "extra_book_dir"
 
         /**
+         * Identifies the source range a deep link points at, so statistics can
+         * open the exact passage a character was read in rather than the book.
+         */
+        private const val EXTRA_SOURCE_DOCUMENT_ID = "extra_source_document_id"
+        private const val EXTRA_SOURCE_CHAPTER_INDEX = "extra_source_chapter_index"
+        private const val EXTRA_SOURCE_SECTION_ID = "extra_source_section_id"
+        private const val EXTRA_SOURCE_RANGE_START = "extra_source_range_start"
+
+        /**
          * Set to [ChimaReaderActivity] from AppModule so that BookshelfScreen's
          * existing [launch] call lands in the app-side subclass (which has the
          * lookup popup), without requiring chimahon to import from app.
          */
         var activityClass: Class<out ComponentActivity> = NovelReaderActivity::class.java
 
-        fun launch(context: Context, bookDir: File) {
+        fun launch(
+            context: Context,
+            bookDir: File,
+            sourceTarget: NovelSourceNavigationTarget? = null,
+        ) {
             val intent = Intent(context, activityClass).apply {
                 putExtra(EXTRA_BOOK_DIR, bookDir.absolutePath)
+                sourceTarget?.let { target ->
+                    putExtra(EXTRA_SOURCE_DOCUMENT_ID, target.documentId)
+                    putExtra(EXTRA_SOURCE_CHAPTER_INDEX, target.chapterIndex)
+                    putExtra(EXTRA_SOURCE_SECTION_ID, target.sectionId)
+                    putExtra(EXTRA_SOURCE_RANGE_START, target.rangeStart)
+                }
                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
             }
             context.startActivity(intent)
@@ -49,6 +68,20 @@ open class NovelReaderActivity : ComponentActivity() {
 
     protected var readerViewModel by androidx.compose.runtime.mutableStateOf<ReaderViewModel?>(null)
     protected var bookMetadata: BookMetadata? = null
+
+    /**
+     * Source position a deep link asked for, if the link matched this book.
+     * Subclasses read it to restore the passage once the reader is ready.
+     */
+    protected var requestedSourceTarget: RequestedSourcePosition? = null
+        private set
+
+    data class RequestedSourcePosition(
+        val documentId: String,
+        val chapterIndex: Int,
+        val sectionId: String,
+        val rangeStart: Int,
+    )
     protected var showHud by androidx.compose.runtime.mutableStateOf(false)
 
     protected open fun handleVolumeKey(forward: Boolean): Boolean {
@@ -187,6 +220,21 @@ open class NovelReaderActivity : ComponentActivity() {
 
         val metadata = BookStorage.loadMetadata(root) ?: BookMetadata(folder = root.name)
         bookMetadata = metadata
+
+        // A deep link that names a different book than the one on disk is stale
+        // -- the library entry was replaced. Opening the book anyway is more
+        // useful than refusing, so only the in-book position is discarded.
+        requestedSourceTarget = intent.getStringExtra(EXTRA_SOURCE_DOCUMENT_ID)
+            ?.takeIf { it == BookStorage.bookIdentityKey(metadata) }
+            ?.let { documentId ->
+                RequestedSourcePosition(
+                    documentId = documentId,
+                    chapterIndex = intent.getIntExtra(EXTRA_SOURCE_CHAPTER_INDEX, -1),
+                    sectionId = intent.getStringExtra(EXTRA_SOURCE_SECTION_ID).orEmpty(),
+                    rangeStart = intent.getIntExtra(EXTRA_SOURCE_RANGE_START, -1),
+                )
+            }
+            ?.takeIf { it.chapterIndex >= 0 && it.sectionId.isNotBlank() && it.rangeStart >= 0 }
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
 

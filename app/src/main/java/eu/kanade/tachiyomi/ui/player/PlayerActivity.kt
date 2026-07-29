@@ -175,6 +175,9 @@ class PlayerActivity : BaseActivity() {
         private const val EXTRA_YOUTUBE_VIDEO = "youtubeVideo"
         private const val EXTRA_YOUTUBE_VIDEO_URL = "youtubeVideoUrl"
 
+        /** Resume position for deep links that point at a specific moment. */
+        const val EXTRA_START_POSITION_MILLIS = "startPositionMillis"
+
         fun newIntent(
             context: Context,
             animeId: Long?,
@@ -182,10 +185,12 @@ class PlayerActivity : BaseActivity() {
             hostList: List<Hoster>? = null,
             hostIndex: Int? = null,
             vidIndex: Int? = null,
+            startPositionMillis: Long? = null,
         ): Intent {
             return Intent(context, PlayerActivity::class.java).apply {
                 putExtra("animeId", animeId)
                 putExtra("episodeId", episodeId)
+                startPositionMillis?.let { putExtra(EXTRA_START_POSITION_MILLIS, it) }
                 hostIndex?.let { putExtra("hostIndex", it) }
                 vidIndex?.let { putExtra("vidIndex", it) }
                 hostList?.let { putExtra("hostList", it.serialize()) }
