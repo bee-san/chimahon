@@ -4,6 +4,23 @@ All notable changes to Chimahon are documented here.
 
 The format follows a Keep a Changelog style and uses Semantic Versioning.
 
+## [v2.4.0]
+
+### Added
+- Immersion statistics: a new Statistics screen under More, with Overview,
+  Activity, Titles, Characters, Sessions, Anki, Trends, and Goals tabs
+- Reading sessions are captured in the background and rolled up per day,
+  title, and character
+- Per-character tracking with Unicode metadata, script breakdowns, frequency
+  and JLPT/grade study data, and Anki knownness where a profile is linked
+- Goals with pace, rolling averages, projected completion, and streaks
+- Statistics maintenance: scoped deletion, retained-text controls, and export
+- Immersion statistics are included in backup, restore, and device sync
+
+### Notes
+- Statistics collection is behind the preview flag and requires privacy
+  consent before anything is recorded
+
 ## [v2.3.1]
 
 ### Added
