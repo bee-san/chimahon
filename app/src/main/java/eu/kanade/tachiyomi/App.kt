@@ -86,12 +86,14 @@ import logcat.LogPriority
 import logcat.LogcatLogger
 import mihon.core.migration.Migrator
 import mihon.core.migration.migrations.migrations
+import mihon.feature.stats.legacy.LegacyStatsImportJob
 import org.conscrypt.Conscrypt
 import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.core.common.preference.Preference
 import tachiyomi.core.common.preference.PreferenceStore
 import tachiyomi.core.common.util.system.ImageUtil
 import tachiyomi.core.common.util.system.logcat
+import tachiyomi.domain.immersion.service.ImmersionStatsPreferences
 import tachiyomi.domain.storage.service.StorageManager
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.widget.WidgetManager
@@ -227,6 +229,9 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
         // Chimahon -->
         com.canopus.chimareader.data.NovelMigration.migrateOldBooks(this)
         chimahon.DictionaryRepository.migrateFlatDictionaries(File(getExternalFilesDir(null), "dictionaries"))
+        if (Injekt.get<ImmersionStatsPreferences>().uiEnabled().get()) {
+            LegacyStatsImportJob.start(this)
+        }
         // Chimahon <--
     }
 

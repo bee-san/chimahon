@@ -6,6 +6,7 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
 import exh.log.xLogE
 import kotlinx.coroutines.CancellationException
 import uy.kohesive.injekt.Injekt
@@ -21,7 +22,7 @@ class LegacyStatsImportJob(
         try {
             val report = importer.importAll()
             Result.success(
-                androidx.work.workDataOf(
+                workDataOf(
                     "importedSources" to report.results.size,
                     "issueCount" to report.issues.size,
                     "mismatchCount" to report.reconciliation.mismatches.size,

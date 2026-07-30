@@ -30,6 +30,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import mihon.feature.stats.indexing.ImmersionIndexJob
+import tachiyomi.core.common.i18n.pluralStringResource
 import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.domain.history.interactor.UpsertSearchHistory
 import tachiyomi.domain.immersion.model.ImmersionPortableArchive
@@ -40,6 +41,7 @@ import tachiyomi.i18n.kmk.KMR
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.io.File
+import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -507,9 +509,10 @@ class BackupRestorer(
         // Conflicts are quarantined rather than applied, so the restore succeeds
         // but the user is told that some rows need attention.
         if (report.quarantinedConflicts > 0) {
-            errors += Date() to context.stringResource(
-                KMR.strings.stats_backup_conflicts,
-                report.quarantinedConflicts,
+            errors += Date() to context.pluralStringResource(
+                KMR.plurals.stats_backup_conflicts,
+                report.quarantinedConflicts.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                NumberFormat.getIntegerInstance().format(report.quarantinedConflicts),
             )
         }
         ImmersionIndexJob.start(context)

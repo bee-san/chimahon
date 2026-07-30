@@ -57,6 +57,7 @@ import tachiyomi.domain.immersion.model.AnkiOperationEvent
 import tachiyomi.domain.immersion.model.AnkiOperationStatus
 import tachiyomi.domain.immersion.model.AnkiOperationType
 import tachiyomi.domain.immersion.model.AnkiSnapshotStatus
+import tachiyomi.domain.immersion.model.CapabilityState
 import tachiyomi.domain.immersion.model.CharacterCoverage
 import tachiyomi.domain.immersion.model.CharacterVolume
 import tachiyomi.domain.immersion.model.EventId
@@ -673,7 +674,7 @@ class SqlDelightImmersionRepository(
             ).executeAsOne()
             val start = row.first_date ?: return@await null
             val end = row.last_date ?: return@await null
-            tachiyomi.domain.immersion.model.LocalDateRange(
+            LocalDateRange(
                 ImmersionLocalDate(start),
                 ImmersionLocalDate(end),
             )
@@ -1186,8 +1187,8 @@ class SqlDelightImmersionRepository(
                 ocrSourceUnitCount = row.ocr_source_units,
                 ocrTextAvailableSourceUnitCount = row.ocr_text_source_units,
                 ankiState = snapshot?.let {
-                    if (it.isStale) tachiyomi.domain.immersion.model.CapabilityState.STALE else it.capabilityState
-                } ?: tachiyomi.domain.immersion.model.CapabilityState.UNAVAILABLE,
+                    if (it.isStale) CapabilityState.STALE else it.capabilityState
+                } ?: CapabilityState.UNAVAILABLE,
                 ankiSnapshotAgeMillis = snapshot?.completedAtEpochMillis?.let {
                     (nowEpochMillis - it).coerceAtLeast(0)
                 },

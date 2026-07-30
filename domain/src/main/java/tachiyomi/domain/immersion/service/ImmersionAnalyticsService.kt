@@ -59,6 +59,7 @@ import tachiyomi.domain.immersion.model.LocalDateRange
 import tachiyomi.domain.immersion.model.MaturityTier
 import tachiyomi.domain.immersion.model.NetCharacterProgress
 import tachiyomi.domain.immersion.model.NonNegativeCounter
+import tachiyomi.domain.immersion.model.ProvenanceState
 import tachiyomi.domain.immersion.model.ReadingMetrics
 import tachiyomi.domain.immersion.model.SessionCursor
 import tachiyomi.domain.immersion.model.SessionId
@@ -670,7 +671,7 @@ private fun StatsFilter.matches(row: ImmersionDailyRollup): Boolean =
         (includeRereadsAndReplays || !row.replay) &&
         (
             includeLegacyAggregates ||
-                row.provenanceState != tachiyomi.domain.immersion.model.ProvenanceState.LEGACY_AGGREGATE
+                row.provenanceState != ProvenanceState.LEGACY_AGGREGATE
             )
 
 private fun List<ImmersionDailyRollup>.sumMetrics(): ReadingMetrics =

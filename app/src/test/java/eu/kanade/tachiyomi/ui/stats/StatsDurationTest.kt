@@ -34,4 +34,26 @@ class StatsDurationTest {
             lessThanSecond = false,
         )
     }
+
+    @Test
+    fun `hours carry the remaining minutes rather than absorbing them`() {
+        // The compact hero tile renders hours and minutes together, so a duration whose minute
+        // remainder is dropped would silently read as a round hour count.
+        statsDurationParts(143_280_000) shouldBe StatsDurationParts(
+            hours = 39,
+            minutes = 48,
+            seconds = 0,
+            lessThanSecond = false,
+        )
+    }
+
+    @Test
+    fun `whole hours report zero minutes`() {
+        statsDurationParts(7_200_000) shouldBe StatsDurationParts(
+            hours = 2,
+            minutes = 0,
+            seconds = 0,
+            lessThanSecond = false,
+        )
+    }
 }

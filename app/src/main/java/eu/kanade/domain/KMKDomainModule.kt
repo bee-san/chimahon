@@ -14,7 +14,6 @@ import tachiyomi.data.immersion.SqlDelightImmersionRepository
 import tachiyomi.data.libraryUpdateError.LibraryUpdateErrorRepositoryImpl
 import tachiyomi.data.libraryUpdateError.LibraryUpdateErrorWithRelationsRepositoryImpl
 import tachiyomi.data.libraryUpdateErrorMessage.LibraryUpdateErrorMessageRepositoryImpl
-import tachiyomi.domain.immersion.interactor.GetLegacyAggregateTotals
 import tachiyomi.domain.immersion.model.AnkiOperationEvent
 import tachiyomi.domain.immersion.model.ExposureEvent
 import tachiyomi.domain.immersion.repository.FeatureFlaggedImmersionRecorderRepository
@@ -190,7 +189,6 @@ class KMKDomainModule : InjektModule {
                 },
             )
         }
-        addFactory { GetLegacyAggregateTotals(get()) }
         addSingletonFactory {
             LegacyStatsImporter(
                 application = get(),

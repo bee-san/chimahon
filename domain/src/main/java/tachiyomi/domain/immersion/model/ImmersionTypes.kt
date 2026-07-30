@@ -129,12 +129,6 @@ enum class ProvenanceState {
 }
 
 @Serializable
-enum class MetricQuality {
-    EVENT_BACKED,
-    LEGACY_AMBIGUOUS,
-}
-
-@Serializable
 enum class RawTextRetention {
     NEVER,
     THIRTY_DAYS,

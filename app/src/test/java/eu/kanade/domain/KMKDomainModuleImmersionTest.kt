@@ -52,7 +52,6 @@ class KMKDomainModuleImmersionTest {
         "ImmersionRecorder",
         "AnkiOperationRecorder",
         "ImmersionRecorderLifecycleCoordinator",
-        "GetLegacyAggregateTotals",
         "LegacyStatsImporter",
     )
 

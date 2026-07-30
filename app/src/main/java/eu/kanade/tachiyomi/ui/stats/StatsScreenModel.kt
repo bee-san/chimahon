@@ -30,6 +30,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import logcat.LogPriority
+import tachiyomi.core.common.util.system.logcat
 import tachiyomi.domain.immersion.model.AnalyticsBucketScale
 import tachiyomi.domain.immersion.model.AnalyticsCharacterFilter
 import tachiyomi.domain.immersion.model.AnalyticsCharacterPriorityMode
@@ -1828,6 +1830,11 @@ class StatsScreenModel(
         query: suspend () -> T,
     ) {
         val result = runCatching { query() }
+        result.exceptionOrNull()?.let {
+            // Same reasoning as toStatsLoadable: the section card is deliberately vague, so the
+            // cause has to reach the log or nobody can tell why a section went blank.
+            logcat(LogPriority.ERROR, it) { "Statistics section refresh failed" }
+        }
         if (refreshGeneration.get() != generation) return
         updateSuccess { state ->
             val previous = current(state.sections)
@@ -2000,7 +2007,12 @@ private data class TitleDetailQueryResults(
 private fun <T> Result<T>.toStatsLoadable(): StatsLoadable<T> =
     fold(
         onSuccess = { StatsLoadable(value = it) },
-        onFailure = { StatsLoadable(error = true) },
+        onFailure = {
+            // The screen only shows "this section could not be loaded", so without this the
+            // cause never leaves the process and the failure is undiagnosable from a bug report.
+            logcat(LogPriority.ERROR, it) { "Statistics section query failed" }
+            StatsLoadable(error = true)
+        },
     )
 
 private fun String.toImmersionLocalDateOrNull(): ImmersionLocalDate? =
