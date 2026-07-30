@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import cafe.adriel.voyager.core.model.rememberScreenModel
 import cafe.adriel.voyager.navigator.LocalNavigator
 import cafe.adriel.voyager.navigator.currentOrThrow
+import dev.icerock.moko.resources.PluralsResource
 import eu.kanade.presentation.components.AppBar
 import eu.kanade.presentation.more.settings.widget.SwitchPreferenceWidget
 import eu.kanade.presentation.util.Screen
@@ -45,6 +46,7 @@ import kotlinx.coroutines.withContext
 import mihon.feature.stats.anki.AnkiInventorySyncJob
 import mihon.feature.stats.goals.ImmersionGoalReminderJob
 import mihon.feature.stats.indexing.ImmersionIndexJob
+import mihon.feature.stats.retention.ImmersionRetentionJob
 import tachiyomi.domain.immersion.model.ImmersionStatsDeletionScope
 import tachiyomi.domain.immersion.model.MediaKind
 import tachiyomi.domain.immersion.model.RawTextRetention
@@ -184,7 +186,7 @@ class StatsMaintenanceScreen(
                 title = stringResource(KMR.strings.stats_delete_raw_text),
                 message = stringResource(
                     KMR.strings.stats_delete_raw_text_warning,
-                    NumberFormat.getIntegerInstance().format(state.rawTextDeletionPreview),
+                    pluralCount(KMR.plurals.stats_private_text_record_count, state.rawTextDeletionPreview),
                 ),
                 onDismiss = { showRawTextDeleteConfirmation = false },
                 onConfirm = {
@@ -199,7 +201,7 @@ class StatsMaintenanceScreen(
                 onDismiss = { showRetentionDialog = false },
                 onSelect = {
                     screenModel.setRetention(it)
-                    mihon.feature.stats.retention.ImmersionRetentionJob.start(context)
+                    ImmersionRetentionJob.start(context)
                     showRetentionDialog = false
                 },
             )
@@ -218,10 +220,12 @@ class StatsMaintenanceScreen(
             val preview = state.deletionPreview
             ConfirmationDialog(
                 title = stringResource(KMR.strings.stats_reset_all),
+                // This is the last thing a reader sees before an irreversible erase, so the counts
+                // have to agree with their nouns: "Erase 1 sessions" undercuts the warning.
                 message = stringResource(
                     KMR.strings.stats_reset_all_warning,
-                    NumberFormat.getIntegerInstance().format(preview?.sessions ?: 0),
-                    NumberFormat.getIntegerInstance().format(preview?.grossCharacters ?: 0),
+                    pluralCount(KMR.plurals.stats_session_count, preview?.sessions ?: 0),
+                    pluralCount(KMR.plurals.stats_gross_character_count, preview?.grossCharacters ?: 0),
                 ),
                 onDismiss = { showFullResetConfirmation = false },
                 onConfirm = {
@@ -286,7 +290,6 @@ private fun StatsMaintenanceContent(
     onResetAllStats: () -> Unit,
 ) {
     val context = LocalContext.current
-    val numberFormat = remember { NumberFormat.getIntegerInstance() }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = paddingValues,
@@ -304,9 +307,9 @@ private fun StatsMaintenanceContent(
                             stringResource(
                                 KMR.strings.stats_storage_summary_value,
                                 Formatter.formatFileSize(context, summary.databaseBytes),
-                                numberFormat.format(summary.sessions),
-                                numberFormat.format(summary.events),
-                                numberFormat.format(summary.sourceUnits),
+                                pluralCount(KMR.plurals.stats_session_count, summary.sessions),
+                                pluralCount(KMR.plurals.stats_event_count, summary.events),
+                                pluralCount(KMR.plurals.stats_source_unit_count, summary.sourceUnits),
                             )
                         },
                     )
@@ -329,7 +332,7 @@ private fun StatsMaintenanceContent(
                         } else {
                             stringResource(
                                 KMR.strings.stats_raw_text_storage_value,
-                                numberFormat.format(summary.rawTextSourceUnits),
+                                pluralCount(KMR.plurals.stats_source_unit_count, summary.rawTextSourceUnits),
                                 Formatter.formatFileSize(context, summary.rawTextBytes),
                             )
                         },
@@ -477,7 +480,7 @@ private fun StatsMaintenanceContent(
             item {
                 MaintenanceAction(
                     title = stringResource(KMR.strings.stats_merge_conflicts),
-                    description = stringResource(KMR.strings.stats_backup_conflicts, numberFormat.format(conflicts)),
+                    description = pluralCount(KMR.plurals.stats_backup_conflicts, conflicts),
                     enabled = !state.busy,
                     onClick = onResolveConflicts,
                 )
@@ -571,7 +574,7 @@ private fun StatsMaintenanceContent(
                 Text(
                     text = stringResource(
                         KMR.strings.stats_maintenance_complete,
-                        numberFormat.format(state.lastAffectedRows),
+                        pluralCount(KMR.plurals.stats_row_count, state.lastAffectedRows),
                     ),
                     modifier = Modifier.padding(16.dp),
                 )
@@ -755,12 +758,12 @@ private fun ScopedDeletionDialog(
                     Text(
                         stringResource(
                             KMR.strings.stats_delete_scoped_preview,
-                            NumberFormat.getIntegerInstance().format(it.sessions),
+                            pluralCount(KMR.plurals.stats_session_count, it.sessions),
                             formatMaintenanceDuration(it.activeDurationMillis),
-                            NumberFormat.getIntegerInstance().format(it.grossCharacters),
-                            NumberFormat.getIntegerInstance().format(it.sourceUnits),
-                            NumberFormat.getIntegerInstance().format(it.characters),
-                            NumberFormat.getIntegerInstance().format(it.goals),
+                            pluralCount(KMR.plurals.stats_gross_character_count, it.grossCharacters),
+                            pluralCount(KMR.plurals.stats_source_unit_count, it.sourceUnits),
+                            pluralCount(KMR.plurals.stats_character_count, it.characters),
+                            pluralCount(KMR.plurals.stats_affected_goal_count, it.goals),
                         ),
                     )
                 }
@@ -889,6 +892,18 @@ private fun ReaderIdleTimeoutDialog(
         },
     )
 }
+
+/**
+ * A grouped count with its noun in agreement. Quantities here are `Long` totals while plural
+ * selection takes an `Int`, so large values are clamped for the quantity only — the displayed
+ * number is always the full formatted total.
+ */
+@Composable
+private fun pluralCount(resource: PluralsResource, count: Long): String = pluralStringResource(
+    resource,
+    count.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(),
+    NumberFormat.getIntegerInstance().format(count),
+)
 
 @Composable
 private fun readerIdleTimeoutLabel(seconds: Int): String {

@@ -1,10 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <plurals name="stats_goal_reminder_body">
-        <item quantity="one">%1$d goal still has progress due today.</item>
-        <item quantity="other">%1$d goals still have progress due today.</item>
-    </plurals>
     <plurals name="stats_active_bucket_count">
         <item quantity="one">%1$d active bucket</item>
         <item quantity="other">%1$d active buckets</item>
@@ -13,6 +9,18 @@
         <item quantity="one">%1$s active day</item>
         <item quantity="other">%1$s active days</item>
     </plurals>
+    <plurals name="stats_affected_goal_count">
+        <item quantity="one">%1$s affected goal</item>
+        <item quantity="other">%1$s affected goals</item>
+    </plurals>
+    <plurals name="stats_backup_conflicts">
+        <item quantity="one">%1$s conflicting immersion-statistics row was quarantined for review.</item>
+        <item quantity="other">%1$s conflicting immersion-statistics rows were quarantined for review.</item>
+    </plurals>
+    <plurals name="stats_bucket_count">
+        <item quantity="one">%1$d bucket</item>
+        <item quantity="other">%1$d buckets</item>
+    </plurals>
     <plurals name="stats_chapter_count">
         <item quantity="one">%1$s chapter</item>
         <item quantity="other">%1$s chapters</item>
@@ -20,6 +28,10 @@
     <plurals name="stats_character_count">
         <item quantity="one">%1$s character</item>
         <item quantity="other">%1$s characters</item>
+    </plurals>
+    <plurals name="stats_character_selection_count">
+        <item quantity="one">%1$d character selected</item>
+        <item quantity="other">%1$d characters selected</item>
     </plurals>
     <plurals name="stats_completion_event_count">
         <item quantity="one">%1$s completion</item>
@@ -45,16 +57,56 @@
         <item quantity="one">%1$s episode</item>
         <item quantity="other">%1$s episodes</item>
     </plurals>
+    <plurals name="stats_event_count">
+        <item quantity="one">%1$s event</item>
+        <item quantity="other">%1$s events</item>
+    </plurals>
+    <plurals name="stats_goal_reminder_body">
+        <item quantity="one">%1$d goal still has progress due today.</item>
+        <item quantity="other">%1$d goals still have progress due today.</item>
+    </plurals>
+    <plurals name="stats_gross_character_count">
+        <item quantity="one">%1$s gross character</item>
+        <item quantity="other">%1$s gross characters</item>
+    </plurals>
     <plurals name="stats_occurrence_count">
         <item quantity="one">%1$s occurrence</item>
         <item quantity="other">%1$s occurrences</item>
+    </plurals>
+    <plurals name="stats_private_text_record_count">
+        <item quantity="one">%1$s private text record</item>
+        <item quantity="other">%1$s private text records</item>
+    </plurals>
+    <plurals name="stats_qualifying_active_day_count">
+        <item quantity="one">%1$s qualifying active day</item>
+        <item quantity="other">%1$s qualifying active days</item>
+    </plurals>
+    <plurals name="stats_qualifying_day_count">
+        <item quantity="one">%1$s qualifying day</item>
+        <item quantity="other">%1$s qualifying days</item>
+    </plurals>
+    <plurals name="stats_remaining_active_day_count">
+        <item quantity="one">%1$s remaining active day</item>
+        <item quantity="other">%1$s remaining active days</item>
+    </plurals>
+    <plurals name="stats_row_count">
+        <item quantity="one">%1$s row</item>
+        <item quantity="other">%1$s rows</item>
     </plurals>
     <plurals name="stats_section_count">
         <item quantity="one">%1$s section</item>
         <item quantity="other">%1$s sections</item>
     </plurals>
+    <plurals name="stats_session_count">
+        <item quantity="one">%1$s session</item>
+        <item quantity="other">%1$s sessions</item>
+    </plurals>
     <plurals name="stats_source_unit_count">
         <item quantity="one">%1$s source unit</item>
         <item quantity="other">%1$s source units</item>
+    </plurals>
+    <plurals name="stats_timeline_bucket_count">
+        <item quantity="one">%1$s timeline bucket</item>
+        <item quantity="other">%1$s timeline buckets</item>
     </plurals>
 </resources>

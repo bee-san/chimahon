@@ -7,6 +7,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,7 +29,9 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -83,6 +86,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -91,6 +95,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -106,6 +111,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import dev.icerock.moko.resources.PluralsResource
 import eu.kanade.tachiyomi.ui.dictionary.ProcessTextLookupActivity
 import eu.kanade.tachiyomi.ui.stats.ACTIVE_TIME_GOAL_METRIC
 import eu.kanade.tachiyomi.ui.stats.SOURCE_UNITS_GOAL_METRIC
@@ -172,6 +178,7 @@ import tachiyomi.domain.immersion.model.AnalyticsTrends
 import tachiyomi.domain.immersion.model.CapabilityState
 import tachiyomi.domain.immersion.model.CharacterMetric
 import tachiyomi.domain.immersion.model.ImmersionAnkiItem
+import tachiyomi.domain.immersion.model.ImmersionDeletionPreview
 import tachiyomi.domain.immersion.model.ImmersionGoal
 import tachiyomi.domain.immersion.model.ImmersionLocalDate
 import tachiyomi.domain.immersion.model.ImmersionSession
@@ -448,8 +455,12 @@ private fun FilterSummary(
                 )
             }
             Icon(
-                Icons.Outlined.ArrowDropDown,
-                contentDescription = null,
+                imageVector = Icons.Outlined.ArrowDropDown,
+                contentDescription = stringResource(
+                    if (expanded) KMR.strings.stats_filters_collapse else KMR.strings.stats_filters_expand,
+                ),
+                // The row is a toggle, so the chevron has to say which way it will go.
+                modifier = Modifier.rotate(if (expanded) 180f else 0f),
             )
         }
         if (expanded) {
@@ -658,7 +669,7 @@ private fun OverviewTab(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     SectionTitle(stringResource(KMR.strings.stats_recent_sessions))
                     result.value.items.take(3).forEach { session ->
-                        SessionRow(session) {
+                        SessionRow(session, state.sessionTitleName(session)) {
                             onTabSelect(StatsTab.SESSIONS)
                             onSessionSelect(session)
                         }
@@ -684,9 +695,10 @@ private fun OverviewTab(
                 }
             }
         }
-        item {
-            val quality = section.value?.quality
-            if (quality != null) DataQualityCard(quality)
+        // Declared conditionally rather than emitting an empty item: LazyColumn still
+        // spaces an item that draws nothing, leaving a stray gap at the foot of the list.
+        section.value?.quality?.let { quality ->
+            item { DataQualityCard(quality) }
         }
     }
 }
@@ -810,34 +822,32 @@ private fun ActivityHeatmap(
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         SectionTitle(stringResource(KMR.strings.stats_activity_heatmap))
-        Text(
-            text = summary,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        // The grid is only informative once something has been recorded: with no active
-        // day it renders as a lone empty cell under a calendar-aligned blank gap, which
-        // says less than the summary line above already does.
-        if (activeDays == 0) return@Column
+        // With no active day the summary is a sentence built entirely from zeros and the
+        // grid is a lone blank cell, so the section says plainly that there is nothing yet.
+        if (activeDays == 0) {
+            EmptyState()
+            return@Column
+        }
+        NoteText(summary)
+        // The grid runs oldest week first and a year of them is far wider than any phone, so
+        // the default left-anchored position shows a wall of blank pre-history while the recent
+        // weeks — the part anyone actually looks at — sit off the right edge. Anchoring to the
+        // end puts today under the thumb and leaves history a scroll away.
+        val scrollState = rememberScrollState()
+        LaunchedEffect(scrollState.maxValue) { scrollState.scrollTo(scrollState.maxValue) }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                .horizontalScroll(scrollState),
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
         ) {
             cells.chunked(7).forEach { week ->
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     week.forEach { point ->
                         if (point == null) {
-                            Spacer(Modifier.size(24.dp))
+                            Spacer(Modifier.size(HEATMAP_CELL_SIZE))
                         } else {
                             val value = point.metrics.characterValue(metric)
-                            val fraction = value.toFloat() / maximum.toFloat()
-                            val level = if (value == 0L) {
-                                0
-                            } else {
-                                (fraction * 4).roundToInt().coerceIn(1, 4)
-                            }
                             val description = stringResource(
                                 KMR.strings.stats_heatmap_day,
                                 formatLocalDate(point.range.start),
@@ -847,40 +857,58 @@ private fun ActivityHeatmap(
                                     formatCount(value),
                                 ),
                             )
-                            Box(
-                                modifier = Modifier
-                                    .size(24.dp)
-                                    .background(
-                                        color = lerp(
-                                            MaterialTheme.colorScheme.surfaceVariant,
-                                            MaterialTheme.colorScheme.primaryContainer,
-                                            fraction,
-                                        ),
-                                        shape = RoundedCornerShape(3.dp),
-                                    )
-                                    .border(
-                                        width = if (level >= 3) 2.dp else 1.dp,
-                                        color = MaterialTheme.colorScheme.outline,
-                                        shape = RoundedCornerShape(3.dp),
-                                    )
-                                    .semantics { contentDescription = description },
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Text(
-                                    text = level.toString(),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (value == 0L) {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    } else {
-                                        MaterialTheme.colorScheme.onPrimaryContainer
-                                    },
-                                )
-                            }
+                            HeatmapCell(
+                                level = characterFrequencyLevel(value, maximum, HEATMAP_LEVELS),
+                                modifier = Modifier.semantics { contentDescription = description },
+                            )
                         }
                     }
                 }
             }
         }
+        HeatmapLegend()
+    }
+}
+
+private val HEATMAP_CELL_SIZE = 14.dp
+
+/** Shaded steps a heatmap cell can take, not counting the unshaded step a blank day gets. */
+private const val HEATMAP_LEVELS = 4
+
+@Composable
+private fun HeatmapCell(
+    level: Int,
+    modifier: Modifier = Modifier,
+) {
+    val empty = MaterialTheme.colorScheme.surfaceVariant
+    val filled = MaterialTheme.colorScheme.primary
+    Box(
+        modifier = modifier
+            .size(HEATMAP_CELL_SIZE)
+            .background(
+                color = if (level == 0) empty else lerp(empty, filled, 0.25f + 0.25f * (level - 1)),
+                shape = RoundedCornerShape(3.dp),
+            ),
+    )
+}
+
+@Composable
+private fun HeatmapLegend() {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = stringResource(KMR.strings.stats_heatmap_legend_less),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        repeat(HEATMAP_LEVELS + 1) { level -> HeatmapCell(level = level) }
+        Text(
+            text = stringResource(KMR.strings.stats_heatmap_legend_more),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -893,20 +921,28 @@ private fun OverviewSummary(
 ) {
     val overview = result.value
     val metrics = overview.comparison.current
-    // With nothing recorded yet the partial-day notice and the comparison card both
-    // reduce to "no activity", so only the comparison card is shown.
     val hasActivity = metrics.activeTime.value > 0L || metrics.sessions.value > 0L
+    val hadPreviousActivity = (overview.comparison.previous?.activeTime?.value ?: 0L) > 0L
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        if (overview.period.isPartialCurrentDay && hasActivity) {
-            NoticeCard(stringResource(KMR.strings.stats_partial_day))
+        // A comparison needs a baseline. With nothing in the previous period the card can only
+        // report a first period at length — "Up 39 hours 48 minutes from 0 minutes; percentage
+        // unavailable because the previous value was zero" — which is true, wordy, and says less
+        // than its own absence; on an all-time range the previous period is empty by definition,
+        // so it would sit at the top of the screen permanently. The partial-day notice exists only
+        // to qualify that comparison, so it waits for the same condition.
+        if (hadPreviousActivity) {
+            if (overview.period.isPartialCurrentDay && hasActivity) {
+                NoticeCard(stringResource(KMR.strings.stats_partial_day))
+            }
+            ComparisonCard(overview)
         }
-        ComparisonCard(overview)
         val cards = listOf(
             DashboardMetric(
-                formatDuration(metrics.activeTime.value),
+                formatDurationCompact(metrics.activeTime.value),
                 stringResource(KMR.strings.stats_active_time),
                 Icons.Outlined.Schedule,
                 StatsTab.ACTIVITY,
+                spokenValue = formatDuration(metrics.activeTime.value),
             ),
             DashboardMetric(
                 formatCount(metrics.characterValue(metric)),
@@ -914,9 +950,11 @@ private fun OverviewSummary(
                 Icons.Outlined.TextFields,
                 StatsTab.CHARACTERS,
             ),
+            // A bare "5,398" under "Reading speed" is ambiguous between per-hour and per-session,
+            // which is the whole content of the measure, so the rate carries its unit.
             DashboardMetric(
-                metrics.readingSpeedPerHour(metric)?.let(::formatRate)
-                    ?: stringResource(KMR.strings.stats_unavailable),
+                metrics.readingSpeedPerHour(metric)
+                    ?.let { stringResource(KMR.strings.stats_per_hour, formatRate(it)) },
                 stringResource(KMR.strings.stats_reading_speed),
                 Icons.Outlined.Speed,
                 StatsTab.ACTIVITY,
@@ -935,8 +973,7 @@ private fun OverviewSummary(
             ),
             DashboardMetric(
                 overviewIndexedGrowthMetricValue(metrics.newCharacters.value, result.quality)
-                    ?.let(::formatCount)
-                    ?: stringResource(KMR.strings.stats_unavailable),
+                    ?.let(::formatCount),
                 stringResource(KMR.strings.stats_new_characters),
                 Icons.Outlined.TextFields,
                 StatsTab.CHARACTERS,
@@ -1151,12 +1188,18 @@ private fun ActivityTab(
                 )
             }
         }
-        item {
-            Text(
-                text = stringResource(KMR.strings.stats_minimum_threshold),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        // The threshold caveat qualifies the speed figures above it. With nothing recorded
+        // there are no such figures, so it would sit alone at the foot of the tab explaining
+        // a rule about numbers that are not on screen.
+        val hasRecordedActivity = state.sections.trends.value
+            ?.value
+            ?.points
+            ?.any { it.metrics.activeTime.value > 0L || it.metrics.sessions.value > 0L }
+            ?: false
+        if (hasRecordedActivity) {
+            item {
+                NoteText(stringResource(KMR.strings.stats_minimum_threshold))
+            }
         }
     }
 }
@@ -1166,32 +1209,33 @@ private fun TrendsContent(
     trends: AnalyticsTrends,
     metric: CharacterMetric,
     trendMetric: StatsTrendMetric,
+    title: String = stringResource(KMR.strings.stats_activity_chart),
 ) {
     val points = trends.points
     val values = points.map { it.metrics.trendValue(trendMetric, metric) }
-    val max = values.maxOrNull()?.coerceAtLeast(1) ?: 1
+    val max = values.maxOrNull() ?: 0L
     val total = values.sum()
     val barColor = MaterialTheme.colorScheme.primary
+    val bucketCount = pluralStringResource(KMR.plurals.stats_bucket_count, points.size, points.size)
     val summary = stringResource(
         KMR.strings.stats_activity_chart_summary,
-        points.size,
+        bucketCount,
         formatTrendValue(total, trendMetric),
         formatTrendValue(max, trendMetric),
     )
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        SectionTitle(stringResource(KMR.strings.stats_activity_chart))
-        Text(
-            text = summary,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        SectionTitle(title)
+        if (max <= 0L) {
+            EmptyState()
+            return@Column
+        }
+        NoteText(summary)
         Canvas(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(180.dp)
                 .semantics { contentDescription = summary },
         ) {
-            if (values.isEmpty()) return@Canvas
             val spacing = size.width / values.size
             val width = (spacing * 0.62f).coerceAtLeast(1f)
             values.forEachIndexed { index, value ->
@@ -1214,7 +1258,8 @@ private fun TrendsContent(
         SectionTitle(stringResource(KMR.strings.stats_efficiency))
         MetricLine(
             stringResource(KMR.strings.stats_reading_speed),
-            cumulative.readingSpeedPerHour(metric)?.let(::formatRate)
+            cumulative.readingSpeedPerHour(metric)
+                ?.let { stringResource(KMR.strings.stats_per_hour, formatRate(it)) }
                 ?: stringResource(KMR.strings.stats_unavailable),
         )
         MetricLine(
@@ -1223,11 +1268,19 @@ private fun TrendsContent(
                 ?: stringResource(KMR.strings.stats_unavailable),
         )
         SectionTitle(stringResource(KMR.strings.stats_moving_average))
-        movingAverage(points, trendMetric, metric).takeLast(10).forEach { (point, average) ->
-            MetricLine(
-                formatLocalDate(point.range.endInclusive),
-                formatTrendValue(average.roundToLong(), trendMetric),
-            )
+        val recentAverages = movingAverage(points, trendMetric, metric).takeLast(10)
+        if (recentAverages.all { it.second <= 0.0 }) {
+            // Ten dated rows of zero say one thing ten times and read as a metric that failed rather
+            // than as a quiet stretch. The temporal-pattern charts suppress their all-zero axes the
+            // same way.
+            EmptyState()
+        } else {
+            recentAverages.forEach { (point, average) ->
+                MetricLine(
+                    formatLocalDate(point.range.endInclusive),
+                    formatTrendValue(average.roundToLong(), trendMetric),
+                )
+            }
         }
     }
 }
@@ -1237,7 +1290,14 @@ private fun TemporalPatternsContent(
     activity: AnalyticsTemporalActivity,
     metric: CharacterMetric,
 ) {
-    val hours = activity.hours.sortedBy { it.hourOfDay }
+    // Only hours that hold something are drawn. A day has 24 of them and a typical reader uses a
+    // handful, so the full grid is mostly identical zero tiles; the hours left out are zero by
+    // construction, which the eye reads faster from their absence than from eighteen empty cards.
+    // Weekdays keep all seven: that axis is short enough to stay compact and a gap in a full week
+    // is itself the finding.
+    val hours = activity.hours
+        .filter { it.totals.hasActivity(metric) }
+        .sortedBy { it.hourOfDay }
     val weekdays = activity.weekdays.sortedBy { it.isoDayOfWeek }
     val maximumHourlyCharacters = hours
         .maxOfOrNull { it.totals.characterValue(metric).coerceAtLeast(0L) }
@@ -1248,43 +1308,53 @@ private fun TemporalPatternsContent(
         ?.coerceAtLeast(1L)
         ?: 1L
 
+    // The backend returns a full grid of buckets whether or not anything happened in them,
+    // so emptiness is the wrong test for the weekday axis: without this, an idle period renders
+    // seven zero bars, which is noise carrying no information.
+    val hasHourlyActivity = hours.isNotEmpty()
+    val hasWeekdayActivity = weekdays.any { it.totals.hasActivity(metric) }
+
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         SectionTitle(stringResource(KMR.strings.stats_time_patterns))
-        Text(
-            text = stringResource(KMR.strings.stats_time_patterns_explanation),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        SectionTitle(stringResource(KMR.strings.stats_hourly_activity))
-        hours.chunked(3).forEach { rowHours ->
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                rowHours.forEach { hour ->
-                    TemporalPointCard(
-                        label = formatHour(hour.hourOfDay),
-                        totals = hour.totals,
-                        metric = metric,
-                        intensity = hour.totals.characterValue(metric)
-                            .coerceAtLeast(0L)
-                            .toFloat() / maximumHourlyCharacters.toFloat(),
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-                repeat(3 - rowHours.size) {
-                    Spacer(Modifier.weight(1f))
+        if (!hasHourlyActivity && !hasWeekdayActivity) {
+            EmptyState()
+            return@Column
+        }
+        NoteText(stringResource(KMR.strings.stats_time_patterns_explanation))
+        if (hasHourlyActivity) {
+            SectionTitle(stringResource(KMR.strings.stats_hourly_activity))
+            hours.chunked(3).forEach { rowHours ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    rowHours.forEach { hour ->
+                        TemporalPointCard(
+                            label = formatHour(hour.hourOfDay),
+                            totals = hour.totals,
+                            metric = metric,
+                            intensity = hour.totals.characterValue(metric)
+                                .coerceAtLeast(0L)
+                                .toFloat() / maximumHourlyCharacters.toFloat(),
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    repeat(3 - rowHours.size) {
+                        Spacer(Modifier.weight(1f))
+                    }
                 }
             }
         }
-        SectionTitle(stringResource(KMR.strings.stats_weekday_activity))
-        weekdays.forEach { weekday ->
-            TemporalWeekdayRow(
-                label = formatWeekday(weekday.isoDayOfWeek),
-                totals = weekday.totals,
-                metric = metric,
-                maximumCharacters = maximumWeekdayCharacters,
-            )
+        if (hasWeekdayActivity) {
+            SectionTitle(stringResource(KMR.strings.stats_weekday_activity))
+            weekdays.forEach { weekday ->
+                TemporalWeekdayRow(
+                    label = formatWeekday(weekday.isoDayOfWeek),
+                    totals = weekday.totals,
+                    metric = metric,
+                    maximumCharacters = maximumWeekdayCharacters,
+                )
+            }
         }
     }
 }
@@ -1307,6 +1377,9 @@ private fun TemporalPointCard(
     val speedText = speed?.let {
         stringResource(KMR.strings.stats_per_hour, formatRate(it))
     } ?: stringResource(KMR.strings.stats_unavailable)
+    // The tile shows a dash where the screen reader says "Unavailable": in a 24-tile grid
+    // the repeated word is what the eye reads instead of the numbers.
+    val speedLabel = speed?.let { stringResource(KMR.strings.stats_per_hour, formatRate(it)) } ?: "—"
     val description = stringResource(
         KMR.strings.stats_temporal_point_description,
         label,
@@ -1328,7 +1401,7 @@ private fun TemporalPointCard(
             Text(label, style = MaterialTheme.typography.labelMedium)
             Text(formatCount(characters), fontWeight = FontWeight.SemiBold)
             Text(
-                text = speedText,
+                text = speedLabel,
                 style = MaterialTheme.typography.labelSmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -1439,13 +1512,11 @@ private fun TitleContributionsContent(
                     trendMetric = trendMetric,
                 )
             }
-            Text(
-                text = stringResource(
+            NoteText(
+                stringResource(
                     KMR.strings.stats_title_series_limit,
                     trends.series.size,
                 ),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
@@ -1559,7 +1630,14 @@ private fun TitlesTab(
     val result = state.sections.titles.value
     val rows = result?.value?.items.orEmpty()
     val loadState = state.sections.titles.collectionLoadState(rows.isNotEmpty())
+    // The detail card sits above the rows, so a selection made further down the list would otherwise
+    // appear to do nothing. Scroll it into view.
+    val listState = rememberLazyListState()
+    LaunchedEffect(selected?.titleId) {
+        if (selected != null) listState.animateScrollToItem(0)
+    }
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -1605,11 +1683,7 @@ private fun TitlesTab(
                 )
             }
             if (state.titleSort == AnalyticsTitleSort.READING_SPEED) {
-                Text(
-                    stringResource(KMR.strings.stats_minimum_threshold),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                NoteText(stringResource(KMR.strings.stats_minimum_threshold))
             }
         }
         if (selected != null) {
@@ -1655,6 +1729,7 @@ private fun TitlesTab(
                     title = title,
                     metadata = state.titleMetadata[title.titleId],
                     metric = state.filter.characterMetric,
+                    sort = state.titleSort,
                     onClick = { onSelect(title) },
                 )
             }
@@ -1715,11 +1790,18 @@ private fun CharactersTab(
     }
     val previous = rows.getOrNull(selectedIndex - 1)
     val next = rows.getOrNull(selectedIndex + 1)
+    // Tapping a tile deep in the grid opens a detail card above the overview, several screens up. The
+    // prev/next buttons inside that card also change the selection, so this keeps it in view too.
+    val gridState = rememberLazyGridState()
+    LaunchedEffect(state.selection.character?.codePoint) {
+        if (state.selection.character != null) gridState.animateScrollToItem(0)
+    }
     LazyVerticalGrid(
         columns = when (state.characterLayout) {
             StatsCharacterLayout.GRID -> GridCells.Adaptive(72.dp)
             StatsCharacterLayout.LIST -> GridCells.Fixed(1)
         },
+        state = gridState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1769,8 +1851,9 @@ private fun CharactersTab(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        stringResource(
-                            KMR.strings.stats_character_selection_count,
+                        pluralStringResource(
+                            KMR.plurals.stats_character_selection_count,
+                            selectedCodePoints.size,
                             selectedCodePoints.size,
                         ),
                         modifier = Modifier.weight(1f),
@@ -1854,19 +1937,33 @@ private fun CharacterOverview(
                     stringResource(KMR.strings.stats_distinct_characters),
                     formatCount(value.distinctCharacters),
                 )
-                MetricLine(
-                    stringResource(KMR.strings.stats_new_characters),
-                    formatCount(value.firstSeenInRange),
-                )
+                // This counts characters first seen *inside the selected range*, which the query
+                // can only answer when a range is bound; on an all-time view it returns 0 by
+                // construction. Showing "New characters 0" beside a distinct-character total of 28
+                // reads as a contradiction, and the honest all-time answer — every character is new
+                // — is just the total again, so the line waits for a range that gives it meaning.
+                if (state.filter.rangePreset != StatsRangePreset.ALL) {
+                    MetricLine(
+                        stringResource(KMR.strings.stats_new_characters),
+                        formatCount(value.firstSeenInRange),
+                    )
+                }
                 MetricLine(
                     stringResource(KMR.strings.stats_character_gross_exposure),
                     formatCount(value.grossOccurrenceExposure),
                 )
-                value.scripts.forEach { script ->
-                    MetricLine(
-                        characterScriptLabel(script.script),
-                        formatCount(script.distinctCharacters),
-                    )
+                // The per-script counts are a breakdown of the distinct-character total above,
+                // not three more totals of their own. Flush against the top-level metrics they
+                // read as one flat list of nine unrelated numbers, so they get a heading that
+                // says what they are a breakdown of.
+                if (value.scripts.isNotEmpty()) {
+                    SubsectionTitle(stringResource(KMR.strings.stats_character_scripts))
+                    value.scripts.forEach { script ->
+                        MetricLine(
+                            characterScriptLabel(script.script),
+                            formatCount(script.distinctCharacters),
+                        )
+                    }
                 }
                 val characterMappingConfigured = state.profiles
                     .filter { state.filter.profileId == null || it.id == state.filter.profileId }
@@ -1880,6 +1977,10 @@ private fun CharacterOverview(
                             CapabilityState.STALE,
                         )
                 if (coverageAvailable) {
+                    // Flush against the per-script rows above, these two read as two more scripts.
+                    // They measure something else entirely — how much of the character set Anki
+                    // already holds — so they get their own subheading.
+                    SubsectionTitle(stringResource(KMR.strings.stats_tab_anki))
                     CoverageLine(
                         stringResource(KMR.strings.stats_character_anki_coverage),
                         value.representedInAnki,
@@ -1907,14 +2008,12 @@ private fun CharacterOverview(
                         valueRange = 50f..100f,
                         steps = 9,
                     )
-                    Text(
+                    NoteText(
                         stringResource(
                             KMR.strings.stats_character_daily_suggestion,
                             formatCount(target.dailyPlanningSuggestion),
                             formatCount(target.remainingCharacters),
                         ),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 } else {
                     NoticeCard(stringResource(KMR.strings.stats_character_anki_unavailable))
@@ -1925,14 +2024,12 @@ private fun CharacterOverview(
             section = state.sections.trends,
             onRetry = { onSectionRetry(StatsSection.TRENDS) },
         ) { result ->
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                SectionTitle(stringResource(KMR.strings.stats_character_growth))
-                TrendsContent(
-                    trends = result.value,
-                    metric = state.filter.characterMetric,
-                    trendMetric = StatsTrendMetric.NEW_CHARACTERS,
-                )
-            }
+            TrendsContent(
+                trends = result.value,
+                metric = state.filter.characterMetric,
+                trendMetric = StatsTrendMetric.NEW_CHARACTERS,
+                title = stringResource(KMR.strings.stats_character_growth),
+            )
         }
         val introducingTitles = state.titleOptions
             .asSequence()
@@ -1992,11 +2089,7 @@ private fun CharacterWorkbenchControls(
                 onSelect = { onFilterChange(filter.copy(priorityMode = it)) },
             )
         }
-        Text(
-            stringResource(KMR.strings.stats_character_priority_formula),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        NoteText(stringResource(KMR.strings.stats_character_priority_formula))
         SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
             StatsCharacterLayout.entries.forEachIndexed { index, option ->
                 SegmentedButton(
@@ -2038,11 +2131,12 @@ private fun CharacterWorkbenchControls(
             }
         }
         if (gridMode == StatsCharacterGridMode.FREQUENCY) {
-            Text(
-                stringResource(KMR.strings.stats_character_frequency_legend),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            NoteText(stringResource(KMR.strings.stats_character_frequency_legend))
+        }
+        if (layout == StatsCharacterLayout.GRID) {
+            // Grid tiles have no room for a checkbox, so selection is a long-press — a gesture with
+            // no affordance to find it by. The list layout shows its checkboxes and needs no hint.
+            NoteText(stringResource(KMR.strings.stats_character_select_hint))
         }
     }
 }
@@ -2061,7 +2155,14 @@ private fun SessionsTab(
     val result = state.sections.sessions.value
     val sessions = result?.value?.items.orEmpty()
     val loadState = state.sections.sessions.collectionLoadState(sessions.isNotEmpty())
+    // The detail card is prepended to the list, so selecting a row further down changed nothing the
+    // reader could see. Bring the card into view whenever the selection changes.
+    val listState = rememberLazyListState()
+    LaunchedEffect(state.selection.session?.id) {
+        if (state.selection.session != null) listState.animateScrollToItem(0)
+    }
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -2097,7 +2198,7 @@ private fun SessionsTab(
         }
         if (loadState.showContent) {
             items(sessions, key = { it.id.value }) { session ->
-                SessionRow(session) { onSelect(session) }
+                SessionRow(session, state.sessionTitleName(session)) { onSelect(session) }
             }
             if (result?.value?.nextCursor != null) {
                 item { LoadMoreButton(onLoadMore) }
@@ -2145,7 +2246,7 @@ private fun GoalsTab(
             }
         }
         if (loadState.showEmpty) {
-            item { Text(stringResource(KMR.strings.stats_no_goals)) }
+            item { EmptyState(stringResource(KMR.strings.stats_no_goals)) }
         }
         if (loadState.showContent) {
             items(goals, key = { it.goal.id }) { goal ->
@@ -2227,13 +2328,11 @@ private fun AnkiTab(
                             NoticeCard(stringResource(KMR.strings.stats_anki_snapshot_stale))
                         }
                         snapshot.completedAtEpochMillis?.let {
-                            Text(
+                            NoteText(
                                 stringResource(
                                     KMR.strings.stats_anki_snapshot_completed,
                                     formatInstant(it),
                                 ),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         Text(
@@ -2253,13 +2352,11 @@ private fun AnkiTab(
                     }
                     summary.generatedAtEpochMillis?.let {
                         SectionTitle(stringResource(KMR.strings.stats_anki_freshness))
-                        Text(
+                        NoteText(
                             stringResource(
                                 KMR.strings.stats_anki_report_generated,
                                 formatInstant(it),
                             ),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     Button(
@@ -2273,23 +2370,22 @@ private fun AnkiTab(
                         Text(stringResource(KMR.strings.stats_anki_refresh_inventory))
                     }
                     if (refreshRequested) {
-                        Text(
-                            stringResource(KMR.strings.stats_anki_refresh_requested),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        NoteText(stringResource(KMR.strings.stats_anki_refresh_requested))
                     }
                     if (summary.capabilities.isNotEmpty()) {
                         SectionTitle(stringResource(KMR.strings.stats_anki_capabilities))
+                        // Up to nine of these stack up, and pairing each state with its reason in the
+                        // value column ran a clause like "Provider support exists, but review records
+                        // are not collected" edge to edge in bold, crowding out the report name. The
+                        // row keeps the one-word state and the reason drops to a note beneath it.
                         summary.capabilities.forEach { capability ->
                             MetricLine(
                                 ankiReportLabel(capability.report),
-                                stringResource(
-                                    KMR.strings.stats_anki_capability_value,
-                                    capabilityLabel(capability.state),
-                                    ankiCapabilityReasonLabel(capability.reason),
-                                ),
+                                capabilityLabel(capability.state),
                             )
+                            ankiCapabilityReason(capability.reason)?.let {
+                                NoteText(it)
+                            }
                         }
                     }
                     CoverageLine(
@@ -2406,13 +2502,11 @@ private fun AnkiTab(
                                 formatCount(title.operationCount),
                             )
                             title.cardsPerTenThousandGrossCharacters()?.let {
-                                Text(
+                                NoteText(
                                     stringResource(
                                         KMR.strings.stats_cards_per_ten_thousand,
                                         formatDecimal(it),
                                     ),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                         }
@@ -2429,16 +2523,19 @@ private fun AnkiTab(
                     Button(onClick = onOpenMissingCharacters) {
                         Text(stringResource(KMR.strings.stats_anki_open_character_workbench))
                     }
+                    // One card, not three: these caveats always apply together, and stacking
+                    // them turned the foot of the tab into a wall of identical banners.
                     NoticeCard(
-                        stringResource(
-                            KMR.strings.stats_anki_sample_limit,
-                            summary.minimumComparisonSampleSize,
+                        listOfNotNull(
+                            stringResource(
+                                KMR.strings.stats_anki_sample_limit,
+                                summary.minimumComparisonSampleSize,
+                            ),
+                            stringResource(KMR.strings.stats_anki_observational),
+                            stringResource(KMR.strings.stats_review_history_unavailable)
+                                .takeIf { !summary.reviewHistoryAvailable },
                         ),
                     )
-                    NoticeCard(stringResource(KMR.strings.stats_anki_observational))
-                    if (!summary.reviewHistoryAvailable) {
-                        NoticeCard(stringResource(KMR.strings.stats_review_history_unavailable))
-                    }
                 }
             }
         }
@@ -2456,36 +2553,35 @@ private fun DataQualityCard(quality: AnalyticsDataQuality) {
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             SectionTitle(stringResource(KMR.strings.stats_data_quality))
-            MetricLine(
-                stringResource(KMR.strings.stats_legacy_share),
-                quality.legacyShare?.let(::formatPercent) ?: stringResource(KMR.strings.stats_unavailable),
+            // Each measure is omitted rather than printed as "Unavailable": a column of
+            // five identical placeholders reads as broken, where saying nothing is honest.
+            val measured = listOfNotNull(
+                quality.legacyShare?.let { stringResource(KMR.strings.stats_legacy_share) to it },
+                quality.indexingCompletion?.let { stringResource(KMR.strings.stats_indexing_coverage) to it },
+                quality.textCoverage?.let { stringResource(KMR.strings.stats_text_coverage) to it },
+                quality.ocrTextCoverage?.let { stringResource(KMR.strings.stats_ocr_coverage) to it },
             )
-            MetricLine(
-                stringResource(KMR.strings.stats_indexing_coverage),
-                quality.indexingCompletion?.let(::formatPercent)
-                    ?: stringResource(KMR.strings.stats_unavailable),
-            )
-            MetricLine(
-                stringResource(KMR.strings.stats_text_coverage),
-                quality.textCoverage?.let(::formatPercent) ?: stringResource(KMR.strings.stats_unavailable),
-            )
-            MetricLine(
-                stringResource(KMR.strings.stats_ocr_coverage),
-                quality.ocrTextCoverage?.let(::formatPercent)
-                    ?: stringResource(KMR.strings.stats_unavailable),
-            )
-            MetricLine(stringResource(KMR.strings.stats_anki_state), capabilityLabel(quality.ankiState))
-            if (quality.ankiState == CapabilityState.STALE) {
-                Text(
-                    text = stringResource(KMR.strings.stats_anki_snapshot_stale),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+            // The two capability states are suppressed on the same rule as the percentages: an
+            // UNAVAILABLE state carries no more than the line's own absence does.
+            val ankiKnown = quality.ankiState != CapabilityState.UNAVAILABLE
+            val provenanceKnown = quality.provenanceState != ProvenanceState.UNAVAILABLE
+            if (measured.isEmpty() && !ankiKnown && !provenanceKnown) {
+                NoteText(stringResource(KMR.strings.stats_data_quality_unavailable))
+                return@Column
+            }
+            measured.forEach { (label, value) -> MetricLine(label, formatPercent(value)) }
+            if (ankiKnown) {
+                MetricLine(stringResource(KMR.strings.stats_anki_state), capabilityLabel(quality.ankiState))
+                if (quality.ankiState == CapabilityState.STALE) {
+                    NoteText(stringResource(KMR.strings.stats_anki_snapshot_stale))
+                }
+            }
+            if (provenanceKnown) {
+                MetricLine(
+                    stringResource(KMR.strings.stats_provenance_state),
+                    provenanceLabel(quality.provenanceState),
                 )
             }
-            MetricLine(
-                stringResource(KMR.strings.stats_provenance_state),
-                provenanceLabel(quality.provenanceState),
-            )
         }
     }
 }
@@ -2495,6 +2591,7 @@ private fun TitleRow(
     title: AnalyticsTitleRow,
     metadata: StatsTitlePresentationMetadata?,
     metric: CharacterMetric,
+    sort: AnalyticsTitleSort,
     onClick: () -> Unit,
 ) {
     Surface(
@@ -2528,48 +2625,27 @@ private fun TitleRow(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                Text(
+                NoteText(
                     stringResource(
                         KMR.strings.stats_media_and_language,
                         mediaLabel(title.mediaKind),
                         title.languageTag?.value ?: stringResource(KMR.strings.stats_unknown),
                     ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                // A list row is for scanning and comparing, not for reading a title's full
+                // record — that is what tapping through to the detail card is for. Nine metric
+                // lines per row made each entry a screenful, so the row keeps the three that
+                // describe any title plus whichever measure the list is currently sorted by,
+                // which is the one the reader chose to compare on.
                 MetricLine(
                     stringResource(KMR.strings.stats_active_time),
                     formatDuration(title.metrics.activeTime.value),
                 )
                 MetricLine(characterMetricLabel(metric), formatCount(title.metrics.characterValue(metric)))
-                MetricLine(
-                    stringResource(KMR.strings.stats_reading_speed),
-                    title.metrics.readingSpeedPerHour(metric)?.let(::formatRate)
-                        ?: stringResource(KMR.strings.stats_unavailable),
-                )
-                MetricLine(stringResource(KMR.strings.stats_sessions), formatCount(title.metrics.sessions.value))
-                MetricLine(
-                    stringResource(KMR.strings.stats_new_characters),
-                    formatCount(title.metrics.newCharacters.value),
-                )
-                MetricLine(
-                    stringResource(KMR.strings.stats_cards_created),
-                    formatCount(title.metrics.cardsCreated.value),
-                )
-                MetricLine(
-                    stringResource(KMR.strings.stats_progress),
-                    title.progress?.let(::formatPercent)
-                        ?: stringResource(KMR.strings.stats_unavailable),
-                )
-                MetricLine(
-                    stringResource(KMR.strings.stats_indexing_coverage),
-                    title.coverage.indexingCompletion?.let(::formatPercent)
-                        ?: stringResource(KMR.strings.stats_unavailable),
-                )
-                Text(
-                    stringResource(KMR.strings.stats_last_active, formatLocalDate(title.lastActiveDate)),
-                    style = MaterialTheme.typography.bodySmall,
-                )
+                titleSortMetric(title, metric, sort)?.let { (label, value) ->
+                    MetricLine(label, value)
+                }
+                NoteText(stringResource(KMR.strings.stats_last_active, formatLocalDate(title.lastActiveDate)))
             }
         }
     }
@@ -2621,9 +2697,17 @@ private fun TitleDetail(
                 }
             }
         }
+        // This card carries around thirty measures. Left as one flat list they read as an
+        // undifferentiated wall of numbers, so they are grouped under the same section headings the
+        // rest of the file uses, and the actions are lifted out from between the data rows.
+        HorizontalDivider()
+        SectionTitle(stringResource(KMR.strings.stats_section_identity))
+        // The two unlinked states are explanations, not values; as MetricLine values they filled the
+        // row edge to edge in bold and squeezed out their own label. The row keeps a short status and
+        // the sentence moves to the note that the rest of the screen uses for caveats.
         MetricLine(
             stringResource(KMR.strings.stats_title_link),
-            titleLinkLabel(metadata?.linkState),
+            titleLinkStatus(metadata?.linkState),
         )
         MetricLine(
             stringResource(KMR.strings.stats_title_identity),
@@ -2633,74 +2717,57 @@ private fun TitleDetail(
             stringResource(KMR.strings.stats_title_status),
             titleStateLabel(title.completed),
         )
-        title.totalUnits?.let { totalUnits ->
-            MetricLine(
-                stringResource(KMR.strings.stats_title_total_units),
-                titleUnitCount(title.mediaKind, totalUnits),
-            )
-        }
-        MetricLine(
-            stringResource(KMR.strings.stats_title_completed_units),
-            if (title.unitProgress.hasTrustworthyIdentity) {
-                titleUnitCount(title.mediaKind, title.unitProgress.completedUnits)
-            } else {
-                stringResource(KMR.strings.stats_unavailable)
-            },
-        )
-        if (!title.unitProgress.hasTrustworthyIdentity) {
-            Text(
-                stringResource(
-                    if (title.unitProgress.identityAvailable) {
-                        KMR.strings.stats_title_completed_units_incomplete
-                    } else {
-                        KMR.strings.stats_title_completed_units_unavailable
-                    },
-                ),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
         if (title.profileId.isNotBlank()) {
-            Text(stringResource(KMR.strings.stats_profile, title.profileId))
+            MetricLine(stringResource(KMR.strings.stats_profile_label), title.profileId)
         }
-        if (metadata?.linkState == StatsTitleLinkState.AVAILABLE) {
-            Button(onClick = onOpen) {
-                Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null)
+        titleLinkExplanation(metadata?.linkState)?.let { NoticeCard(it) }
+        HorizontalDivider()
+        SectionTitle(stringResource(KMR.strings.stats_section_manage))
+        // Five stacked full-width buttons filled a screen on their own. Flowing them keeps the
+        // destructive pair visibly subordinate to the primary actions without hiding either.
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (metadata?.linkState == StatsTitleLinkState.AVAILABLE) {
+                Button(onClick = onOpen) {
+                    Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(stringResource(KMR.strings.stats_title_open))
+                }
+                TextButton(
+                    enabled = !mutationInProgress,
+                    onClick = onUnlink,
+                ) {
+                    Icon(Icons.Outlined.LinkOff, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(stringResource(KMR.strings.stats_title_unlink))
+                }
+            }
+            Button(
+                enabled = !mutationInProgress,
+                onClick = onManage,
+            ) {
+                Icon(Icons.Outlined.Tune, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(stringResource(KMR.strings.stats_title_open))
+                Text(stringResource(KMR.strings.stats_title_manage))
             }
             TextButton(
                 enabled = !mutationInProgress,
-                onClick = onUnlink,
+                onClick = onDeleteRawText,
             ) {
-                Icon(Icons.Outlined.LinkOff, contentDescription = null)
+                Icon(Icons.Outlined.VisibilityOff, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(stringResource(KMR.strings.stats_title_unlink))
+                Text(stringResource(KMR.strings.stats_title_delete_raw_text))
             }
-        }
-        Button(
-            enabled = !mutationInProgress,
-            onClick = onManage,
-        ) {
-            Icon(Icons.Outlined.Tune, contentDescription = null)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(stringResource(KMR.strings.stats_title_manage))
-        }
-        TextButton(
-            enabled = !mutationInProgress,
-            onClick = onDeleteRawText,
-        ) {
-            Icon(Icons.Outlined.VisibilityOff, contentDescription = null)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(stringResource(KMR.strings.stats_title_delete_raw_text))
-        }
-        TextButton(
-            enabled = !mutationInProgress,
-            onClick = onDeleteStats,
-        ) {
-            Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(stringResource(KMR.strings.stats_title_delete_stats))
+            TextButton(
+                enabled = !mutationInProgress,
+                onClick = onDeleteStats,
+            ) {
+                Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(stringResource(KMR.strings.stats_title_delete_stats))
+            }
         }
         if (mutationInProgress) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -2708,29 +2775,23 @@ private fun TitleDetail(
         if (mutationError) {
             NoticeCard(stringResource(KMR.strings.stats_title_mutation_error))
         }
+        HorizontalDivider()
+        SectionTitle(stringResource(KMR.strings.stats_section_reading))
         MetricLine(stringResource(KMR.strings.stats_active_time), formatDuration(title.metrics.activeTime.value))
         MetricLine(characterMetricLabel(metric), formatCount(title.metrics.characterValue(metric)))
         MetricLine(
             stringResource(KMR.strings.stats_reading_speed),
-            title.metrics.readingSpeedPerHour(metric)?.let(::formatRate)
+            title.metrics.readingSpeedPerHour(metric)
+                ?.let { stringResource(KMR.strings.stats_per_hour, formatRate(it)) }
                 ?: stringResource(KMR.strings.stats_unavailable),
         )
+        // The label already names the unit, so a value of "56 source units" says it twice; every
+        // other count in this section is a bare number.
         MetricLine(
             stringResource(KMR.strings.stats_source_units_exposed),
-            pluralStringResource(
-                KMR.plurals.stats_source_unit_count,
-                title.metrics.sourceUnits.value.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
-                formatCount(title.metrics.sourceUnits.value),
-            ),
+            formatCount(title.metrics.sourceUnits.value),
         )
         MetricLine(stringResource(KMR.strings.stats_sessions), formatCount(title.metrics.sessions.value))
-        MetricLine(stringResource(KMR.strings.stats_cards_created), formatCount(title.metrics.cardsCreated.value))
-        MetricLine(stringResource(KMR.strings.stats_cards_updated), formatCount(title.metrics.cardsUpdated.value))
-        MetricLine(
-            stringResource(KMR.strings.stats_mining_rate),
-            title.metrics.miningRatePerTenThousandGrossCharacters()?.let(::formatDecimal)
-                ?: stringResource(KMR.strings.stats_unavailable),
-        )
         MetricLine(
             stringResource(KMR.strings.stats_distinct_characters),
             formatCount(title.metrics.distinctCharacters.value),
@@ -2744,15 +2805,24 @@ private fun TitleDetail(
             title.metrics.characterCoverage.ratio()?.let(::formatPercent)
                 ?: stringResource(KMR.strings.stats_unavailable),
         )
-        Text(stringResource(KMR.strings.stats_first_active, formatLocalDate(title.firstActiveDate)))
-        Text(stringResource(KMR.strings.stats_last_active, formatLocalDate(title.lastActiveDate)))
+        HorizontalDivider()
+        SectionTitle(stringResource(KMR.strings.stats_section_mining))
+        MetricLine(stringResource(KMR.strings.stats_cards_created), formatCount(title.metrics.cardsCreated.value))
+        MetricLine(stringResource(KMR.strings.stats_cards_updated), formatCount(title.metrics.cardsUpdated.value))
+        MetricLine(
+            stringResource(KMR.strings.stats_mining_rate),
+            title.metrics.miningRatePerTenThousandGrossCharacters()?.let(::formatDecimal)
+                ?: stringResource(KMR.strings.stats_unavailable),
+        )
+        HorizontalDivider()
+        SectionTitle(stringResource(KMR.strings.stats_section_daily_pattern))
+        MetricLine(stringResource(KMR.strings.stats_first_active_label), formatLocalDate(title.firstActiveDate))
+        MetricLine(stringResource(KMR.strings.stats_last_active_label), formatLocalDate(title.lastActiveDate))
+        // "Active days: 18 active days" says it twice. The neighbouring calendar span keeps its unit
+        // because its own label does not name one.
         MetricLine(
             stringResource(KMR.strings.stats_active_days),
-            pluralStringResource(
-                KMR.plurals.stats_active_day_count,
-                title.activeDays,
-                formatCount(title.activeDays.toLong()),
-            ),
+            formatCount(title.activeDays.toLong()),
         )
         MetricLine(
             stringResource(KMR.strings.stats_calendar_span),
@@ -2796,39 +2866,64 @@ private fun TitleDetail(
                 stringResource(
                     KMR.strings.stats_day_value,
                     formatLocalDate(highlight.date),
-                    formatRate(highlight.value),
+                    stringResource(KMR.strings.stats_per_hour, formatRate(highlight.value)),
                 ),
             )
         }
-        title.progress?.let {
-            MetricLine(stringResource(KMR.strings.stats_progress), formatPercent(it))
-        } ?: MetricLine(
+        HorizontalDivider()
+        SectionTitle(stringResource(KMR.strings.stats_section_completion))
+        title.totalUnits?.let { totalUnits ->
+            MetricLine(
+                stringResource(KMR.strings.stats_title_total_units),
+                titleUnitCount(title.mediaKind, totalUnits),
+            )
+        }
+        MetricLine(
+            stringResource(KMR.strings.stats_title_completed_units),
+            if (title.unitProgress.hasTrustworthyIdentity) {
+                titleUnitCount(title.mediaKind, title.unitProgress.completedUnits)
+            } else {
+                stringResource(KMR.strings.stats_unavailable)
+            },
+        )
+        if (!title.unitProgress.hasTrustworthyIdentity) {
+            NoteText(
+                stringResource(
+                    if (title.unitProgress.identityAvailable) {
+                        KMR.strings.stats_title_completed_units_incomplete
+                    } else {
+                        KMR.strings.stats_title_completed_units_unavailable
+                    },
+                ),
+            )
+        }
+        MetricLine(
             stringResource(KMR.strings.stats_progress),
-            stringResource(KMR.strings.stats_unavailable),
+            title.progress?.let(::formatPercent) ?: stringResource(KMR.strings.stats_unavailable),
         )
         title.estimate?.let { estimate ->
             MetricLine(
                 stringResource(KMR.strings.stats_estimated_remaining),
                 formatDuration(estimate.estimatedActiveTimeMillis),
             )
-            Text(
-                estimateRemainingAmount(title.mediaKind, estimate),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
+            NoteText(estimateRemainingAmount(title.mediaKind, estimate))
+            NoteText(
                 stringResource(
                     KMR.strings.stats_estimate_confidence,
                     estimateConfidenceLabel(estimate.confidence),
-                    estimate.qualifyingDayCount,
+                    pluralCount(KMR.plurals.stats_qualifying_day_count, estimate.qualifyingDayCount),
                 ),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-        } ?: MetricLine(
-            stringResource(KMR.strings.stats_estimated_remaining),
-            stringResource(KMR.strings.stats_estimate_unavailable),
-        )
+        } ?: Column {
+            // The reason an estimate is missing is a sentence, and in MetricLine's bold right-hand
+            // column it wrapped to three lines and pushed out its own label. The row states the plain
+            // status and the condition follows as a note, matching the branch just above.
+            MetricLine(
+                stringResource(KMR.strings.stats_estimated_remaining),
+                stringResource(KMR.strings.stats_unavailable),
+            )
+            NoteText(stringResource(KMR.strings.stats_estimate_unavailable))
+        }
         HorizontalDivider()
         SectionTitle(stringResource(KMR.strings.stats_title_activity_history))
         SectionFrame(details.titleTrends) { result ->
@@ -2896,11 +2991,7 @@ private fun TitleDetail(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(stringResource(KMR.strings.stats_capture_title_toggle))
-                    Text(
-                        stringResource(KMR.strings.stats_capture_title_toggle_summary),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    NoteText(stringResource(KMR.strings.stats_capture_title_toggle_summary))
                 }
                 Switch(
                     checked = excluded,
@@ -2936,7 +3027,7 @@ private fun TitleCompletedUnitsContent(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(
+            NoteText(
                 stringResource(
                     KMR.strings.stats_title_unit_completed_on,
                     formatLocalDate(unit.firstCompletedDate),
@@ -2946,8 +3037,6 @@ private fun TitleCompletedUnitsContent(
                         formatCount(unit.completionEventCount),
                     ),
                 ),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             if (index < result.value.items.lastIndex) HorizontalDivider()
         }
@@ -2978,11 +3067,7 @@ private fun TitleSessionsContent(
                 Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(formatInstant(session.startedAtEpochMillis), fontWeight = FontWeight.SemiBold)
-                    Text(
-                        sessionStatusLabel(session.status),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    NoteText(sessionStatusLabel(session.status))
                 }
                 Text(formatDuration(session.activeDuration.value))
             }
@@ -3002,6 +3087,9 @@ private fun TitleSourcesContent(
         return
     }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (result.value.items.all { it.excerpt.isNullOrBlank() }) {
+            NoteText(stringResource(KMR.strings.stats_source_text_unavailable))
+        }
         result.value.items.forEachIndexed { index, occurrence ->
             SourceOccurrenceContent(occurrence)
             if (index < result.value.items.lastIndex) HorizontalDivider()
@@ -3042,11 +3130,23 @@ private fun TitleCover(
 }
 
 @Composable
-private fun titleLinkLabel(state: StatsTitleLinkState?): String = when (state) {
+private fun titleLinkStatus(state: StatsTitleLinkState?): String = when (state) {
     StatsTitleLinkState.AVAILABLE -> stringResource(KMR.strings.stats_title_link_available)
     StatsTitleLinkState.LEGACY_ONLY -> stringResource(KMR.strings.stats_title_link_legacy_only)
     StatsTitleLinkState.UNAVAILABLE, null ->
         stringResource(KMR.strings.stats_title_link_unavailable)
+}
+
+/**
+ * Why a title has no local item, for the states where that needs saying. An available link is the
+ * ordinary case and explaining it would be noise, so it returns null.
+ */
+@Composable
+private fun titleLinkExplanation(state: StatsTitleLinkState?): String? = when (state) {
+    StatsTitleLinkState.AVAILABLE -> null
+    StatsTitleLinkState.LEGACY_ONLY -> stringResource(KMR.strings.stats_title_link_legacy_only_detail)
+    StatsTitleLinkState.UNAVAILABLE, null ->
+        stringResource(KMR.strings.stats_title_link_unavailable_detail)
 }
 
 @Composable
@@ -3127,6 +3227,28 @@ private fun CharacterCell(
         StatsCharacterGridMode.METADATA -> characterMetadataBand(character)
         StatsCharacterGridMode.PRIORITY -> formatDecimal(character.priorityScore)
     }
+    // A grid tile is 72dp wide, which fits none of the long-form mode captions: they clipped to a
+    // bare "Frequency" or a truncated date, so every tile carried the same meaningless word. The
+    // grid gets abbreviated captions and the full phrasings stay in the list layout, the detail
+    // card, and the accessibility description, all of which have room for them.
+    val compactModeValue = when (mode) {
+        StatsCharacterGridMode.FREQUENCY -> stringResource(
+            KMR.strings.stats_character_frequency_level_compact,
+            level,
+            5,
+        )
+        StatsCharacterGridMode.FIRST_SEEN -> formatLocalDate(
+            ImmersionLocalDate.from(
+                Instant.ofEpochMilli(character.firstSeenAtEpochMillis)
+                    .atZone(ZoneId.systemDefault())
+                    .toLocalDate(),
+            ),
+        )
+        StatsCharacterGridMode.MATURITY,
+        StatsCharacterGridMode.METADATA,
+        StatsCharacterGridMode.PRIORITY,
+        -> modeValue
+    }
     val description = stringResource(
         KMR.strings.stats_character_cell_description,
         displayText,
@@ -3153,7 +3275,18 @@ private fun CharacterCell(
         modifier = Modifier
             .height(if (layout == StatsCharacterLayout.GRID) 112.dp else 76.dp)
             .semantics { contentDescription = description }
-            .clickable(onClick = onClick),
+            .then(
+                if (layout == StatsCharacterLayout.GRID) {
+                    // The grid dropped its per-tile checkbox for space, so selection moves to
+                    // long-press — the selected border already shows the result.
+                    Modifier.combinedClickable(
+                        onClick = onClick,
+                        onLongClick = { onSelectedChange(!selected) },
+                    )
+                } else {
+                    Modifier.clickable(onClick = onClick)
+                },
+            ),
         shape = RoundedCornerShape(8.dp),
         color = surfaceColor,
         border = BorderStroke(
@@ -3171,10 +3304,10 @@ private fun CharacterCell(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
-                Checkbox(
-                    checked = selected,
-                    onCheckedChange = onSelectedChange,
-                )
+                // The glyph is the whole point of a grid tile, and a Material checkbox is nearly as
+                // wide as the 72dp cell — it took the top third of every tile and drew an empty box
+                // that reads as a missing character. Long-pressing the tile selects it instead; the
+                // list layout keeps its checkboxes, where a full-width row has space for one.
                 Text(
                     displayText,
                     style = if (hasGlyph) {
@@ -3185,7 +3318,21 @@ private fun CharacterCell(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(modeValue, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                // The legend says every cell states its level *and* count. Only the list layout did.
+                Text(
+                    formatCount(character.occurrenceCount),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    compactModeValue,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         } else {
             Row(
@@ -3212,11 +3359,7 @@ private fun CharacterCell(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    Text(
-                        modeValue,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    NoteText(modeValue)
                 }
                 Text(formatCount(character.occurrenceCount), fontWeight = FontWeight.SemiBold)
             }
@@ -3228,7 +3371,7 @@ private fun CharacterCell(
 private fun CharacterDetail(
     character: AnalyticsCharacterRow,
     priorityMode: AnalyticsCharacterPriorityMode,
-    occurrences: StatsLoadable<AnalyticsResult<tachiyomi.domain.immersion.model.AnalyticsPage<AnalyticsSourceOccurrence>>>,
+    occurrences: StatsLoadable<AnalyticsResult<AnalyticsPage<AnalyticsSourceOccurrence>>>,
     ankiItems: StatsLoadable<List<ImmersionAnkiItem>>,
     previous: AnalyticsCharacterRow?,
     next: AnalyticsCharacterRow?,
@@ -3266,18 +3409,23 @@ private fun CharacterDetail(
                 Icon(Icons.Outlined.ChevronRight, contentDescription = stringResource(KMR.strings.stats_next))
             }
         }
-        Text(
-            stringResource(
-                KMR.strings.stats_unicode_code_point,
-                "U+%04X".format(Locale.ROOT, character.codePoint.value),
-            ),
+        // Half this card used to be "Label: value" sentences and half aligned label/value rows, so
+        // the values never lined up and nothing said which of the eleven measures belonged together.
+        // Every row is a MetricLine now, grouped under headings by what it describes.
+        SectionTitle(stringResource(KMR.strings.stats_section_unicode))
+        MetricLine(
+            stringResource(KMR.strings.stats_code_point_label),
+            "U+%04X".format(Locale.ROOT, character.codePoint.value),
         )
-        character.unicodeName?.let { Text(stringResource(KMR.strings.stats_unicode_name, it)) }
-        Text(stringResource(KMR.strings.stats_unicode_script, character.unicodeScript))
-        Text(stringResource(KMR.strings.stats_unicode_category, character.unicodeCategory))
-        character.japaneseReadings?.let {
-            Text(stringResource(KMR.strings.stats_character_readings, it))
+        character.unicodeName?.let {
+            MetricLine(stringResource(KMR.strings.stats_unicode_name_label), it)
         }
+        MetricLine(
+            stringResource(KMR.strings.stats_script_label),
+            unicodeScriptLabel(character.unicodeScript),
+        )
+        MetricLine(stringResource(KMR.strings.stats_unicode_category_label), character.unicodeCategory)
+        SectionTitle(stringResource(KMR.strings.stats_section_usage))
         MetricLine(
             stringResource(KMR.strings.stats_character_gross_exposure),
             formatCount(character.occurrenceCount),
@@ -3287,53 +3435,77 @@ private fun CharacterDetail(
             formatCount(character.sourceUnitCount),
         )
         MetricLine(stringResource(KMR.strings.stats_tab_titles), formatCount(character.titleCount))
-        Text(stringResource(KMR.strings.stats_first_seen, formatInstant(character.firstSeenAtEpochMillis)))
-        Text(stringResource(KMR.strings.stats_last_seen, formatInstant(character.lastSeenAtEpochMillis)))
-        Text(stringResource(KMR.strings.stats_maturity, maturityLabel(character.maturity)))
         MetricLine(
-            stringResource(KMR.strings.stats_frequency_rank),
-            character.frequencyRank?.let(::formatCount)
-                ?: stringResource(KMR.strings.stats_unavailable),
+            stringResource(KMR.strings.stats_first_seen_label),
+            formatInstant(character.firstSeenAtEpochMillis),
         )
+        MetricLine(
+            stringResource(KMR.strings.stats_last_seen_label),
+            formatInstant(character.lastSeenAtEpochMillis),
+        )
+        MetricLine(stringResource(KMR.strings.stats_maturity_label), maturityLabel(character.maturity))
+        // Readings, rank, JLPT and grade are all study metadata and are all absent for most
+        // characters, so the heading only appears when at least one of them has a value — an empty
+        // "Study metadata" heading would read as data that failed to load.
+        val hasStudyMetadata = character.japaneseReadings != null ||
+            character.frequencyRank != null ||
+            character.jlptLevel != null ||
+            character.gradeLevel != null
+        if (hasStudyMetadata) {
+            SectionTitle(stringResource(KMR.strings.stats_section_study))
+        }
+        character.japaneseReadings?.let {
+            MetricLine(stringResource(KMR.strings.stats_readings_label), it)
+        }
+        // Each of these is suppressed when absent on the same rule as the others beside it: measures
+        // in one group should not disagree about how they report nothing.
+        character.frequencyRank?.let {
+            MetricLine(stringResource(KMR.strings.stats_frequency_rank), formatCount(it))
+        }
         character.jlptLevel?.let {
             MetricLine(stringResource(KMR.strings.stats_jlpt_level), "N$it")
         }
         character.gradeLevel?.let {
             MetricLine(stringResource(KMR.strings.stats_grade_level), formatCount(it.toLong()))
         }
-        MetricLine(
-            stringResource(KMR.strings.stats_character_priority_score),
-            formatDecimal(character.priorityScore),
-        )
-        val priorityComponents = AnalyticsCharacterPriorityFormula.components(
-            frequencyRank = character.frequencyRank,
-            jlptLevel = character.jlptLevel,
-            gradeLevel = character.gradeLevel,
-        )
-        Text(
-            stringResource(
-                KMR.strings.stats_character_priority_formula_version,
-                AnalyticsCharacterPriorityFormula.VERSION,
-            ),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        MetricLine(
-            stringResource(KMR.strings.stats_character_priority_frequency_component),
-            formatDecimal(priorityComponents.frequency),
-        )
-        MetricLine(
-            stringResource(KMR.strings.stats_character_priority_jlpt_component),
-            formatDecimal(priorityComponents.jlpt),
-        )
-        MetricLine(
-            stringResource(KMR.strings.stats_character_priority_grade_component),
-            formatDecimal(priorityComponents.grade),
-        )
-        MetricLine(
-            characterPriorityModeLabel(priorityMode),
-            formatDecimal(priorityComponents.score(priorityMode)),
-        )
+        // Every component is derived from the three metadata fields above, so a character with
+        // none of them scores five rows of 0.00 — arithmetic about nothing. The breakdown also
+        // gets a heading: it was six lines of formula internals flush against the character's own
+        // measures, reading as one flat list of unrelated numbers.
+        if (character.frequencyRank != null || character.jlptLevel != null || character.gradeLevel != null) {
+            SectionTitle(stringResource(KMR.strings.stats_character_priority_breakdown))
+            MetricLine(
+                stringResource(KMR.strings.stats_character_priority_score),
+                formatDecimal(character.priorityScore),
+            )
+            val priorityComponents = AnalyticsCharacterPriorityFormula.components(
+                frequencyRank = character.frequencyRank,
+                jlptLevel = character.jlptLevel,
+                gradeLevel = character.gradeLevel,
+            )
+            MetricLine(
+                stringResource(KMR.strings.stats_character_priority_frequency_component),
+                formatDecimal(priorityComponents.frequency),
+            )
+            MetricLine(
+                stringResource(KMR.strings.stats_character_priority_jlpt_component),
+                formatDecimal(priorityComponents.jlpt),
+            )
+            MetricLine(
+                stringResource(KMR.strings.stats_character_priority_grade_component),
+                formatDecimal(priorityComponents.grade),
+            )
+            MetricLine(
+                characterPriorityModeLabel(priorityMode),
+                formatDecimal(priorityComponents.score(priorityMode)),
+            )
+            NoteText(
+                stringResource(
+                    KMR.strings.stats_character_priority_formula_version,
+                    AnalyticsCharacterPriorityFormula.VERSION,
+                ),
+            )
+        }
         TextButton(
             onClick = {
                 context.startActivity(
@@ -3373,6 +3545,9 @@ private fun CharacterDetail(
                 EmptyState()
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (result.value.items.all { it.excerpt.isNullOrBlank() }) {
+                        NoteText(stringResource(KMR.strings.stats_source_text_unavailable))
+                    }
                     result.value.items.forEach { SourceOccurrenceRow(it) }
                     if (result.value.nextOffset != null) {
                         LoadMoreButton(onLoadMoreOccurrences)
@@ -3393,11 +3568,43 @@ private fun CharacterAnkiItem(item: ImmersionAnkiItem) {
             stringResource(KMR.strings.stats_maturity, maturityLabel(item.maturityTier)),
             fontWeight = FontWeight.SemiBold,
         )
+        // Maturity alone was the whole card, so a character on several cards showed the same line
+        // repeated with nothing to tell one from another. The scheduling figures are what differ,
+        // and each is omitted when the provider did not supply it rather than shown as a blank.
+        val scheduling = listOfNotNull(
+            item.intervalDays?.let {
+                stringResource(
+                    KMR.strings.stats_anki_card_interval,
+                    pluralStringResource(KMR.plurals.stats_day_count, it, formatCount(it.toLong())),
+                )
+            },
+            item.repetitions?.let { stringResource(KMR.strings.stats_anki_card_reviews, formatCount(it.toLong())) },
+            item.lapses?.let { stringResource(KMR.strings.stats_anki_card_lapses, formatCount(it.toLong())) },
+        )
+        if (scheduling.isNotEmpty()) {
+            Text(
+                scheduling.joinToString(" · "),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
+/**
+ * The name to show for a session's title, preferring the reader's local library name over the
+ * recorded one. Null when the title is no longer resolvable, which the row falls back for.
+ */
+private fun StatsScreenState.Success.sessionTitleName(session: ImmersionSession): String? =
+    titleMetadata[session.titleId]?.localDisplayTitle
+        ?: titleOptions.firstOrNull { it.titleId == session.titleId }?.displayTitle
+
 @Composable
-private fun SessionRow(session: ImmersionSession, onClick: () -> Unit) {
+private fun SessionRow(
+    session: ImmersionSession,
+    displayTitle: String?,
+    onClick: () -> Unit,
+) {
     Surface(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
         shape = RoundedCornerShape(14.dp),
@@ -3411,15 +3618,23 @@ private fun SessionRow(session: ImmersionSession, onClick: () -> Unit) {
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(formatInstant(session.startedAtEpochMillis), fontWeight = FontWeight.SemiBold)
+                // What was read is the one thing that distinguishes one session from another,
+                // and it was missing: every row's second line said "Manga · ja", so a whole
+                // screen of sessions looked identical. Media and language stay as the fallback
+                // for a session whose title has since been unlinked.
                 Text(
-                    stringResource(
+                    displayTitle ?: stringResource(
                         KMR.strings.stats_media_and_language,
                         mediaLabel(session.mediaKind),
                         session.languageTag?.value ?: stringResource(KMR.strings.stats_unknown),
                     ),
                     style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
+            Spacer(Modifier.width(12.dp))
             Text(formatDuration(session.activeDuration.value))
         }
     }
@@ -3429,7 +3644,7 @@ private fun SessionRow(session: ImmersionSession, onClick: () -> Unit) {
 private fun SessionDetail(
     fallback: ImmersionSession,
     detail: StatsLoadable<AnalyticsResult<AnalyticsSessionDetail?>>,
-    deletionPreview: StatsLoadable<tachiyomi.domain.immersion.model.ImmersionDeletionPreview>,
+    deletionPreview: StatsLoadable<ImmersionDeletionPreview>,
     relinkPreview: StatsLoadable<ImmersionTitleMutationPreview>,
     titleOptions: List<AnalyticsTitleRow>,
     onClose: () -> Unit,
@@ -3445,21 +3660,42 @@ private fun SessionDetail(
         detail.value?.value?.displayTitle?.let {
             Text(it, style = MaterialTheme.typography.titleLarge)
         }
-        Text(stringResource(KMR.strings.stats_started_at, formatInstant(session.startedAtEpochMillis)))
-        Text(stringResource(KMR.strings.stats_session_status, sessionStatusLabel(session.status)))
-        Text(stringResource(KMR.strings.stats_profile, session.profileId))
+        // The three basis figures are named almost alike — gross, unique, net — so ungrouped they
+        // read as one run of six interchangeable numbers. Headings tell the eye which three belong
+        // together, and the "Started:"/"Status:" sentences become label/value rows so the whole card
+        // is one aligned column rather than prose above a table.
+        SectionTitle(stringResource(KMR.strings.stats_section_identity))
+        MetricLine(
+            stringResource(KMR.strings.stats_started_label),
+            formatInstant(session.startedAtEpochMillis),
+        )
+        MetricLine(stringResource(KMR.strings.stats_status_label), sessionStatusLabel(session.status))
+        // An unset profile is the default, and an empty "Profile" row reads as missing data rather
+        // than as the ordinary single-profile case. The title card gates the same line.
+        if (session.profileId.isNotBlank()) {
+            MetricLine(stringResource(KMR.strings.stats_profile_label), session.profileId)
+        }
+        SectionTitle(stringResource(KMR.strings.stats_section_reading))
         MetricLine(stringResource(KMR.strings.stats_active_time), formatDuration(session.activeDuration.value))
         MetricLine(stringResource(KMR.strings.stats_elapsed_time), formatDuration(session.elapsedDuration.value))
+        MetricLine(stringResource(KMR.strings.stats_source_units), formatCount(session.sourceUnitCount.value))
+        SectionTitle(stringResource(KMR.strings.stats_section_characters))
         MetricLine(stringResource(KMR.strings.stats_basis_gross), formatCount(session.grossCharacters.value))
         MetricLine(stringResource(KMR.strings.stats_basis_unique), formatCount(session.uniqueSourceCharacters.value))
         MetricLine(stringResource(KMR.strings.stats_basis_net), formatCount(session.netCharacters.value))
-        MetricLine(stringResource(KMR.strings.stats_source_units), formatCount(session.sourceUnitCount.value))
-        TextButton(onClick = { confirmDelete = true }) {
-            Text(stringResource(KMR.strings.stats_delete_session))
-        }
-        if (!session.legacyImport && session.status != SessionStatus.ACTIVE) {
-            TextButton(onClick = { correctTitle = true }) {
-                Text(stringResource(KMR.strings.stats_session_correct_title))
+        // Stacked full-width text buttons left both actions floating in their own band of whitespace.
+        // Side by side they read as the pair of actions they are, with the destructive one tinted.
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = { confirmDelete = true }) {
+                Text(
+                    stringResource(KMR.strings.stats_delete_session),
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            if (!session.legacyImport && session.status != SessionStatus.ACTIVE) {
+                TextButton(onClick = { correctTitle = true }) {
+                    Text(stringResource(KMR.strings.stats_session_correct_title))
+                }
             }
         }
         if (session.legacyImport) {
@@ -3472,6 +3708,9 @@ private fun SessionDetail(
             if (value.sources.isEmpty()) {
                 EmptyState()
             } else {
+                if (value.sources.all { it.excerpt.isNullOrBlank() }) {
+                    NoteText(stringResource(KMR.strings.stats_source_text_unavailable))
+                }
                 value.sources.forEach { SourceOccurrenceRow(it) }
             }
         }
@@ -3684,21 +3923,35 @@ private fun SessionRelinkPreview(preview: ImmersionTitleMutationPreview) {
 @Composable
 private fun TimelineSummary(detail: AnalyticsSessionDetail) {
     val max = detail.timeline.maxOfOrNull { it.grossCharacters }?.coerceAtLeast(1) ?: 1
+    val events = detail.timeline.sumOf { it.eventCount }
     val summary = stringResource(
         KMR.strings.stats_timeline_summary,
-        detail.timeline.size,
-        formatCount(detail.timeline.sumOf { it.eventCount }),
+        pluralStringResource(
+            KMR.plurals.stats_timeline_bucket_count,
+            detail.timeline.size,
+            formatCount(detail.timeline.size.toLong()),
+        ),
+        pluralStringResource(
+            KMR.plurals.stats_event_count,
+            events.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+            formatCount(events),
+        ),
     )
     val color = MaterialTheme.colorScheme.primary
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(summary, style = MaterialTheme.typography.bodySmall)
+        if (detail.timeline.none { it.grossCharacters > 0 }) {
+            // Nothing to plot draws an empty 72dp canvas, which reads as a chart that failed to load
+            // rather than as a session with no character exposure. The trend chart guards the same way.
+            EmptyState()
+            return@Column
+        }
         Canvas(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(72.dp)
                 .semantics { contentDescription = summary },
         ) {
-            if (detail.timeline.isEmpty()) return@Canvas
             val width = size.width / detail.timeline.size
             detail.timeline.forEachIndexed { index, bucket ->
                 if (bucket.grossCharacters <= 0) return@forEachIndexed
@@ -3716,8 +3969,12 @@ private fun TimelineSummary(detail: AnalyticsSessionDetail) {
 @Composable
 private fun SourceOccurrenceRow(occurrence: AnalyticsSourceOccurrence) {
     Surface(
+        modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
+        // These sit inside a DetailCard, so they lift off its surfaceVariant panel rather than
+        // matching it.
         color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         SourceOccurrenceContent(
             occurrence = occurrence,
@@ -3739,12 +3996,12 @@ private fun SourceOccurrenceContent(
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Text(occurrence.displayTitle, fontWeight = FontWeight.SemiBold)
+        // Only cards that actually have an excerpt say anything here. When retention is off no card
+        // has one, and repeating the same full sentence down every card said one thing many times;
+        // the list states it once above instead.
         occurrence.excerpt?.let {
             Text(it, maxLines = 3, overflow = TextOverflow.Ellipsis)
-        } ?: Text(
-            stringResource(KMR.strings.stats_source_text_unavailable),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        }
         Text(
             stringResource(
                 KMR.strings.stats_source_meta,
@@ -3805,7 +4062,10 @@ private fun GoalCard(
         color = MaterialTheme.colorScheme.surfaceVariant,
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(goalTypeLabel(goal.goal.type), style = MaterialTheme.typography.titleMedium)
+            // titleLarge, matching DetailCard: the Pace and Streaks headings below are titleMedium, and
+            // at the same size as them the card's own name read as a third peer section rather than as
+            // the heading they sit under.
+            Text(goalTypeLabel(goal.goal.type), style = MaterialTheme.typography.titleLarge)
             Text(
                 stringResource(
                     KMR.strings.stats_goal_progress,
@@ -3814,16 +4074,61 @@ private fun GoalCard(
                 ),
             )
             LinearProgressIndicator(progress = { progress.toFloat() }, modifier = Modifier.fillMaxWidth())
-            goal.pacePerDay?.let {
-                Text(stringResource(KMR.strings.stats_goal_pace, formatGoalValue(goal.goal.metric, it)))
+            val forecast = statsGoalForecastPresentation(goal)
+            // Up to four pace figures and two streaks. Ungrouped they read as one list of six
+            // unrelated numbers, and the forecast footnote sitting between them split the data it
+            // was explaining. Pace and streaks each get a heading, and every note follows the rows
+            // it annotates rather than interrupting them.
+            val hasPace = goal.pacePerDay != null ||
+                goal.requiredPacePerActiveDay != null ||
+                goal.rollingSevenDayPace != null ||
+                goal.rollingThirtyDayPace != null ||
+                forecast != StatsGoalForecastPresentation.NONE
+            if (hasPace) {
+                SectionTitle(stringResource(KMR.strings.stats_section_pace))
             }
-            when (statsGoalForecastPresentation(goal)) {
-                StatsGoalForecastPresentation.AVAILABLE -> {
+            goal.pacePerDay?.let {
+                MetricLine(
+                    stringResource(KMR.strings.stats_goal_pace_label),
+                    stringResource(KMR.strings.stats_per_active_day, formatGoalValue(goal.goal.metric, it)),
+                )
+            }
+            goal.rollingSevenDayPace?.let {
+                MetricLine(
+                    stringResource(KMR.strings.stats_goal_rolling_seven_label),
+                    stringResource(KMR.strings.stats_per_active_day, formatGoalValue(goal.goal.metric, it)),
+                )
+            }
+            goal.rollingThirtyDayPace?.let {
+                MetricLine(
+                    stringResource(KMR.strings.stats_goal_rolling_thirty_label),
+                    stringResource(KMR.strings.stats_per_active_day, formatGoalValue(goal.goal.metric, it)),
+                )
+            }
+            // The required pace carries both a rate and the window it has to hold over, so it is too
+            // long for MetricLine's right-hand column — squeezed in there it wraps to three lines and
+            // crowds out its own label. Stacked, the label stays readable and the value gets the width.
+            goal.requiredPacePerActiveDay?.let {
+                Column {
+                    Text(
+                        stringResource(KMR.strings.stats_goal_required_pace_label),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     Text(
                         stringResource(
-                            KMR.strings.stats_goal_projection,
-                            formatLocalDate(requireNotNull(goal.projectedCompletionDate)),
+                            KMR.strings.stats_goal_required_pace_value,
+                            formatGoalValue(goal.goal.metric, it),
+                            pluralCount(KMR.plurals.stats_remaining_active_day_count, goal.remainingActiveDays ?: 0),
                         ),
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+            when (forecast) {
+                StatsGoalForecastPresentation.AVAILABLE -> {
+                    MetricLine(
+                        stringResource(KMR.strings.stats_goal_projection_label),
+                        formatLocalDate(requireNotNull(goal.projectedCompletionDate)),
                     )
                 }
                 StatsGoalForecastPresentation.PARTIAL -> {
@@ -3837,48 +4142,23 @@ private fun GoalCard(
                 }
                 StatsGoalForecastPresentation.NONE -> Unit
             }
-            goal.requiredPacePerActiveDay?.let {
-                Text(
-                    stringResource(
-                        KMR.strings.stats_goal_required_pace,
-                        formatGoalValue(goal.goal.metric, it),
-                        goal.remainingActiveDays ?: 0,
-                    ),
-                )
-            }
-            goal.rollingSevenDayPace?.let {
-                Text(
-                    stringResource(
-                        KMR.strings.stats_goal_rolling_seven,
-                        formatGoalValue(goal.goal.metric, it),
-                    ),
-                )
-            }
-            goal.rollingThirtyDayPace?.let {
-                Text(
-                    stringResource(
-                        KMR.strings.stats_goal_rolling_thirty,
-                        formatGoalValue(goal.goal.metric, it),
-                    ),
-                )
-            }
-            if (statsGoalForecastPresentation(goal) != StatsGoalForecastPresentation.NONE) {
-                Text(
+            if (forecast != StatsGoalForecastPresentation.NONE) {
+                NoteText(
                     stringResource(
                         KMR.strings.stats_goal_forecast_assumptions,
                         goal.forecastWindowDays,
-                        goal.forecastSampleDays,
+                        pluralCount(KMR.plurals.stats_qualifying_active_day_count, goal.forecastSampleDays),
                     ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Text(
-                stringResource(
-                    KMR.strings.stats_goal_streaks,
-                    goal.currentStreakDays,
-                    goal.longestStreakDays,
-                ),
+            SectionTitle(stringResource(KMR.strings.stats_section_streaks))
+            MetricLine(
+                stringResource(KMR.strings.stats_current_streak),
+                pluralCount(KMR.plurals.stats_day_count, goal.currentStreakDays),
+            )
+            MetricLine(
+                stringResource(KMR.strings.stats_longest_streak),
+                pluralCount(KMR.plurals.stats_day_count, goal.longestStreakDays),
             )
             if (goal.isRestDay) {
                 NoticeCard(stringResource(KMR.strings.stats_goal_rest_day))
@@ -4001,9 +4281,9 @@ private fun GoalEditorDialog(
                         },
                         label = {
                             Text(
+                                // MANUAL needs no test: the whole field is inside `kind != MANUAL`.
                                 if (
                                     kind != StatsGoalKind.FINISH_TITLE_BY_DATE &&
-                                    kind != StatsGoalKind.MANUAL &&
                                     metric == ACTIVE_TIME_GOAL_METRIC
                                 ) {
                                     stringResource(KMR.strings.stats_goal_target_minutes)
@@ -4069,11 +4349,7 @@ private fun GoalEditorDialog(
                         )
                     }
                 }
-                Text(
-                    stringResource(KMR.strings.stats_goal_timezone_policy),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                NoteText(stringResource(KMR.strings.stats_goal_timezone_policy))
                 if (original != null) {
                     Text(
                         stringResource(KMR.strings.stats_goal_edit_mode),
@@ -4085,7 +4361,7 @@ private fun GoalEditorDialog(
                         optionLabel = { goalEditModeLabel(it) },
                         onSelect = { editMode = it },
                     )
-                    Text(
+                    NoteText(
                         stringResource(
                             if (editMode == StatsGoalEditMode.RESTART_HISTORY) {
                                 KMR.strings.stats_goal_edit_restart_summary
@@ -4093,8 +4369,6 @@ private fun GoalEditorDialog(
                                 KMR.strings.stats_goal_edit_prospective
                             },
                         ),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 if (kind == StatsGoalKind.FINISH_TITLE_BY_DATE && !hasTitleScope) {
@@ -4191,11 +4465,7 @@ private fun GoalCheckInDialog(
                     minLines = 2,
                     maxLines = 4,
                 )
-                Text(
-                    stringResource(KMR.strings.stats_goal_check_in_privacy),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                NoteText(stringResource(KMR.strings.stats_goal_check_in_privacy))
             }
         },
         confirmButton = {
@@ -4392,9 +4662,11 @@ private fun SectionError(onRetry: (() -> Unit)? = null) {
         NoticeCard(stringResource(KMR.strings.stats_section_failed))
         return
     }
+    // The tertiary role is the theme's accent, not its alarm: under some palettes it renders as
+    // a bright green banner, which reads as success for a message that reports a failure.
     Surface(
         shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.tertiaryContainer,
+        color = MaterialTheme.colorScheme.errorContainer,
     ) {
         Row(
             modifier = Modifier
@@ -4406,7 +4678,7 @@ private fun SectionError(onRetry: (() -> Unit)? = null) {
             Text(
                 text = stringResource(KMR.strings.stats_section_failed),
                 modifier = Modifier.weight(1f),
-                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                color = MaterialTheme.colorScheme.onErrorContainer,
             )
             TextButton(onClick = onRetry) {
                 Icon(Icons.Outlined.Refresh, contentDescription = null)
@@ -4418,16 +4690,21 @@ private fun SectionError(onRetry: (() -> Unit)? = null) {
 }
 
 @Composable
-private fun EmptyState() {
+private fun EmptyState(text: String = stringResource(KMR.strings.stats_no_data)) {
     Text(
-        text = stringResource(KMR.strings.stats_no_data),
+        text = text,
         modifier = Modifier.padding(16.dp),
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 }
 
 @Composable
-private fun NoticeCard(text: String) {
+private fun NoticeCard(text: String) = NoticeCard(listOf(text))
+
+/** Groups caveats that always apply together into one card instead of a stack of banners. */
+@Composable
+private fun NoticeCard(lines: List<String>) {
+    if (lines.isEmpty()) return
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.secondaryContainer,
@@ -4442,10 +4719,14 @@ private fun NoticeCard(text: String) {
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSecondaryContainer,
             )
-            Text(
-                text = text,
-                color = MaterialTheme.colorScheme.onSecondaryContainer,
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                lines.forEach { line ->
+                    Text(
+                        text = line,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                }
+            }
         }
     }
 }
@@ -4456,9 +4737,14 @@ private fun DetailCard(
     onClose: () -> Unit,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    // A detail card is tall — the character card alone runs to several screens of occurrences — so a
+    // saturated primaryContainer fill floods the view and reads as a selection highlight rather than
+    // as a panel. A plain surface with an outline marks the same boundary without shouting.
     Surface(
+        modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.primaryContainer,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -4479,10 +4765,12 @@ private fun DetailCard(
 }
 
 private data class DashboardMetric(
-    val value: String,
+    val value: String?,
     val label: String,
     val icon: ImageVector,
     val destination: StatsTab,
+    /** What a screen reader says where the tile abbreviates to fit. Defaults to the tile text. */
+    val spokenValue: String? = null,
 )
 
 @Composable
@@ -4510,18 +4798,35 @@ private fun MetricCard(
         ) {
             Icon(data.icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             Column {
+                // The tile is abbreviated to fit; the screen reader gets the unshortened wording,
+                // and an absent measure is spoken as a word rather than as a lone dash.
+                val spokenValue = data.spokenValue
+                    ?: data.value
+                    ?: stringResource(KMR.strings.stats_unavailable)
+                // A measure with no value shows an em dash rather than the word "Unavailable":
+                // at title size that word dominates the tile and reads as a failure, where the
+                // dash is the ordinary typographic "nothing here yet".
                 Text(
-                    data.value,
+                    data.value ?: "—",
+                    modifier = Modifier.semantics { contentDescription = spokenValue },
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    color = if (data.value == null) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        Color.Unspecified
+                    },
                 )
                 Text(
                     data.label,
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,
+                    // The tile is a fixed 116dp, so a long or translated label would otherwise be cut
+                    // mid-word with no sign that anything was dropped.
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -4540,6 +4845,33 @@ private fun MetricLine(label: String, value: String) {
 @Composable
 private fun SectionTitle(text: String) {
     Text(text, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+}
+
+/**
+ * A heading for a group of rows that breaks down a metric already shown above it, so it has to read
+ * as subordinate to the nearest [SectionTitle] rather than as a peer of it.
+ */
+@Composable
+private fun SubsectionTitle(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 4.dp),
+    )
+}
+
+/**
+ * A caveat or explanation attached to the rows above it — a caption, not a metric. Subdued so it reads
+ * as annotation rather than as one more value in the column it follows.
+ */
+@Composable
+private fun NoteText(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @Composable
@@ -4688,6 +5020,23 @@ private fun characterScriptLabel(value: AnalyticsCharacterScript): String = when
     AnalyticsCharacterScript.OTHER -> stringResource(KMR.strings.stats_character_script_other)
 }
 
+/**
+ * A script name for display. Indexing stores Java's raw [Character.UnicodeScript] name, so the value
+ * is SCREAMING_SNAKE_CASE and covers far more scripts than the six the filter chips offer. The six get
+ * the same localized labels the chips use, so the detail card and the filter above it agree; anything
+ * else is title-cased rather than shown as a raw enum.
+ */
+@Composable
+private fun unicodeScriptLabel(rawScript: String): String {
+    val known = AnalyticsCharacterScript.entries.firstOrNull { it.name == rawScript }
+    if (known != null && known != AnalyticsCharacterScript.OTHER) {
+        return characterScriptLabel(known)
+    }
+    return rawScript.split('_').joinToString(" ") { word ->
+        word.lowercase(Locale.ROOT).replaceFirstChar { it.titlecase(Locale.ROOT) }
+    }
+}
+
 @Composable
 private fun characterRangeLabel(value: AnalyticsCharacterRange): String = when (value) {
     AnalyticsCharacterRange.ENCOUNTERED ->
@@ -4766,6 +5115,40 @@ private fun titleSortLabel(value: AnalyticsTitleSort): String = when (value) {
     AnalyticsTitleSort.READING_SPEED -> stringResource(KMR.strings.stats_sort_speed)
     AnalyticsTitleSort.MINING_RATE -> stringResource(KMR.strings.stats_sort_mining)
     AnalyticsTitleSort.PROGRESS -> stringResource(KMR.strings.stats_sort_progress)
+}
+
+/**
+ * The measure a title list is ordered by, labelled and formatted, so a row can show the number it
+ * was ranked on. Null for the two orderings that rank on something the row already shows: the
+ * recency sort on the last-active line, and the alphabetical sort on the title itself.
+ *
+ * Label and value come from one `when` so they cannot disagree about which sorts have a row metric.
+ */
+@Composable
+private fun titleSortMetric(
+    title: AnalyticsTitleRow,
+    metric: CharacterMetric,
+    sort: AnalyticsTitleSort,
+): Pair<String, String>? = when (sort) {
+    AnalyticsTitleSort.MOST_RECENT, AnalyticsTitleSort.ALPHABETICAL -> null
+    // Time and characters are already on every row, so those sorts add the session count
+    // instead: it is the context that makes the two visible figures comparable between titles.
+    AnalyticsTitleSort.MOST_TIME, AnalyticsTitleSort.MOST_CHARACTERS ->
+        stringResource(KMR.strings.stats_sessions) to formatCount(title.metrics.sessions.value)
+    AnalyticsTitleSort.READING_SPEED -> stringResource(KMR.strings.stats_reading_speed) to
+        (
+            title.metrics.readingSpeedPerHour(metric)
+                ?.let { stringResource(KMR.strings.stats_per_hour, formatRate(it)) }
+                ?: stringResource(KMR.strings.stats_unavailable)
+            )
+    AnalyticsTitleSort.MINING_RATE -> stringResource(KMR.strings.stats_mining_rate) to
+        (
+            title.metrics.miningRatePerTenThousandGrossCharacters()
+                ?.let(::formatDecimal)
+                ?: stringResource(KMR.strings.stats_unavailable)
+            )
+    AnalyticsTitleSort.PROGRESS -> stringResource(KMR.strings.stats_progress) to
+        (title.progress?.let(::formatPercent) ?: stringResource(KMR.strings.stats_unavailable))
 }
 
 @Composable
@@ -4870,10 +5253,13 @@ private fun ankiReportLabel(value: AnalyticsAnkiReport): String = when (value) {
     AnalyticsAnkiReport.REVIEW_TIME -> stringResource(KMR.strings.stats_anki_report_review_time)
 }
 
+/**
+ * Why a report is unavailable or degraded. An available capability needs no explanation — the state
+ * already said it — so it returns null and the row stands alone.
+ */
 @Composable
-private fun ankiCapabilityReasonLabel(value: AnalyticsAnkiCapabilityReason): String = when (value) {
-    AnalyticsAnkiCapabilityReason.AVAILABLE ->
-        stringResource(KMR.strings.stats_anki_capability_available)
+private fun ankiCapabilityReason(value: AnalyticsAnkiCapabilityReason): String? = when (value) {
+    AnalyticsAnkiCapabilityReason.AVAILABLE -> null
     AnalyticsAnkiCapabilityReason.NO_CURRENT_INVENTORY ->
         stringResource(KMR.strings.stats_anki_capability_no_inventory)
     AnalyticsAnkiCapabilityReason.STALE_INVENTORY ->
@@ -4936,6 +5322,10 @@ private fun AnalyticsActivityTotals.characterValue(metric: CharacterMetric): Lon
     CharacterMetric.NET_PROGRESS -> netCharacters
 }
 
+/** Whether a bucket holds anything worth drawing, as opposed to merely existing. */
+private fun AnalyticsActivityTotals.hasActivity(metric: CharacterMetric): Boolean =
+    characterValue(metric) > 0L || activeDurationMillis > 0L
+
 private fun movingAverage(
     points: List<AnalyticsTrendPoint>,
     trendMetric: StatsTrendMetric,
@@ -4991,6 +5381,15 @@ private fun formatTrendValue(value: Long, trendMetric: StatsTrendMetric): String
 
 private fun formatCount(value: Long): String = NumberFormat.getIntegerInstance().format(value)
 
+/**
+ * A grouped count with its noun in agreement, for the prose lines where "1 days" would read as a
+ * bug. Plural selection takes an `Int` while these counts are already `Int`-sized, so the quantity
+ * and the substituted number describe the same value.
+ */
+@Composable
+private fun pluralCount(resource: PluralsResource, count: Int): String =
+    pluralStringResource(resource, count, formatCount(count.toLong()))
+
 private fun formatRate(value: Double): String = NumberFormat.getIntegerInstance().format(value.roundToInt())
 
 private fun formatDecimal(value: Double): String =
@@ -5025,6 +5424,28 @@ private fun formatDuration(millis: Long): String {
     )
 }
 
+/**
+ * A duration short enough for a half-width tile. The prose form ("39 hours 48 minutes") is
+ * correct but does not fit, and a truncated hero value ("39 hours 48 …") loses the minutes
+ * entirely; the abbreviated units keep both numbers.
+ */
+@Composable
+private fun formatDurationCompact(millis: Long): String {
+    val parts = statsDurationParts(millis)
+    if (parts.lessThanSecond) {
+        return stringResource(KMR.strings.stats_duration_less_than_second)
+    }
+    return when {
+        parts.hours > 0L -> stringResource(
+            KMR.strings.stats_duration_compact_hours_minutes,
+            parts.hours,
+            parts.minutes,
+        )
+        parts.minutes > 0L -> stringResource(KMR.strings.stats_duration_compact_minutes, parts.minutes)
+        else -> stringResource(KMR.strings.stats_duration_compact_seconds, parts.seconds)
+    }
+}
+
 private fun formatInstant(epochMillis: Long): String =
     DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
         .withLocale(Locale.getDefault())
@@ -5041,8 +5462,8 @@ private fun formatWeekday(isoDayOfWeek: Int): String =
 
 @Composable
 private fun formatDateRange(
-    start: tachiyomi.domain.immersion.model.ImmersionLocalDate,
-    endInclusive: tachiyomi.domain.immersion.model.ImmersionLocalDate,
+    start: ImmersionLocalDate,
+    endInclusive: ImmersionLocalDate,
 ): String = if (start == endInclusive) {
     formatLocalDate(start)
 } else {
@@ -5053,7 +5474,7 @@ private fun formatDateRange(
     )
 }
 
-private fun formatLocalDate(date: tachiyomi.domain.immersion.model.ImmersionLocalDate): String =
+private fun formatLocalDate(date: ImmersionLocalDate): String =
     DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM)
         .withLocale(Locale.getDefault())
         .format(date.toLocalDate())
