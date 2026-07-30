@@ -33,26 +33,53 @@ internal data class SceneVideoInputSnapshot(
 internal object SceneVideoInputResolver {
     fun resolve(snapshot: SceneVideoInputSnapshot): SceneVideoInputSpec? {
         if (snapshot.originalVideoValue.isBlank() && snapshot.playableValue.isNullOrBlank()) {
+            sceneLog { "resolve: rejected, both originalVideoValue and playableValue blank" }
             return null
         }
-        if (isDash(snapshot.originalVideoValue) || isDash(snapshot.playableValue)) return null
+        if (isDash(snapshot.originalVideoValue) || isDash(snapshot.playableValue)) {
+            sceneLog { "resolve: rejected, DASH input is unsupported" }
+            return null
+        }
         if (snapshot.ffmpegStreamArgs.isNotEmpty() || snapshot.ffmpegVideoArgs.isNotEmpty()) {
+            sceneLog {
+                "resolve: rejected, extension supplied ffmpeg args " +
+                    "(stream=${snapshot.ffmpegStreamArgs.size} video=${snapshot.ffmpegVideoArgs.size})"
+            }
             return null
         }
-        if (snapshot.seekable != true) return null
+        if (snapshot.seekable != true) {
+            sceneLog { "resolve: rejected, input not seekable (seekable=${snapshot.seekable})" }
+            return null
+        }
 
         val original = snapshot.originalVideoValue.takeIf(String::isNotBlank)
-        if (original != null && isTransient(original)) return null
+        if (original != null && isTransient(original)) {
+            sceneLog { "resolve: rejected, originalVideoValue has a transient scheme" }
+            return null
+        }
         val normalized = original?.let(::normalizeInput)
             ?: snapshot.playableValue?.takeIf(String::isNotBlank)?.let { playable ->
-                if (isTransient(playable)) return null
+                if (isTransient(playable)) {
+                    sceneLog { "resolve: rejected, playableValue has a transient scheme" }
+                    return null
+                }
                 normalizeInput(playable)
             }
-            ?: return null
+            ?: run {
+                sceneLog {
+                    "resolve: rejected, unrecognized input scheme " +
+                        "original=${redactSceneValue(snapshot.originalVideoValue)} " +
+                        "playable=${redactSceneValue(snapshot.playableValue)}"
+                }
+                return null
+            }
 
         val headers = when (normalized.second) {
             SceneVideoInputKind.REMOTE_HTTP -> validateRemoteInput(normalized.first, snapshot.headers)
-                ?: return null
+                ?: run {
+                    sceneLog { "resolve: rejected, remote input failed validation (credentials or headers)" }
+                    return null
+                }
             SceneVideoInputKind.LOCAL_FILE,
             SceneVideoInputKind.CONTENT_URI,
             -> emptyList()

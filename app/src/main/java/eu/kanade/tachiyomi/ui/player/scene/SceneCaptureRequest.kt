@@ -157,16 +157,28 @@ internal class SceneMpvSnapshotReader(
     fun read(): SceneMpvSnapshot? {
         val anchor = properties.double("time-pos")
             ?.takeIf { it.isFinite() && it >= 0.0 }
-            ?: return null
+            ?: run {
+                sceneLog { "mpvSnapshot: unusable time-pos" }
+                return null
+            }
         val duration = properties.double("duration")
             ?.takeIf { it.isFinite() && it >= 0.0 }
         val speed = properties.double("sub-speed")
             ?.takeIf { it.isFinite() && it > 0.0 }
-            ?: return null
+            ?: run {
+                sceneLog { "mpvSnapshot: unusable sub-speed" }
+                return null
+            }
         val delay = properties.double("sub-delay")
             ?.takeIf(Double::isFinite)
-            ?: return null
-        val selectedVideo = selectedVideo() ?: return null
+            ?: run {
+                sceneLog { "mpvSnapshot: unusable sub-delay" }
+                return null
+            }
+        val selectedVideo = selectedVideo() ?: run {
+            sceneLog { "mpvSnapshot: no selected internal video track with a valid ff-index" }
+            return null
+        }
         val selectedAudio = selectedAudio()
 
         return SceneMpvSnapshot(
@@ -293,14 +305,36 @@ internal class SceneCaptureRequestFactory(
         captureFallback: suspend () -> Bitmap?,
         resolveTiming: (SceneMpvSnapshot) -> SceneResolvedTiming?,
     ): SceneCaptureRequest? {
-        val beforeMpv = mpvSnapshotReader.read() ?: return null
-        val beforeVideo = videoSnapshot(beforeMpv) ?: return null
-        val fallback = captureFallback() ?: return null
+        val beforeMpv = mpvSnapshotReader.read() ?: run {
+            sceneLog { "capture: could not read mpv snapshot before still capture" }
+            return null
+        }
+        val beforeVideo = videoSnapshot(beforeMpv) ?: run {
+            sceneLog { "capture: no video snapshot before still capture (currentVideo null?)" }
+            return null
+        }
+        val fallback = captureFallback() ?: run {
+            sceneLog { "capture: still-frame capture returned no bitmap" }
+            return null
+        }
         var transferred = false
         try {
-            val afterMpv = mpvSnapshotReader.read() ?: return null
-            val afterVideo = videoSnapshot(afterMpv) ?: return null
-            if (!sameCaptureState(beforeMpv, afterMpv) || beforeVideo != afterVideo) return null
+            val afterMpv = mpvSnapshotReader.read() ?: run {
+                sceneLog { "capture: could not read mpv snapshot after still capture" }
+                return null
+            }
+            val afterVideo = videoSnapshot(afterMpv) ?: run {
+                sceneLog { "capture: no video snapshot after still capture" }
+                return null
+            }
+            if (!sameCaptureState(beforeMpv, afterMpv) || beforeVideo != afterVideo) {
+                sceneLog {
+                    "capture: player state changed during capture, " +
+                        "divergence=${describeDivergence(beforeMpv, afterMpv)} " +
+                        "videoSnapshotChanged=${beforeVideo != afterVideo}"
+                }
+                return null
+            }
 
             val videoInput = SceneVideoInputResolver.resolve(beforeVideo.video)
             val sentenceAudioInput = when {
@@ -311,10 +345,17 @@ internal class SceneCaptureRequestFactory(
                     beforeMpv.selectedAudioFfmpegIndex == null -> null
                 else -> videoInput
             }
+            val resolvedTiming = resolveTiming(beforeMpv)
+            sceneLog {
+                "capture: resolved videoInput=${videoInput?.describe() ?: "null"} " +
+                    "resolvedTiming=${resolvedTiming?.animationRange?.let {
+                        "${it.startSeconds}..${it.endSeconds}"
+                    } ?: "null"}"
+            }
             val request = SceneCaptureRequest(
                 videoInput = videoInput,
                 sentenceAudioInput = sentenceAudioInput,
-                resolvedTiming = resolveTiming(beforeMpv),
+                resolvedTiming = resolvedTiming,
                 stillFallback = OwnedBitmap(fallback),
             )
             transferred = true
@@ -322,6 +363,34 @@ internal class SceneCaptureRequestFactory(
         } finally {
             if (!transferred && !fallback.isRecycled) fallback.recycle()
         }
+    }
+
+    /** Names the fields that moved, so a spurious rejection can be told from a real seek. */
+    private fun describeDivergence(before: SceneMpvSnapshot, after: SceneMpvSnapshot): String {
+        val changed = buildList {
+            if (!closeEnough(
+                    before.anchorMediaSeconds,
+                    after.anchorMediaSeconds,
+                    SCENE_ANCHOR_TOLERANCE_SECONDS,
+                )
+            ) {
+                add("anchor(${before.anchorMediaSeconds}->${after.anchorMediaSeconds})")
+            }
+            if (!nullableDoubleEquals(before.mediaDurationSeconds, after.mediaDurationSeconds)) add("duration")
+            if (!nullableDoubleEquals(before.subtitleStartSeconds, after.subtitleStartSeconds)) add("subStart")
+            if (!nullableDoubleEquals(before.subtitleEndSeconds, after.subtitleEndSeconds)) add("subEnd")
+            if (!nullableDoubleEquals(before.subtitleSpeed, after.subtitleSpeed)) add("subSpeed")
+            if (!nullableDoubleEquals(before.subtitleDelaySeconds, after.subtitleDelaySeconds)) add("subDelay")
+            if (before.playableValue != after.playableValue) add("playableValue")
+            if (before.selectedVideoId != after.selectedVideoId) add("videoId")
+            if (before.selectedVideoFfmpegIndex != after.selectedVideoFfmpegIndex) add("videoFfIndex")
+            if (before.selectedAudioId != after.selectedAudioId) add("audioId")
+            if (before.selectedExternalAudioValue != after.selectedExternalAudioValue) add("externalAudio")
+            if (before.selectedAudioIsExternal != after.selectedAudioIsExternal) add("audioIsExternal")
+            if (before.seekable != after.seekable) add("seekable")
+            if (before.selectedAudioFfmpegIndex != after.selectedAudioFfmpegIndex) add("audioFfIndex")
+        }
+        return if (changed.isEmpty()) "none" else changed.joinToString(",")
     }
 
     private fun sameCaptureState(before: SceneMpvSnapshot, after: SceneMpvSnapshot): Boolean {

@@ -32,20 +32,35 @@ internal class AndroidSceneCaptureService private constructor(
     )
 
     override suspend fun prepare(request: SceneCaptureRequest): AnkiScreenshotPreparation {
-        val input = request.videoInput ?: return AnkiScreenshotPreparation.Failed(stillFallback = null)
+        val input = request.videoInput ?: run {
+            sceneLog { "prepare: videoInput was null" }
+            return AnkiScreenshotPreparation.Failed(stillFallback = null)
+        }
         val range = request.resolvedTiming?.animationRange
-            ?: return AnkiScreenshotPreparation.Failed(stillFallback = null)
+            ?: run {
+                sceneLog { "prepare: resolvedTiming.animationRange was null" }
+                return AnkiScreenshotPreparation.Failed(stillFallback = null)
+            }
         val encoderName = av1EncoderName()
         if (encoderName.isNullOrBlank()) {
+            sceneLog { "prepare: no usable av1 MediaCodec encoder found" }
             return AnkiScreenshotPreparation.Failed(stillFallback = null)
+        }
+        sceneLog {
+            "prepare: starting, encoder=$encoderName range=${range.startSeconds}..${range.endSeconds} " +
+                "(${range.durationSeconds}s) input=${input.describe()}"
         }
 
         return withContext(Dispatchers.IO) {
             if (!isSafe(input)) {
+                sceneLog { "prepare: input rejected by ffprobe safety check" }
                 return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
             }
             val lease = inputAcquirer.acquire(input)
-                ?: return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
+                ?: run {
+                    sceneLog { "prepare: could not acquire input lease" }
+                    return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
+                }
             sceneDirectory.mkdirs()
             val outputBaseName = UUID.randomUUID().toString()
             val intermediate = File(sceneDirectory, "$outputBaseName.obu")
@@ -71,15 +86,27 @@ internal class AndroidSceneCaptureService private constructor(
                 inputCleanup.release()
                 when (encodeResult) {
                     SceneCommandResult.Failed -> {
+                        sceneLog { "prepare: pass 1 (av1_mediacodec encode) failed" }
                         return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
                     }
                     is SceneCommandResult.Success -> Unit
                 }
-                val normalized = intermediate
+                val rawPackets = intermediate
                     .takeIf { it.isFile && it.length() in 1..MAX_INTERMEDIATE_BYTES }
                     ?.readBytes()
-                    ?.let(MediaCodecAv1StreamNormalizer::normalize)
-                    ?: return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
+                if (rawPackets == null) {
+                    sceneLog {
+                        "prepare: intermediate unusable, isFile=${intermediate.isFile} " +
+                            "length=${intermediate.length()} max=$MAX_INTERMEDIATE_BYTES"
+                    }
+                    return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
+                }
+                val normalized = MediaCodecAv1StreamNormalizer.normalize(rawPackets)
+                if (normalized == null) {
+                    sceneLog { "prepare: AV1 packet normalization rejected ${rawPackets.size} bytes" }
+                    return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
+                }
+                sceneLog { "prepare: normalized ${rawPackets.size} -> ${normalized.size} bytes" }
                 intermediate.writeBytes(normalized)
 
                 val currentOutputCleanup = SceneNativeCleanup(output::delete)
@@ -96,27 +123,46 @@ internal class AndroidSceneCaptureService private constructor(
                 }
                 when (remuxResult) {
                     SceneCommandResult.Failed -> {
+                        sceneLog { "prepare: pass 2 (AVIF remux) failed" }
                         return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
                     }
                     is SceneCommandResult.Success -> Unit
                 }
-                val info = validate(output)
-                    ?.takeIf {
+                val validated = validate(output)
+                if (validated == null) {
+                    sceneLog { "prepare: AVIF structure validation failed, ${output.length()} bytes" }
+                    return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
+                }
+                val info = validated
+                    .takeIf {
                         it.width in 1..MAX_OUTPUT_DIMENSION &&
                             it.height in 1..MAX_OUTPUT_DIMENSION &&
                             it.frameCount in 2..SceneFfmpegArguments.MAX_FRAME_COUNT &&
                             it.totalDurationMillis > 0L
                     }
-                    ?: return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
+                    ?: run {
+                        sceneLog {
+                            "prepare: AVIF outside bounds, width=${validated.width} height=${validated.height} " +
+                                "(max $MAX_OUTPUT_DIMENSION) frameCount=${validated.frameCount} " +
+                                "(need 2..${SceneFfmpegArguments.MAX_FRAME_COUNT}) " +
+                                "durationMs=${validated.totalDurationMillis}"
+                        }
+                        return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
+                    }
                 val animation = AnkiMediaNaming.sceneFileSource(output)
                 transferred = true
+                sceneLog {
+                    "prepare: success, ${info.frameCount} frames ${info.width}x${info.height} " +
+                        "${info.totalDurationMillis}ms ${output.length()} bytes"
+                }
                 AnkiScreenshotPreparation.Animated(
                     animation = animation,
                     stillFallback = null,
                 )
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                sceneLog(throwable = e) { "prepare: threw during scene generation" }
                 AnkiScreenshotPreparation.Failed(stillFallback = null)
             } finally {
                 inputCleanup.release()
@@ -129,14 +175,31 @@ internal class AndroidSceneCaptureService private constructor(
     }
 
     private suspend fun isSafe(input: SceneVideoInputSpec): Boolean {
-        val lease = inputAcquirer.acquire(input) ?: return false
+        val lease = inputAcquirer.acquire(input) ?: run {
+            sceneLog { "isSafe: could not acquire input lease for probe" }
+            return false
+        }
         val cleanup = SceneNativeCleanup(lease::close)
         return try {
             val result = commandExecutor.executeFfprobe(
                 SceneFfmpegArguments.videoProbe(input, lease.ffmpegValue, lease.tlsCaFile),
                 cleanup::nativeFinished,
             )
-            result is SceneCommandResult.Success && SceneMediaProbe.inspect(result.output)
+            when (result) {
+                SceneCommandResult.Failed -> {
+                    sceneLog { "isSafe: ffprobe failed to run" }
+                    false
+                }
+                is SceneCommandResult.Success -> {
+                    // An absent pix_fmt and an HDR rejection both return false, so print the output.
+                    SceneMediaProbe.inspect(result.output).also { accepted ->
+                        if (!accepted) {
+                            val output = redactSceneLogLine(result.output)
+                            sceneLog { "isSafe: probe rejected input, ffprobe output=<<<$output>>>" }
+                        }
+                    }
+                }
+            }
         } finally {
             cleanup.release()
         }
