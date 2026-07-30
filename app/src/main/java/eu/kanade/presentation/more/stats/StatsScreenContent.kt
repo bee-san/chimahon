@@ -41,6 +41,7 @@ import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.automirrored.outlined.Undo
 import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.outlined.ArrowDropDown
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.ChevronLeft
@@ -971,11 +972,15 @@ private fun OverviewSummary(
                 Icons.Outlined.Style,
                 StatsTab.ANKI,
             ),
+            // Not TextFields: the gross-exposure card above already carries it, and two cards in one
+            // grid wearing the same glyph imply they measure the same thing. Exposure keeps the glyph
+            // as the primary character count. AutoAwesome rather than NewReleases, whose starburst and
+            // exclamation mark read as a warning badge on a tile that is only reporting a count.
             DashboardMetric(
                 overviewIndexedGrowthMetricValue(metrics.newCharacters.value, result.quality)
                     ?.let(::formatCount),
                 stringResource(KMR.strings.stats_new_characters),
-                Icons.Outlined.TextFields,
+                Icons.Outlined.AutoAwesome,
                 StatsTab.CHARACTERS,
             ),
         )
@@ -1267,14 +1272,14 @@ private fun TrendsContent(
             cumulative.miningRatePerTenThousandGrossCharacters()?.let(::formatDecimal)
                 ?: stringResource(KMR.strings.stats_unavailable),
         )
-        SectionTitle(stringResource(KMR.strings.stats_moving_average))
+        // Ten dated rows of zero say one thing ten times and read as a metric that failed rather than
+        // as a quiet stretch, so an all-zero window drops out — heading included. Keeping the heading
+        // over "No statistics match these filters." was worse than either: the filters do match, and a
+        // heading with nothing under it reads as data that failed to load. The temporal-pattern charts
+        // suppress their all-zero axes the same way.
         val recentAverages = movingAverage(points, trendMetric, metric).takeLast(10)
-        if (recentAverages.all { it.second <= 0.0 }) {
-            // Ten dated rows of zero say one thing ten times and read as a metric that failed rather
-            // than as a quiet stretch. The temporal-pattern charts suppress their all-zero axes the
-            // same way.
-            EmptyState()
-        } else {
+        if (recentAverages.any { it.second > 0.0 }) {
+            SectionTitle(stringResource(KMR.strings.stats_moving_average))
             recentAverages.forEach { (point, average) ->
                 MetricLine(
                     formatLocalDate(point.range.endInclusive),
@@ -1816,6 +1821,10 @@ private fun CharactersTab(
             )
         }
         item(span = { GridItemSpan(maxLineSpan) }) {
+            // The placeholder is two words, matching the title search above. Naming all four searchable
+            // fields inside the input wrapped it to two lines and pushed the field to twice the height
+            // of every other control on the screen; the list is documentation, so it moves to the
+            // field's supporting text.
             SearchAndSort(
                 query = state.characterSearch,
                 onQueryChange = onSearch,
@@ -1831,6 +1840,7 @@ private fun CharactersTab(
                     AnalyticsSort.PRIORITY,
                 ),
                 optionLabel = { sortLabel(it) },
+                supportingText = stringResource(KMR.strings.stats_search_characters_fields),
             )
         }
         item(span = { GridItemSpan(maxLineSpan) }) {
@@ -4494,6 +4504,7 @@ private fun <T> SearchAndSort(
     onSortSelect: (T) -> Unit,
     allowedSorts: List<T>,
     optionLabel: @Composable (T) -> String,
+    supportingText: String? = null,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(
@@ -4503,6 +4514,10 @@ private fun <T> SearchAndSort(
             singleLine = true,
             leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
             placeholder = { Text(placeholder) },
+            // Material's own slot for a field hint, rather than a sibling below the field: the caller
+            // that needs one places it inside a lazy-grid item, whose children overlap rather than
+            // stack, so a sibling landed on top of the input.
+            supportingText = supportingText?.let { { Text(it) } },
         )
         FilterMenuChip(
             label = optionLabel(selectedSort),
@@ -4651,12 +4666,20 @@ private fun <T> SectionFrame(
     }
 }
 
+/**
+ * Sections load independently, so three of them in flight printed "Loading statistics…" three times
+ * down one screen, which reads as three failures rather than one load in progress. A slim progress bar
+ * — the same idiom the screen header already uses — repeats without saying anything twice. The wording
+ * stays as the semantics so a screen reader still hears what the bar means.
+ */
 @Composable
 private fun SectionLoading() {
-    Text(
-        text = stringResource(KMR.strings.stats_loading_section),
-        modifier = Modifier.padding(16.dp),
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    val label = stringResource(KMR.strings.stats_loading_section)
+    LinearProgressIndicator(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp)
+            .semantics { contentDescription = label },
     )
 }
 

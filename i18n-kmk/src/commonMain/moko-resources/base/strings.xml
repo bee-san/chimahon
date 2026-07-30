@@ -651,7 +651,8 @@
     <string name="stats_rollout_legacy_writes_active">Legacy rollback writes remain active while the event-backed system is in shadow rollout.</string>
     <string name="stats_rollout_legacy_writes_inactive">Legacy rollback writes are inactive.</string>
     <string name="stats_script_label">Script</string>
-    <string name="stats_search_characters">Search glyph, code point, reading, metadata or containing word</string>
+    <string name="stats_search_characters">Search characters</string>
+    <string name="stats_search_characters_fields">Matches a glyph, code point, reading, metadata or a word containing the character.</string>
     <string name="stats_search_titles">Search titles</string>
     <string name="stats_section_characters">Characters</string>
     <string name="stats_section_completion">Completion</string>
