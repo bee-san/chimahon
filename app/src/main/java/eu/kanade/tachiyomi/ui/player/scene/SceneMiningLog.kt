@@ -1,7 +1,8 @@
 package eu.kanade.tachiyomi.ui.player.scene
 
 import logcat.LogPriority
-import tachiyomi.core.common.util.system.logcat
+import logcat.asLog
+import logcat.logcat
 import java.net.URI
 import java.util.Locale
 
@@ -9,17 +10,25 @@ internal const val SCENE_LOG_TAG = "SceneMining"
 
 /**
  * Scene mining downgrades to a still image on any failure, so every early return needs to say why.
- * Fixed at [LogPriority.INFO] because release-derived builds drop anything lower.
+ *
+ * Fixed at [LogPriority.INFO] because release-derived builds drop anything lower. Emits
+ * [SCENE_LOG_TAG] as the real logcat tag rather than as a message prefix, so that
+ * `adb logcat -s SceneMining` selects the whole trace; the house `logcat` helper in
+ * `tachiyomi.core.common` keeps the calling class as the tag and would leave the filter empty.
+ * The calling class is named in each message instead, since that is what the tag gave up.
  */
 internal inline fun Any.sceneLog(
     throwable: Throwable? = null,
     message: () -> String,
-) = logcat(
-    priority = LogPriority.INFO,
-    throwable = throwable,
-    tag = SCENE_LOG_TAG,
-    message = message,
-)
+    // Positional, so the String first parameter picks the top-level tag-first overload rather than
+    // the `Any.logcat` extension that is also in scope here.
+) = logcat(SCENE_LOG_TAG, LogPriority.INFO) {
+    val caller = this::class.java.simpleName.takeIf(String::isNotBlank) ?: "Scene"
+    buildString {
+        append(caller).append(": ").append(message())
+        if (throwable != null) append('\n').append(throwable.asLog())
+    }
+}
 
 /**
  * Remote scene inputs are rejected outright when they carry credentials, so logging one verbatim

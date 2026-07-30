@@ -1,10 +1,63 @@
 package eu.kanade.tachiyomi.ui.player.scene
 
+import logcat.LogPriority
+import logcat.LogcatLogger
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class SceneMiningLogTest {
+    private class RecordingLogger : LogcatLogger {
+        val entries = mutableListOf<Triple<LogPriority, String, String>>()
+
+        override fun isLoggable(priority: LogPriority) = true
+
+        override fun log(priority: LogPriority, tag: String, message: String) {
+            entries += Triple(priority, tag, message)
+        }
+    }
+
+    private val logger = RecordingLogger()
+
+    @AfterEach
+    fun tearDown() {
+        if (LogcatLogger.isInstalled) LogcatLogger.uninstall()
+    }
+
+    /**
+     * A previous build emitted the calling class as the tag and `[SceneMining]` as a message
+     * prefix, which made `adb logcat -s SceneMining` return nothing at all and read as though the
+     * instrumentation had never fired.
+     */
+    @Test
+    fun `scene logs are tagged so a tag-only logcat filter finds them`() {
+        LogcatLogger.install(logger)
+
+        sceneLog { "prepare: starting" }
+
+        val (priority, tag, message) = logger.entries.single()
+        assertEquals(SCENE_LOG_TAG, tag)
+        // Release-derived builds install a logger with an INFO floor and would drop DEBUG.
+        assertEquals(LogPriority.INFO, priority)
+        assertTrue(message.endsWith("prepare: starting"), message)
+        // The caller is still identifiable now that it no longer occupies the tag.
+        assertTrue(message.startsWith("SceneMiningLogTest: "), message)
+    }
+
+    @Test
+    fun `scene logs append the throwable so a swallowed cause survives`() {
+        LogcatLogger.install(logger)
+
+        sceneLog(throwable = IllegalStateException("boom")) { "prepare: threw" }
+
+        val message = logger.entries.single().third
+        assertTrue(message.contains("prepare: threw"), message)
+        assertTrue(message.contains("IllegalStateException"), message)
+        assertTrue(message.contains("boom"), message)
+    }
+
     @Test
     fun `remote values keep only scheme and host`() {
         assertEquals(

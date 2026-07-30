@@ -167,6 +167,42 @@ class SceneVideoInputTest {
         }
     }
 
+    /**
+     * SAF documents reach FFmpeg as FFmpegKit's `saf:<id>.<ext>` pseudo-URL, because reopening a
+     * `/proc/self/fd/N` path re-checks permissions against the real file and loses the SAF grant.
+     * `-protocol_whitelist` would filter that scheme out, so it must stay confined to remote input.
+     */
+    @Test
+    fun `content uri commands pass a saf value through without restricting protocols`() {
+        val input = SceneVideoInputSpec(
+            value = "content://com.android.externalstorage.documents/tree/primary%3AAnime",
+            kind = SceneVideoInputKind.CONTENT_URI,
+            headers = emptyList(),
+        )
+        val safValue = "saf:37.mp4"
+        val range = SceneTimeRange(1.25, 2.25)
+        val commands = listOf(
+            SceneFfmpegArguments.av1MediaCodecPackets(
+                input = input,
+                acquiredInputValue = safValue,
+                range = range,
+                outputFile = "/cache/scene.obu",
+                encoderName = TEST_AV1_ENCODER_NAME,
+            ),
+            SceneFfmpegArguments.videoProbe(input, safValue),
+            SceneFfmpegArguments.audioProbe(input, safValue),
+            SceneFfmpegArguments.sentenceAudio(input, safValue, range, "/cache/audio.m4a"),
+        )
+
+        commands.forEach { command ->
+            val arguments = command.toList()
+            assertTrue(safValue in arguments, "saf value missing from $arguments")
+            assertFalse("-protocol_whitelist" in arguments, "saf scheme would be filtered out")
+            // The content uri itself must never reach ffmpeg -- it is not an openable path.
+            assertFalse(arguments.any { it.startsWith("content://") }, arguments.toString())
+        }
+    }
+
     @Test
     fun `sentence audio maps the frozen selected stream`() {
         val input = supportedInput().copy(videoStreamIndex = 2, audioStreamIndex = 3)

@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.ui.player.scene
 
 import android.content.Context
 import android.net.Uri
+import com.arthenica.ffmpegkit.FFmpegKitConfig
 import java.io.Closeable
 import java.io.File
 
@@ -40,16 +41,32 @@ internal class AndroidSceneInputAcquirer(
         }.getOrNull()
     }
 
+    /**
+     * FFmpeg must not be handed a `/proc/self/fd/N` path for a SAF document. Although FFmpegKit
+     * runs in this process and so shares the descriptor table, opening that symlink by path
+     * re-resolves to the real file and re-checks permissions against it. Shared storage is
+     * FUSE-backed and `media_rw`-owned, and the SAF grant attaches to the descriptor rather than
+     * to the path, so the reopen fails with `EACCES` and the probe rejects a perfectly good file.
+     *
+     * FFmpegKit's `saf:` protocol exists for this: it retains the [Uri] and opens the descriptor
+     * from inside the native handler, so the grant still applies.
+     */
     private fun acquireContentUri(value: String): SceneInputLease? {
-        val descriptor = runCatching {
-            applicationContext.contentResolver.openFileDescriptor(Uri.parse(value), "r")
-        }.getOrNull() ?: return null
-        return object : SceneInputLease {
-            override val ffmpegValue = "/proc/self/fd/${descriptor.fd}"
-            override val tlsCaFile: String? = null
-
-            override fun close() = descriptor.close()
+        val uri = runCatching { Uri.parse(value) }.getOrNull() ?: run {
+            sceneLog { "acquire: could not parse content uri" }
+            return null
         }
+        // Registers the uri and returns "saf:<id>.<ext>"; the descriptor is opened lazily, by
+        // FFmpegKit's native handler, and closed by it once FFmpeg closes the stream. The
+        // registration is consumed by that first open, so a lease must not be reused across
+        // invocations -- every call site here acquires a fresh one per FFmpeg command.
+        val safValue = runCatching {
+            FFmpegKitConfig.getSafParameterForRead(applicationContext, uri)
+        }.getOrNull()?.takeIf(String::isNotBlank) ?: run {
+            sceneLog { "acquire: FFmpegKit refused a saf parameter for the content uri" }
+            return null
+        }
+        return acquired(safValue)
     }
 
     private fun acquired(
