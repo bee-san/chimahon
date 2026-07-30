@@ -500,7 +500,7 @@
     <string name="stats_goal_forecast_unavailable">A completion forecast needs progress on at least three active days.</string>
     <string name="stats_goal_invalid">Enter a valid target and date range, with at least one active weekday.</string>
     <string name="stats_goal_manual">Manual habit</string>
-    <string name="stats_goal_pace_label">Pace</string>
+    <string name="stats_goal_pace_label">Overall pace</string>
     <string name="stats_goal_progress">%1$s of %2$s</string>
     <string name="stats_goal_projection_label">Projected completion</string>
     <string name="stats_goal_reminder_channel">Immersion goal reminders</string>

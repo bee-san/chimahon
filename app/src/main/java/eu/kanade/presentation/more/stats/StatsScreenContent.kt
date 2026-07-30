@@ -2384,7 +2384,7 @@ private fun AnkiTab(
                                 capabilityLabel(capability.state),
                             )
                             ankiCapabilityReason(capability.reason)?.let {
-                                NoteText(it)
+                                NoteText(it, attached = true)
                             }
                         }
                     }
@@ -2906,13 +2906,14 @@ private fun TitleDetail(
                 stringResource(KMR.strings.stats_estimated_remaining),
                 formatDuration(estimate.estimatedActiveTimeMillis),
             )
-            NoteText(estimateRemainingAmount(title.mediaKind, estimate))
+            NoteText(estimateRemainingAmount(title.mediaKind, estimate), attached = true)
             NoteText(
                 stringResource(
                     KMR.strings.stats_estimate_confidence,
                     estimateConfidenceLabel(estimate.confidence),
                     pluralCount(KMR.plurals.stats_qualifying_day_count, estimate.qualifyingDayCount),
                 ),
+                attached = true,
             )
         } ?: Column {
             // The reason an estimate is missing is a sentence, and in MetricLine's bold right-hand
@@ -2922,7 +2923,7 @@ private fun TitleDetail(
                 stringResource(KMR.strings.stats_estimated_remaining),
                 stringResource(KMR.strings.stats_unavailable),
             )
-            NoteText(stringResource(KMR.strings.stats_estimate_unavailable))
+            NoteText(stringResource(KMR.strings.stats_estimate_unavailable), attached = true)
         }
         HorizontalDivider()
         SectionTitle(stringResource(KMR.strings.stats_title_activity_history))
@@ -4087,6 +4088,9 @@ private fun GoalCard(
             if (hasPace) {
                 SectionTitle(stringResource(KMR.strings.stats_section_pace))
             }
+            // "Overall", not bare "Pace": this is the average across the goal's whole window, and under a
+            // heading already called Pace a row of the same name reads as the heading repeating itself
+            // rather than as the counterpart to the two rolling windows below it.
             goal.pacePerDay?.let {
                 MetricLine(
                     stringResource(KMR.strings.stats_goal_pace_label),
@@ -4864,13 +4868,18 @@ private fun SubsectionTitle(text: String) {
 /**
  * A caveat or explanation attached to the rows above it — a caption, not a metric. Subdued so it reads
  * as annotation rather than as one more value in the column it follows.
+ *
+ * Set [attached] where the note explains one specific row rather than the whole group. Flush with the
+ * labels it sits among, such a note reads as another row that simply lost its value; indented, it
+ * clearly belongs to the row above.
  */
 @Composable
-private fun NoteText(text: String) {
+private fun NoteText(text: String, attached: Boolean = false) {
     Text(
         text,
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = if (attached) Modifier.padding(start = 16.dp) else Modifier,
     )
 }
 
