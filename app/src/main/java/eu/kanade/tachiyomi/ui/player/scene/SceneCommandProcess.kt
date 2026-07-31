@@ -5,6 +5,7 @@ import android.os.Build
 import java.io.File
 
 internal object SceneCommandProcess {
+    // Must match android:process on IsolatedSceneCommandService in AndroidManifest.xml.
     const val SUFFIX = ":scene_processing"
 
     fun isCurrent(): Boolean = currentProcessName().endsWith(SUFFIX)

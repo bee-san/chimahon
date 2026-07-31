@@ -222,7 +222,6 @@ class SceneAv1EncoderSelectorTest {
         val selection = selectAv1Encoder(
             source = SceneVideoDimensions(width = 1_600, height = 900),
             candidates = sequenceOf(candidate()),
-            maxOutputDimension = 800,
         )
 
         assertEquals(SceneVideoDimensions(width = 640, height = 360), selection?.outputSize)

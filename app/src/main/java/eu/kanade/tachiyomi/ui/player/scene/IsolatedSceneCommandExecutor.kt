@@ -10,7 +10,25 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
 
 /**
- * Runs FFmpegKit in a dedicated process so its FFmpeg globals cannot collide with libmpv.
+ * Runs FFmpegKit in a dedicated process (`:scene_processing`) to avoid a duplicate-SONAME linker
+ * conflict with libmpv.
+ *
+ * Both AARs ship FFmpeg shared objects with the *same* SONAMEs (`libavcodec.so`, `libavformat.so`,
+ * `libavutil.so`, `libswscale.so`, ...): `aniyomi-mpv-lib`'s `libmpv.so` DT_NEEDEDs them, and
+ * `ffmpeg-kit` bundles its own build of the same names. Android's dynamic linker resolves by SONAME
+ * within a process namespace, so only one `libavcodec.so` et al. can be loaded per process, and
+ * whichever loads second silently gets the other's (differently configured, different-version)
+ * implementation. This is an ABI-level conflict: it is NOT fixable by a mutex, load ordering, symbol
+ * visibility, or `dlopen` flags. A separate process gives each library set its own linker namespace.
+ * The only in-process alternative would be renamed or statically-linked libraries, which is an
+ * upstream AAR change.
+ *
+ * Do not "simplify" this back into the main process: scene mining ran in-process before and the
+ * collision is device/timing-dependent, so its absence in a quick test is not evidence it is safe.
+ *
+ * Caveat: [eu.kanade.tachiyomi.data.animedownload.AnimeDownloader] and
+ * [eu.kanade.tachiyomi.util.storage.FFmpegUtils] still invoke FFmpegKit in the main process, so this
+ * isolation currently protects only the scene-capture path.
  */
 internal class IsolatedSceneCommandExecutor(
     context: Context,

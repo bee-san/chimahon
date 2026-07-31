@@ -216,6 +216,9 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- The process suffix MUST stay in sync with SceneCommandProcess.SUFFIX; App.onCreate keys
+             its lightweight-init early return off it. Renaming one without the other silently
+             reintroduces full DI/Conscrypt/WebView init in this FFmpeg-only child process. -->
         <service
             android:name=".ui.player.scene.IsolatedSceneCommandService"
             android:exported="false"

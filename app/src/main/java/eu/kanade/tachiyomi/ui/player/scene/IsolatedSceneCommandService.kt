@@ -51,26 +51,43 @@ class IsolatedSceneCommandService : Service() {
                             "execute: completed request=$requestId success=" +
                                 "${result is SceneCommandResult.Success} pid=${Process.myPid()}"
                         }
-                        deliverSceneCommandCallback(result) { payload ->
-                            callback.onCompleted(requestId, payload.success, payload.output)
-                        }
+                        deliverResult(requestId, result, callback)
                     }
                 } finally {
                     jobs.remove(requestId)
                 }
             }
-            val previous = jobs.putIfAbsent(requestId, job)
-            if (previous == null) {
-                job.start()
-            } else {
-                job.cancel()
-                runCatching { callback.onCompleted(requestId, false, "") }
-            }
+            // Request IDs come from a single AtomicLong in the one main-process executor, so they
+            // are unique for this service process's lifetime and cannot collide here.
+            jobs[requestId] = job
+            job.start()
         }
 
         override fun cancel(requestId: Long) {
             jobs[requestId]?.cancel()
         }
+    }
+
+    /**
+     * Delivers the result over the (oneway) callback, capping the payload well under Binder's ~1 MB
+     * transaction limit. An oversized successful output is reported as a failure with a distinct log
+     * line so it is not silently mistaken for a genuine ffmpeg/ffprobe failure.
+     */
+    private fun deliverResult(
+        requestId: Long,
+        result: SceneCommandResult,
+        callback: ISceneCommandCallback,
+    ) {
+        val output = (result as? SceneCommandResult.Success)?.output
+        val (success, payload) = when {
+            output == null -> false to ""
+            output.length <= MAX_SCENE_CALLBACK_OUTPUT_CHARS -> true to output
+            else -> {
+                sceneLog { "execute: dropping oversized output request=$requestId chars=${output.length}" }
+                false to ""
+            }
+        }
+        runCatching { callback.onCompleted(requestId, success, payload) }
     }
 
     override fun onCreate() {
@@ -136,5 +153,9 @@ class IsolatedSceneCommandService : Service() {
                     ?: return null
             }
         }
+    }
+
+    private companion object {
+        const val MAX_SCENE_CALLBACK_OUTPUT_CHARS = 128 * 1024
     }
 }

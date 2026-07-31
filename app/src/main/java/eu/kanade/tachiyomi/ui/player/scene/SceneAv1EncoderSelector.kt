@@ -35,12 +35,10 @@ internal fun selectAv1Encoder(
     source: SceneVideoDimensions,
     candidates: Sequence<Av1EncoderCandidate>,
     frameRate: Double = SCENE_FRAME_RATE,
-    maxOutputDimension: Int = SCENE_MAX_OUTPUT_DIMENSION,
 ): Av1EncoderSelection? {
     if (source.width <= 0 || source.height <= 0) return null
     if (!frameRate.isFinite() || frameRate <= 0.0) return null
-    val boundedOutputDimension = min(maxOutputDimension, SCENE_MAX_OUTPUT_DIMENSION)
-    if (boundedOutputDimension < SCENE_PIXEL_ALIGNMENT) return null
+    val boundedOutputDimension = SCENE_MAX_OUTPUT_DIMENSION
 
     var bestSelection: Av1EncoderSelection? = null
     candidates.forEach { candidate ->
