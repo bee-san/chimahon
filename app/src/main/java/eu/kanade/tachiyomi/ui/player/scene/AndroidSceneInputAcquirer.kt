@@ -2,7 +2,6 @@ package eu.kanade.tachiyomi.ui.player.scene
 
 import android.content.Context
 import android.net.Uri
-import com.arthenica.ffmpegkit.FFmpegKitConfig
 import java.io.Closeable
 import java.io.File
 
@@ -49,24 +48,15 @@ internal class AndroidSceneInputAcquirer(
      * to the path, so the reopen fails with `EACCES` and the probe rejects a perfectly good file.
      *
      * FFmpegKit's `saf:` protocol exists for this: it retains the [Uri] and opens the descriptor
-     * from inside the native handler, so the grant still applies.
+     * from inside the native handler, so the grant still applies. The URI is encoded here and
+     * registered only inside the dedicated FFmpegKit process.
      */
     private fun acquireContentUri(value: String): SceneInputLease? {
         val uri = runCatching { Uri.parse(value) }.getOrNull() ?: run {
             sceneLog { "acquire: could not parse content uri" }
             return null
         }
-        // Registers the uri and returns "saf:<id>.<ext>"; the descriptor is opened lazily, by
-        // FFmpegKit's native handler, and closed by it once FFmpeg closes the stream. The
-        // registration is consumed by that first open, so a lease must not be reused across
-        // invocations -- every call site here acquires a fresh one per FFmpeg command.
-        val safValue = runCatching {
-            FFmpegKitConfig.getSafParameterForRead(applicationContext, uri)
-        }.getOrNull()?.takeIf(String::isNotBlank) ?: run {
-            sceneLog { "acquire: FFmpegKit refused a saf parameter for the content uri" }
-            return null
-        }
-        return acquired(safValue)
+        return acquired(SceneSafInput.encodeForRead(uri))
     }
 
     private fun acquired(

@@ -685,7 +685,7 @@ fun PlayerControls(
                         isPipAvailable = activity.isPipSupportedAndEnabled,
                         onPipClick = {
                             if (!viewModel.isLoadingEpisode.value) {
-                                activity.enterPictureInPictureMode(activity.createPipParams())
+                                activity.enterPictureInPictureIfAvailable()
                             }
                         },
                         onAspectClick = {
@@ -868,7 +868,7 @@ fun PlayerControls(
             onDismiss = dismissVideoOcr,
         )
 
-        PlayerSceneMiningProgressDialog(
+        PlayerSceneMiningProgressOverlay(
             progress = sceneMiningProgress,
             onCancel = viewModel::cancelSceneMiningPreCommit,
         )
