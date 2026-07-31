@@ -23,10 +23,10 @@ import kotlin.coroutines.resume
  *
  * The remaining defensible reasons for a separate process are unproven here: isolating FFmpegKit's
  * process-global state (log/statistics callbacks, session registry) from a live libmpv, and
- * containing native crashes in the media path. Neither is backed by a reproduction, so treat this
- * isolation as optional hardening rather than a correctness requirement. If a future change wants to
- * fold scene mining back into the main process, that is safe from a linker standpoint; the only open
- * question is FFmpegKit global-state sharing, which can be handled in-process.
+ * containing native crashes in the media path by allowing Android to terminate only the worker
+ * process. Neither is backed by a reproduction, so retain the process boundary pending explicit
+ * crash and process-global-state testing. A future change may fold scene mining back into the main
+ * process without a linker conflict, but a native crash there would terminate the whole app.
  */
 internal class IsolatedSceneCommandExecutor(
     context: Context,

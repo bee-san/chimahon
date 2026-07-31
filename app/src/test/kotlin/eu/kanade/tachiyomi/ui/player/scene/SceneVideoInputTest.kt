@@ -62,13 +62,13 @@ class SceneVideoInputTest {
     }
 
     @Test
-    fun `AV1 encode writes raw MediaCodec packets`() {
+    fun `AV1 encode muxes MediaCodec output directly into animated AVIF`() {
         val input = supportedInput()
-        val arguments = SceneFfmpegArguments.av1MediaCodecPackets(
+        val arguments = SceneFfmpegArguments.animatedAvifMediaCodec(
             input = input,
             acquiredInputValue = "https://media.example/video.mp4",
             range = SceneTimeRange(1.25, 11.25),
-            outputFile = "/cache/output.obu",
+            outputFile = "/cache/output.avif",
             encoderName = TEST_AV1_ENCODER_NAME,
             contentSize = SceneVideoDimensions(width = 640, height = 360),
             outputSize = SceneVideoDimensions(width = 640, height = 360),
@@ -90,7 +90,7 @@ class SceneVideoInputTest {
             ),
         )
         assertTrue(arguments.containsAll(listOf("-ndk_codec", "1", "-pix_fmt", "yuv420p")))
-        assertTrue(arguments.containsAll(listOf("-frames:v", "80", "-f", "data")))
+        assertTrue(arguments.containsAll(listOf("-frames:v", "80", "-loop", "0", "-f", "avif")))
         assertTrue(
             arguments.containsAll(
                 listOf(
@@ -110,17 +110,16 @@ class SceneVideoInputTest {
             "fps=8,scale=w=640:h=360,setsar=1",
             arguments[arguments.indexOf("-vf") + 1],
         )
-        assertFalse(arguments.contains("avif"))
-        assertFalse(arguments.contains("-loop"))
+        assertEquals("/cache/output.avif", arguments.last())
     }
 
     @Test
     fun `AV1 encode pads aspect preserving content into the codec canvas`() {
-        val arguments = SceneFfmpegArguments.av1MediaCodecPackets(
+        val arguments = SceneFfmpegArguments.animatedAvifMediaCodec(
             input = supportedInput(),
             acquiredInputValue = "https://media.example/video.mp4",
             range = SceneTimeRange(1.25, 11.25),
-            outputFile = "/cache/output.obu",
+            outputFile = "/cache/output.avif",
             encoderName = TEST_AV1_ENCODER_NAME,
             contentSize = SceneVideoDimensions(width = 320, height = 180),
             outputSize = SceneVideoDimensions(width = 320, height = 192),
@@ -145,44 +144,16 @@ class SceneVideoInputTest {
     }
 
     @Test
-    fun `AVIF remux copies the normalized OBU stream`() {
-        assertEquals(
-            listOf(
-                "-f",
-                "obu",
-                "-framerate",
-                "8",
-                "-i",
-                "/cache/input.obu",
-                "-map",
-                "0:v:0",
-                "-c:v",
-                "copy",
-                "-loop",
-                "0",
-                "-f",
-                "avif",
-                "-y",
-                "/cache/output.avif",
-            ),
-            SceneFfmpegArguments.animatedAvifFromObu(
-                inputFile = "/cache/input.obu",
-                outputFile = "/cache/output.avif",
-            ).toList(),
-        )
-    }
-
-    @Test
     fun `all native input commands restrict decoders without breaking ordinary media`() {
         val input = supportedInput()
         val range = SceneTimeRange(1.25, 2.25)
         val caFile = "/files/cacert.pem"
         val commands = listOf(
-            SceneFfmpegArguments.av1MediaCodecPackets(
+            SceneFfmpegArguments.animatedAvifMediaCodec(
                 input = input,
                 acquiredInputValue = input.value,
                 range = range,
-                outputFile = "/cache/scene.obu",
+                outputFile = "/cache/scene.avif",
                 encoderName = TEST_AV1_ENCODER_NAME,
                 contentSize = SceneVideoDimensions(width = 640, height = 360),
                 outputSize = SceneVideoDimensions(width = 640, height = 360),
@@ -208,11 +179,11 @@ class SceneVideoInputTest {
         val input = supportedInput()
         val commands = listOf(
             SceneFfmpegArguments.videoProbe(input, input.value, "/files/cacert.pem"),
-            SceneFfmpegArguments.av1MediaCodecPackets(
+            SceneFfmpegArguments.animatedAvifMediaCodec(
                 input = input,
                 acquiredInputValue = input.value,
                 range = SceneTimeRange(1.25, 2.25),
-                outputFile = "/cache/scene.obu",
+                outputFile = "/cache/scene.avif",
                 encoderName = TEST_AV1_ENCODER_NAME,
                 contentSize = SceneVideoDimensions(width = 640, height = 360),
                 outputSize = SceneVideoDimensions(width = 640, height = 360),
@@ -241,11 +212,11 @@ class SceneVideoInputTest {
         val safValue = "saf:37.mp4"
         val range = SceneTimeRange(1.25, 2.25)
         val commands = listOf(
-            SceneFfmpegArguments.av1MediaCodecPackets(
+            SceneFfmpegArguments.animatedAvifMediaCodec(
                 input = input,
                 acquiredInputValue = safValue,
                 range = range,
-                outputFile = "/cache/scene.obu",
+                outputFile = "/cache/scene.avif",
                 encoderName = TEST_AV1_ENCODER_NAME,
                 contentSize = SceneVideoDimensions(width = 640, height = 360),
                 outputSize = SceneVideoDimensions(width = 640, height = 360),
@@ -273,11 +244,11 @@ class SceneVideoInputTest {
             .sentenceAudio(input, input.value, range, "/cache/audio.m4a", caFile)
             .toList()
         val video = SceneFfmpegArguments
-            .av1MediaCodecPackets(
+            .animatedAvifMediaCodec(
                 input = input,
                 acquiredInputValue = input.value,
                 range = range,
-                outputFile = "/cache/scene.obu",
+                outputFile = "/cache/scene.avif",
                 encoderName = TEST_AV1_ENCODER_NAME,
                 contentSize = SceneVideoDimensions(width = 640, height = 360),
                 outputSize = SceneVideoDimensions(width = 640, height = 360),

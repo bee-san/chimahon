@@ -28,7 +28,7 @@ class AndroidSceneCaptureServiceTest {
     lateinit var tempDirectory: File
 
     @Test
-    fun `successful capture normalizes AV1 packets then remuxes them to animated AVIF`() = runTest {
+    fun `successful capture encodes directly to animated AVIF in one command`() = runTest {
         val executor = RecordingExecutor(writeOutput = true)
         val service = service(
             executor = executor,
@@ -40,23 +40,11 @@ class AndroidSceneCaptureServiceTest {
         val animated = result as AnkiScreenshotPreparation.Animated
         assertEquals("avif", animated.animation.extension)
         assertTrue(animated.animation.preferredBaseName.startsWith("chimahon_scene_"))
-        assertEquals(2, executor.ffmpegArguments.size)
+        assertEquals(1, executor.ffmpegArguments.size)
         assertArrayEquals(
-            expectedAv1Arguments(animated.animation.file.absolutePath.replaceAfterLast('.', "obu")),
+            expectedAv1Arguments(animated.animation.file.absolutePath),
             executor.ffmpegArguments[0],
         )
-        assertArrayEquals(
-            expectedAvifRemuxArguments(
-                animated.animation.file.absolutePath.replaceAfterLast('.', "obu"),
-                animated.animation.file.absolutePath,
-            ),
-            executor.ffmpegArguments[1],
-        )
-        val intermediate = File(
-            animated.animation.file.parentFile,
-            "${animated.animation.file.nameWithoutExtension}.obu",
-        )
-        assertFalse(intermediate.exists())
         animated.animation.file.delete()
     }
 
@@ -220,28 +208,24 @@ class AndroidSceneCaptureServiceTest {
     }
 
     @Test
-    fun `cancellation reaches native remux and defers file cleanup until native return`() = runTest {
-        val executor = RecordingExecutor(writeOutput = true, suspendRemux = true)
+    fun `cancellation reaches native encode and defers file cleanup until native return`() = runTest {
+        val executor = RecordingExecutor(writeOutput = true, suspendEncode = true)
         val service = service(executor = executor)
         val preparation = launch { service.prepare(request()) }
         withContext(Dispatchers.Default) {
-            withTimeout(5_000) { executor.remuxStarted.await() }
+            withTimeout(5_000) { executor.encodeStarted.await() }
         }
-        val remuxArguments = executor.ffmpegArguments.last()
-        val intermediate = File(remuxArguments[remuxArguments.indexOf("-i") + 1])
-        val output = File(remuxArguments.last())
+        val output = File(executor.ffmpegArguments.last().last())
 
         preparation.cancelAndJoin()
         withContext(Dispatchers.Default) {
             withTimeout(5_000) { executor.cancellationObserved.await() }
         }
 
-        assertTrue(intermediate.isFile)
         assertTrue(output.isFile)
 
         executor.finishNative()
 
-        assertFalse(intermediate.exists())
         assertFalse(output.exists())
     }
 
@@ -347,25 +331,6 @@ class AndroidSceneCaptureServiceTest {
             "1",
             "-pix_fmt",
             "yuv420p",
-            "-f",
-            "data",
-            "-y",
-            output,
-        )
-    }
-
-    private fun expectedAvifRemuxArguments(input: String, output: String): Array<String> {
-        return arrayOf(
-            "-f",
-            "obu",
-            "-framerate",
-            "8",
-            "-i",
-            input,
-            "-map",
-            "0:v:0",
-            "-c:v",
-            "copy",
             "-loop",
             "0",
             "-f",
@@ -377,14 +342,14 @@ class AndroidSceneCaptureServiceTest {
 
     private class RecordingExecutor(
         private val writeOutput: Boolean,
-        private val suspendRemux: Boolean = false,
+        private val suspendEncode: Boolean = false,
     ) : SceneCommandExecutor {
         var probeCalls = 0
         var ffmpegCalls = 0
         val ffmpegArguments = mutableListOf<Array<String>>()
-        val remuxStarted = CompletableDeferred<Unit>()
+        val encodeStarted = CompletableDeferred<Unit>()
         val cancellationObserved = CompletableDeferred<Unit>()
-        private lateinit var onRemuxFinished: () -> Unit
+        private lateinit var onEncodeFinished: () -> Unit
 
         override suspend fun executeFfmpeg(
             arguments: Array<String>,
@@ -394,15 +359,11 @@ class AndroidSceneCaptureServiceTest {
             ffmpegArguments += arguments
             val output = File(arguments.last())
             if (writeOutput) {
-                val bytes = when (output.extension) {
-                    "obu" -> mediaCodecAv1PacketStream()
-                    else -> byteArrayOf(1, 2, 3)
-                }
-                output.writeBytes(bytes)
+                output.writeBytes(byteArrayOf(1, 2, 3))
             }
-            if (suspendRemux && output.extension == "avif") {
-                onRemuxFinished = onNativeFinished
-                remuxStarted.complete(Unit)
+            if (suspendEncode && output.extension == "avif") {
+                onEncodeFinished = onNativeFinished
+                encodeStarted.complete(Unit)
                 return suspendCancellableCoroutine { continuation ->
                     continuation.invokeOnCancellation {
                         cancellationObserved.complete(Unit)
@@ -432,7 +393,7 @@ class AndroidSceneCaptureServiceTest {
         }
 
         fun finishNative() {
-            onRemuxFinished()
+            onEncodeFinished()
         }
     }
 
