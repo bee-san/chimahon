@@ -360,9 +360,11 @@ internal object SceneFfmpegArguments {
             outputSize.width in SCENE_PIXEL_ALIGNMENT..SCENE_MAX_OUTPUT_DIMENSION &&
                 outputSize.height in SCENE_PIXEL_ALIGNMENT..SCENE_MAX_OUTPUT_DIMENSION &&
                 outputSize.width % SCENE_PIXEL_ALIGNMENT == 0 &&
-                outputSize.height % SCENE_PIXEL_ALIGNMENT == 0,
+                outputSize.height % SCENE_PIXEL_ALIGNMENT == 0 &&
+                outputSize.width % SCENE_MEDIACODEC_CANVAS_ALIGNMENT == 0 &&
+                outputSize.height % SCENE_MEDIACODEC_CANVAS_ALIGNMENT == 0,
         ) {
-            "Scene output size must be even and no larger than $SCENE_MAX_OUTPUT_DIMENSION"
+            "Scene output size must be 16-pixel aligned and no larger than $SCENE_MAX_OUTPUT_DIMENSION"
         }
         require(
             contentSize.width in SCENE_PIXEL_ALIGNMENT..outputSize.width &&

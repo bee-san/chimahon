@@ -32,7 +32,7 @@ class AndroidSceneCaptureServiceTest {
         val executor = RecordingExecutor(writeOutput = true)
         val service = service(
             executor = executor,
-            validate = { AnimatedAvifInfo(320, 180, 24, 3_000) },
+            validate = { AnimatedAvifInfo(320, 192, 24, 3_000) },
         )
 
         val result = service.prepare(request())
@@ -125,7 +125,7 @@ class AndroidSceneCaptureServiceTest {
             executor = executor,
             validate = {
                 callerJob.cancel()
-                AnimatedAvifInfo(320, 180, 24, 3_000)
+                AnimatedAvifInfo(320, 192, 24, 3_000)
             },
         )
 
@@ -240,7 +240,7 @@ class AndroidSceneCaptureServiceTest {
             }
         },
         validate: (File) -> AnimatedAvifInfo? = {
-            AnimatedAvifInfo(320, 180, 24, 3_000)
+            AnimatedAvifInfo(320, 192, 24, 3_000)
         },
         av1Encoder: (SceneVideoDimensions) -> Av1EncoderSelection? = { source ->
             selectAv1Encoder(
@@ -315,7 +315,7 @@ class AndroidSceneCaptureServiceTest {
             "-vf",
             SceneFfmpegArguments.frameFilter(
                 contentSize = SceneVideoDimensions(width = 320, height = 180),
-                outputSize = SceneVideoDimensions(width = 320, height = 180),
+                outputSize = SceneVideoDimensions(width = 320, height = 192),
             ),
             "-frames:v",
             "80",

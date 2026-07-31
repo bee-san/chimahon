@@ -74,6 +74,12 @@ internal object AnimatedAvifValidator {
             val (width, height) = parseSampleDescription(sampleBoxes.only("stsd") ?: return null) ?: return null
             val timing = parseTiming(sampleBoxes.only("stts") ?: return null) ?: return null
             val sizes = parseSizes(sampleBoxes.only("stsz") ?: return null) ?: return null
+            val syncTables = sampleBoxes.filter { it.type == "stss" }
+            if (syncTables.size > 1 ||
+                syncTables.singleOrNull()?.let { !hasFirstSyncSample(it, timing.frames) } == true
+            ) {
+                return null
+            }
             return Track(
                 width = width,
                 height = height,
@@ -153,6 +159,23 @@ internal object AnimatedAvifValidator {
                 offset += 4
             }
             return Sizes(frames.toInt(), total)
+        }
+
+        private fun hasFirstSyncSample(box: Box, frames: Int): Boolean {
+            if (box.dataSize < 12 || u32(box.start) != 0L) return false
+            val entries = u32(box.start + 4)
+            if (entries !in 1..frames.toLong() || box.dataSize.toLong() != 8L + entries * 4L) {
+                return false
+            }
+            var previous = 0L
+            var offset = box.start + 8
+            repeat(entries.toInt()) {
+                val sample = u32(offset)
+                if (sample <= previous || sample > frames) return false
+                previous = sample
+                offset += 4
+            }
+            return u32(box.start + 8) == 1L
         }
 
         private fun boxes(start: Int, end: Int): List<Box>? {

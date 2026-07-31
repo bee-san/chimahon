@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -71,7 +72,7 @@ class SceneVideoInputTest {
             outputFile = "/cache/output.avif",
             encoderName = TEST_AV1_ENCODER_NAME,
             contentSize = SceneVideoDimensions(width = 640, height = 360),
-            outputSize = SceneVideoDimensions(width = 640, height = 360),
+            outputSize = SceneVideoDimensions(width = 640, height = 368),
             tlsCaFile = "/files/cacert.pem",
         ).toList()
 
@@ -107,7 +108,7 @@ class SceneVideoInputTest {
         )
         assertEquals(1, arguments.count { it == "-c:v" })
         assertEquals(
-            "fps=8,scale=w=640:h=360,setsar=1",
+            "fps=8,scale=w=640:h=360,setsar=1,pad=w=640:h=368:x=0:y=4:color=black",
             arguments[arguments.indexOf("-vf") + 1],
         )
         assertEquals("/cache/output.avif", arguments.last())
@@ -135,12 +136,22 @@ class SceneVideoInputTest {
     @Test
     fun `AV1 padding uses explicit chroma aligned offsets`() {
         assertEquals(
-            "fps=8,scale=w=318:h=178,setsar=1,pad=w=320:h=180:x=0:y=0:color=black",
+            "fps=8,scale=w=318:h=178,setsar=1,pad=w=320:h=192:x=0:y=6:color=black",
             SceneFfmpegArguments.frameFilter(
                 contentSize = SceneVideoDimensions(width = 318, height = 178),
-                outputSize = SceneVideoDimensions(width = 320, height = 180),
+                outputSize = SceneVideoDimensions(width = 320, height = 192),
             ),
         )
+    }
+
+    @Test
+    fun `AV1 filter rejects a canvas that is not sixteen pixel aligned`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            SceneFfmpegArguments.frameFilter(
+                contentSize = SceneVideoDimensions(width = 320, height = 180),
+                outputSize = SceneVideoDimensions(width = 320, height = 180),
+            )
+        }
     }
 
     @Test
@@ -156,7 +167,7 @@ class SceneVideoInputTest {
                 outputFile = "/cache/scene.avif",
                 encoderName = TEST_AV1_ENCODER_NAME,
                 contentSize = SceneVideoDimensions(width = 640, height = 360),
-                outputSize = SceneVideoDimensions(width = 640, height = 360),
+                outputSize = SceneVideoDimensions(width = 640, height = 368),
                 tlsCaFile = caFile,
             ),
             SceneFfmpegArguments.videoProbe(input, input.value, caFile),
@@ -186,7 +197,7 @@ class SceneVideoInputTest {
                 outputFile = "/cache/scene.avif",
                 encoderName = TEST_AV1_ENCODER_NAME,
                 contentSize = SceneVideoDimensions(width = 640, height = 360),
-                outputSize = SceneVideoDimensions(width = 640, height = 360),
+                outputSize = SceneVideoDimensions(width = 640, height = 368),
                 tlsCaFile = "/files/cacert.pem",
             ),
         )
@@ -219,7 +230,7 @@ class SceneVideoInputTest {
                 outputFile = "/cache/scene.avif",
                 encoderName = TEST_AV1_ENCODER_NAME,
                 contentSize = SceneVideoDimensions(width = 640, height = 360),
-                outputSize = SceneVideoDimensions(width = 640, height = 360),
+                outputSize = SceneVideoDimensions(width = 640, height = 368),
             ),
             SceneFfmpegArguments.videoProbe(input, safValue),
             SceneFfmpegArguments.audioProbe(input, safValue),
@@ -251,7 +262,7 @@ class SceneVideoInputTest {
                 outputFile = "/cache/scene.avif",
                 encoderName = TEST_AV1_ENCODER_NAME,
                 contentSize = SceneVideoDimensions(width = 640, height = 360),
-                outputSize = SceneVideoDimensions(width = 640, height = 360),
+                outputSize = SceneVideoDimensions(width = 640, height = 368),
                 tlsCaFile = caFile,
             )
             .toList()
