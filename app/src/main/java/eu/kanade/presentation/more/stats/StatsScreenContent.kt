@@ -1229,13 +1229,22 @@ private fun TrendsContent(
         }
         // Query buckets are an implementation detail. Real dates anchor the unlabelled canvas and
         // make the same summary useful for daily, weekly, and monthly groupings.
-        val summary = stringResource(
-            KMR.strings.stats_activity_chart_summary,
-            formatLocalDate(points.first().range.start),
-            formatLocalDate(points.last().range.endInclusive),
-            formatTrendValue(total, trendMetric),
-            formatTrendValue(max, trendMetric),
-        )
+        val summary = if (total == max) {
+            stringResource(
+                KMR.strings.stats_activity_chart_summary_total,
+                formatLocalDate(points.first().range.start),
+                formatLocalDate(points.last().range.endInclusive),
+                formatTrendValue(total, trendMetric),
+            )
+        } else {
+            stringResource(
+                KMR.strings.stats_activity_chart_summary,
+                formatLocalDate(points.first().range.start),
+                formatLocalDate(points.last().range.endInclusive),
+                formatTrendValue(total, trendMetric),
+                formatTrendValue(max, trendMetric),
+            )
+        }
         NoteText(summary)
         Canvas(
             modifier = Modifier
