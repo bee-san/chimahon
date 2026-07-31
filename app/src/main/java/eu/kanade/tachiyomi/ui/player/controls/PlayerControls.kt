@@ -868,7 +868,7 @@ fun PlayerControls(
             onDismiss = dismissVideoOcr,
         )
 
-        PlayerSceneMiningProgressDialog(
+        PlayerSceneMiningProgressOverlay(
             progress = sceneMiningProgress,
             onCancel = viewModel::cancelSceneMiningPreCommit,
         )
