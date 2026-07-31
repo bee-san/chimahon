@@ -95,7 +95,6 @@ internal class AndroidSceneCaptureService private constructor(
     ): AnkiScreenshotPreparation {
         sceneDirectory.mkdirs()
         val outputBaseName = UUID.randomUUID().toString()
-        val intermediate = File(sceneDirectory, "$outputBaseName.obu")
         val output = File(sceneDirectory, "$outputBaseName.avif")
         val lease = inputAcquirer.acquire(input)
             ?: run {
@@ -103,11 +102,11 @@ internal class AndroidSceneCaptureService private constructor(
                 return AnkiScreenshotPreparation.Failed(stillFallback = null)
             }
         val encodeArguments = try {
-            SceneFfmpegArguments.av1MediaCodecPackets(
+            SceneFfmpegArguments.animatedAvifMediaCodec(
                 input = input,
                 acquiredInputValue = lease.ffmpegValue,
                 range = range,
-                outputFile = intermediate.absolutePath,
+                outputFile = output.absolutePath,
                 encoderName = encoder.name,
                 contentSize = encoder.contentSize,
                 outputSize = encoder.outputSize,
@@ -119,70 +118,25 @@ internal class AndroidSceneCaptureService private constructor(
             return AnkiScreenshotPreparation.Failed(stillFallback = null)
         }
         val inputCleanup = SceneNativeCleanup(lease::close)
-        val intermediateCleanup = SceneNativeCleanup(intermediate::delete)
-        var outputCleanup: SceneNativeCleanup? = null
+        val outputCleanup = SceneNativeCleanup(output::delete)
         var transferred = false
         return try {
             val encodeResult = try {
                 commandExecutor.executeFfmpeg(encodeArguments) {
                     inputCleanup.nativeFinished()
-                    intermediateCleanup.nativeFinished()
+                    outputCleanup.nativeFinished()
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 inputCleanup.nativeFinished()
-                intermediateCleanup.nativeFinished()
+                outputCleanup.nativeFinished()
                 throw e
             }
             inputCleanup.release()
             when (encodeResult) {
                 SceneCommandResult.Failed -> {
-                    sceneLog { "prepare: pass 1 (av1_mediacodec encode) failed" }
-                    return AnkiScreenshotPreparation.Failed(stillFallback = null)
-                }
-                is SceneCommandResult.Success -> Unit
-            }
-            val rawPackets = intermediate
-                .takeIf { it.isFile && it.length() in 1..MAX_INTERMEDIATE_BYTES }
-                ?.readBytes()
-            if (rawPackets == null) {
-                sceneLog {
-                    "prepare: intermediate unusable, isFile=${intermediate.isFile} " +
-                        "length=${intermediate.length()} max=$MAX_INTERMEDIATE_BYTES"
-                }
-                return AnkiScreenshotPreparation.Failed(stillFallback = null)
-            }
-            val normalized = MediaCodecAv1StreamNormalizer.normalize(rawPackets)
-            if (normalized == null) {
-                sceneLog { "prepare: AV1 packet normalization rejected ${rawPackets.size} bytes" }
-                return AnkiScreenshotPreparation.Failed(stillFallback = null)
-            }
-            sceneLog { "prepare: normalized ${rawPackets.size} -> ${normalized.size} bytes" }
-            intermediate.writeBytes(normalized)
-
-            val remuxArguments = SceneFfmpegArguments.animatedAvifFromObu(
-                inputFile = intermediate.absolutePath,
-                outputFile = output.absolutePath,
-            )
-            val currentOutputCleanup = SceneNativeCleanup(output::delete)
-            outputCleanup = currentOutputCleanup
-            val finishIntermediateRemuxUse = intermediateCleanup.retainNativeUse()
-            val remuxResult = try {
-                commandExecutor.executeFfmpeg(remuxArguments) {
-                    finishIntermediateRemuxUse()
-                    currentOutputCleanup.nativeFinished()
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                finishIntermediateRemuxUse()
-                currentOutputCleanup.nativeFinished()
-                throw e
-            }
-            when (remuxResult) {
-                SceneCommandResult.Failed -> {
-                    sceneLog { "prepare: pass 2 (AVIF remux) failed" }
+                    sceneLog { "prepare: direct av1_mediacodec AVIF encode failed" }
                     return AnkiScreenshotPreparation.Failed(stillFallback = null)
                 }
                 is SceneCommandResult.Success -> Unit
@@ -214,7 +168,7 @@ internal class AndroidSceneCaptureService private constructor(
                 animation = animation,
                 stillFallback = null,
             )
-            undeliveredOutput.set(currentOutputCleanup)
+            undeliveredOutput.set(outputCleanup)
             transferred = true
             sceneLog {
                 "prepare: success, ${info.frameCount} frames ${info.width}x${info.height} " +
@@ -228,9 +182,8 @@ internal class AndroidSceneCaptureService private constructor(
             return AnkiScreenshotPreparation.Failed(stillFallback = null)
         } finally {
             inputCleanup.release()
-            intermediateCleanup.release()
             if (!transferred) {
-                outputCleanup?.release() ?: output.delete()
+                outputCleanup.release()
             }
         }
     }
@@ -279,7 +232,6 @@ internal class AndroidSceneCaptureService private constructor(
 
     internal companion object {
         private const val SCENE_CACHE_DIRECTORY = "chimahon_scene_capture"
-        private const val MAX_INTERMEDIATE_BYTES = 12L * 1024L * 1024L
 
         fun forTests(
             sceneDirectory: File,

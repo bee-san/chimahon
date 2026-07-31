@@ -55,6 +55,15 @@ class AnimatedAvifValidatorTest {
         assertNull(validate(avif(mediaBytes = 3)))
     }
 
+    @Test
+    fun `requires the first AV1 sample to be a sync sample`() {
+        assertNull(validate(avif(syncSamples = listOf(2))))
+        assertEquals(
+            AnimatedAvifInfo(width = 64, height = 48, frameCount = 4, totalDurationMillis = 500),
+            validate(avif(syncSamples = listOf(1, 3))),
+        )
+    }
+
     private fun avif(
         majorBrand: String = "avis",
         brands: List<String> = listOf("avif", "MA1B"),
@@ -65,6 +74,7 @@ class AnimatedAvifValidatorTest {
         frameDuration: Int = 1_000,
         sampleSizes: List<Int> = List(frames) { 1 },
         mediaBytes: Int = sampleSizes.sum(),
+        syncSamples: List<Int>? = null,
     ): ByteArray {
         val fileType = majorBrand.ascii() + ByteArray(4) + brands.fold(byteArrayOf()) { bytes, brand -> bytes + brand.ascii() }
         val sampleEntry = box(
@@ -84,6 +94,12 @@ class AnimatedAvifValidatorTest {
             writeUInt32(8, sampleSizes.size)
             sampleSizes.forEachIndexed { index, size -> writeUInt32(12 + index * 4, size) }
         }
+        val syncSampleTable = syncSamples?.let { samples ->
+            ByteArray(8 + samples.size * 4).apply {
+                writeUInt32(4, samples.size)
+                samples.forEachIndexed { index, sample -> writeUInt32(8 + index * 4, sample) }
+            }
+        }
         val mediaHeader = ByteArray(24).apply {
             writeUInt32(12, 8_000)
             writeUInt32(16, frames * frameDuration)
@@ -91,7 +107,8 @@ class AnimatedAvifValidatorTest {
         val sampleTable =
             box("stsd", sampleDescription) +
                 box("stts", sampleTiming) +
-                box("stsz", sampleSizeTable)
+                box("stsz", sampleSizeTable) +
+                (syncSampleTable?.let { box("stss", it) } ?: byteArrayOf())
         val movie = box(
             "moov",
             box(
