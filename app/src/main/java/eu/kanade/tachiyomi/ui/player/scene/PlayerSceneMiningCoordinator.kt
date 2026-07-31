@@ -26,7 +26,10 @@ internal fun interface SceneStillFallbackEncoder {
 
 internal object AndroidSceneStillFallbackEncoder : SceneStillFallbackEncoder {
     override suspend fun encode(request: SceneCaptureRequest): AnkiMediaSource.Bytes? {
-        val bitmap = request.fallbackBitmapOrNull() ?: return null
+        val bitmap = request.fallbackBitmapOrNull() ?: run {
+            sceneLog { "stillFallback: no bitmap available" }
+            return null
+        }
         return withContext(Dispatchers.Default) {
             try {
                 val bytes = ImageEncoder.encode(bitmap).bytes.takeIf(ByteArray::isNotEmpty) ?: return@withContext null
@@ -40,7 +43,8 @@ internal object AndroidSceneStillFallbackEncoder : SceneStillFallbackEncoder {
                 )
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                sceneLog(throwable = e) { "stillFallback: encode threw" }
                 null
             }
         }
@@ -120,6 +124,7 @@ internal class PlayerSceneMiningCoordinator(
         request: SceneCaptureRequest,
         mode: AnkiScreenshotMode,
     ): AnkiScreenshotPreparation {
+        sceneLog { "prepareScreenshot: resolved screenshot mode=${mode.storageValue}" }
         return when (mode) {
             AnkiScreenshotMode.NONE -> AnkiScreenshotPreparation.Still(null)
             AnkiScreenshotMode.FULL,
@@ -177,6 +182,10 @@ internal class PlayerSceneMiningCoordinator(
             request.videoInput == null ||
             request.resolvedTiming == null
         ) {
+            sceneLog {
+                "prepareAnimated: bailed before capture, videoInput null=${request.videoInput == null} " +
+                    "resolvedTiming null=${request.resolvedTiming == null}"
+            }
             return AnkiScreenshotPreparation.Failed(stillEncoder.encode(request))
         }
         val prepared = try {
@@ -184,13 +193,16 @@ internal class PlayerSceneMiningCoordinator(
                 sceneCaptureService().prepare(request)
             }
         } catch (_: TimeoutCancellationException) {
+            sceneLog { "prepareAnimated: timed out after ${sceneTimeoutMillis}ms" }
             return AnkiScreenshotPreparation.Failed(stillEncoder.encode(request))
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            sceneLog(throwable = e) { "prepareAnimated: capture threw" }
             return AnkiScreenshotPreparation.Failed(stillEncoder.encode(request))
         }
         if (prepared !is AnkiScreenshotPreparation.Animated) {
+            sceneLog { "prepareAnimated: capture returned ${prepared::class.simpleName}, not Animated" }
             return prepared.withStillFallback(request)
         }
 
