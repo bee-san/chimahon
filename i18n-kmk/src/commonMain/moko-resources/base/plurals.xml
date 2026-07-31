@@ -17,10 +17,6 @@
         <item quantity="one">%1$s conflicting immersion-statistics row was quarantined for review.</item>
         <item quantity="other">%1$s conflicting immersion-statistics rows were quarantined for review.</item>
     </plurals>
-    <plurals name="stats_bucket_count">
-        <item quantity="one">%1$d bucket</item>
-        <item quantity="other">%1$d buckets</item>
-    </plurals>
     <plurals name="stats_chapter_count">
         <item quantity="one">%1$s chapter</item>
         <item quantity="other">%1$s chapters</item>

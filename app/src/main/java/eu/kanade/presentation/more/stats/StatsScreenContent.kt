@@ -1221,19 +1221,21 @@ private fun TrendsContent(
     val max = values.maxOrNull() ?: 0L
     val total = values.sum()
     val barColor = MaterialTheme.colorScheme.primary
-    val bucketCount = pluralStringResource(KMR.plurals.stats_bucket_count, points.size, points.size)
-    val summary = stringResource(
-        KMR.strings.stats_activity_chart_summary,
-        bucketCount,
-        formatTrendValue(total, trendMetric),
-        formatTrendValue(max, trendMetric),
-    )
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         SectionTitle(title)
         if (max <= 0L) {
             EmptyState()
             return@Column
         }
+        // Query buckets are an implementation detail. Real dates anchor the unlabelled canvas and
+        // make the same summary useful for daily, weekly, and monthly groupings.
+        val summary = stringResource(
+            KMR.strings.stats_activity_chart_summary,
+            formatLocalDate(points.first().range.start),
+            formatLocalDate(points.last().range.endInclusive),
+            formatTrendValue(total, trendMetric),
+            formatTrendValue(max, trendMetric),
+        )
         NoteText(summary)
         Canvas(
             modifier = Modifier

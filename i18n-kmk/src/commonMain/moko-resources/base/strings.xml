@@ -279,7 +279,7 @@
     <string name="stats_active_days">Active days</string>
     <string name="stats_active_time">Active time</string>
     <string name="stats_activity_chart">Activity chart</string>
-    <string name="stats_activity_chart_summary">%1$s; %2$s total; highest bucket %3$s.</string>
+    <string name="stats_activity_chart_summary">%1$s – %2$s · %3$s total · peak %4$s.</string>
     <string name="stats_activity_heatmap">Activity heatmap</string>
     <string name="stats_all">All</string>
     <string name="stats_anki_capabilities">Available reports</string>
@@ -382,7 +382,7 @@
     <string name="stats_character_mode_priority">Priority</string>
     <string name="stats_character_overview">Character coverage</string>
     <string name="stats_character_priority_breakdown">Priority breakdown</string>
-    <string name="stats_character_priority_formula">Priority formula v1: mixed mode weights inverse frequency rank 0.6, JLPT band 0.25, and school-grade band 0.15. Missing metadata contributes zero.</string>
+    <string name="stats_character_priority_formula">Mixed priority balances frequency rank, JLPT level, and school grade. Characters with missing metadata use the information available.</string>
     <string name="stats_character_priority_formula_version">Priority formula version %1$d</string>
     <string name="stats_character_priority_frequency">Frequency priority</string>
     <string name="stats_character_priority_frequency_component">Frequency component</string>
