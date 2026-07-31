@@ -20,6 +20,7 @@ package eu.kanade.tachiyomi.ui.player
 import android.content.Context
 import android.os.Build
 import android.os.Environment
+import android.os.Looper
 import android.util.AttributeSet
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
@@ -51,15 +52,42 @@ class AniyomiMPVView(context: Context, attributes: AttributeSet) : BaseMPVView(c
     var isExiting = false
     var surfaceReady = false
         private set
+    private val playbackLoadGate = SurfacePlaybackLoadGate { url ->
+        if (isExiting) {
+            false
+        } else {
+            MPVLib.command(arrayOf("loadfile", url, "replace"))
+            true
+        }
+    }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         super.surfaceCreated(holder)
         surfaceReady = true
+        playbackLoadGate.onSurfaceCreated()
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
+        playbackLoadGate.onSurfaceDestroyed()
         surfaceReady = false
         super.surfaceDestroyed(holder)
+    }
+
+    fun loadFileWhenSurfaceReady(url: String) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            playbackLoadGate.load(url)
+        } else {
+            post { playbackLoadGate.load(url) }
+        }
+    }
+
+    fun retryPendingLoad() {
+        playbackLoadGate.retryPending()
+    }
+
+    fun destroyPlayer() {
+        playbackLoadGate.close()
+        destroy()
     }
 
     private fun getPropertyInt(property: String): Int? {
