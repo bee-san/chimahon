@@ -220,7 +220,6 @@ class SourcePreferencesScreen(val sourceId: Long) : Screen() {
         method.isAccessible = true
         method.invoke(this, view)
     }
-
 }
 
 class SourcePreferencesFragment : PreferenceFragmentCompat() {

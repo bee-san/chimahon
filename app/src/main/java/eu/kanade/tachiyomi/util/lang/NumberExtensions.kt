@@ -14,7 +14,7 @@ fun Long.toCountString(): String {
     val suffixes = arrayOf("k", "m", "b", "t", "q", "Q")
     val suffix = suffixes[exp - 1]
     val value = this / 1000.0.pow(exp.toDouble())
-    
+
     val pattern = when (suffix) {
         "k" -> "0.#"
         else -> "0.###"

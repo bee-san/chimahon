@@ -11,13 +11,13 @@ import tachiyomi.data.episode.EpisodeSanitizer
 import tachiyomi.data.source.NoResultsException
 import tachiyomi.domain.entries.anime.model.Anime
 import tachiyomi.domain.episode.interactor.GetEpisodesByAnimeId
-import tachiyomi.source.local.entries.anime.isLocal
 import tachiyomi.domain.episode.interactor.ShouldUpdateDbEpisode
 import tachiyomi.domain.episode.interactor.UpdateEpisode
 import tachiyomi.domain.episode.model.Episode
 import tachiyomi.domain.episode.model.toEpisodeUpdate
 import tachiyomi.domain.episode.repository.EpisodeRepository
 import tachiyomi.domain.episode.service.EpisodeRecognition
+import tachiyomi.source.local.entries.anime.isLocal
 import java.lang.Long.max
 import java.time.ZonedDateTime
 import java.util.TreeSet

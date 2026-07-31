@@ -11,6 +11,7 @@ import eu.kanade.tachiyomi.util.system.buildNotificationChannel
 import eu.kanade.tachiyomi.util.system.buildNotificationChannelGroup
 import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.i18n.MR
+import tachiyomi.i18n.kmk.KMR
 
 /**
  * Class to manage the basic information of all the notifications used in the app.
@@ -22,6 +23,8 @@ object Notifications {
      */
     const val CHANNEL_COMMON = "common_channel"
     const val ID_DOWNLOAD_IMAGE = 2
+    const val CHANNEL_GOAL_REMINDERS = "immersion_goal_reminders"
+    const val ID_GOAL_REMINDER = -1801
 
     const val CHANNEL_TORRENT_SERVER = "torrent_server_channel"
     const val ID_TORRENT_SERVER = -601
@@ -176,6 +179,10 @@ object Notifications {
             listOf(
                 buildNotificationChannel(CHANNEL_COMMON, IMPORTANCE_LOW) {
                     setName(context.stringResource(MR.strings.channel_common))
+                },
+                buildNotificationChannel(CHANNEL_GOAL_REMINDERS, IMPORTANCE_DEFAULT) {
+                    setName(context.stringResource(KMR.strings.stats_goal_reminder_channel))
+                    setShowBadge(false)
                 },
                 buildNotificationChannel(CHANNEL_TORRENT_SERVER, IMPORTANCE_LOW) {
                     setName("Torrent server")

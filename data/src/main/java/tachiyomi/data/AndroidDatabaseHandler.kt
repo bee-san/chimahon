@@ -22,6 +22,17 @@ class AndroidDatabaseHandler(
 
     val suspendingTransactionId = ThreadLocal<Int>()
 
+    /**
+     * Runs [block] against the raw driver, for statements that have to be built
+     * at runtime rather than generated -- the immersion portable archive walks
+     * `pragma_table_info` to copy arbitrary tables, so its column list is not
+     * known when SQLDelight generates code.
+     */
+    suspend fun <T> awaitRawDriver(
+        inTransaction: Boolean = false,
+        block: (SqlDriver) -> T,
+    ): T = dispatch(inTransaction) { block(driver) }
+
     override suspend fun <T> await(inTransaction: Boolean, block: suspend Database.() -> T): T {
         return dispatch(inTransaction, block)
     }
@@ -101,8 +112,11 @@ class AndroidDatabaseHandler(
             return withTransaction { block(db) }
         }
 
-        // If we're currently in the transaction thread, there's no need to dispatch our query.
-        if (driver.currentTransaction() != null) {
+        // If this coroutine owns the current suspending transaction, continue on its thread.
+        // Checking only currentTransaction() is not enough: another coroutine's transaction can
+        // be open on this thread, and running the block there would join a transaction this
+        // caller does not own.
+        if (driver.currentTransaction() != null && suspendingTransactionId.get() != null) {
             return block(db)
         }
 

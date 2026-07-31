@@ -129,6 +129,9 @@ private fun formatSeconds(seconds: Long): String {
     val s = seconds % 60
     val m = (seconds / 60) % 60
     val h = seconds / 3600
-    return if (h > 0) "%d:%02d:%02d".format(h, m, s)
-    else "%02d:%02d".format(m, s)
+    return if (h > 0) {
+        "%d:%02d:%02d".format(h, m, s)
+    } else {
+        "%02d:%02d".format(m, s)
+    }
 }

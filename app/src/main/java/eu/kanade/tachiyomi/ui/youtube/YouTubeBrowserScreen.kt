@@ -100,7 +100,7 @@ class YouTubeBrowserScreen(var listingQuery: String? = null, var targetUrl: Stri
                     },
                     actions = {
                         IconButton(
-                            onClick = { navigator.pop() }
+                            onClick = { navigator.pop() },
                         ) {
                             Icon(
                                 Icons.Outlined.Close,
@@ -249,16 +249,11 @@ class YouTubeBrowserScreen(var listingQuery: String? = null, var targetUrl: Stri
                                     "Android",
                                 )
 
-                                if (targetUrl != null)
-                                {
+                                if (targetUrl != null) {
                                     loadUrl(YouTubeSource.baseUrl + targetUrl!!)
-                                }
-                                else if (listingQuery == GetRemoteAnime.QUERY_LATEST)
-                                {
+                                } else if (listingQuery == GetRemoteAnime.QUERY_LATEST) {
                                     loadUrl(YouTubeSource.baseUrl + YouTubeSource.SUBSCRIPTIONS_SUFFIX)
-                                }
-                                else
-                                {
+                                } else {
                                     loadUrl(YouTubeSource.baseUrl)
                                 }
                             }
@@ -347,7 +342,7 @@ class YouTubeBrowserScreen(var listingQuery: String? = null, var targetUrl: Stri
     });
     openInApp(window.location.href);
 })();
-""".trimIndent()
+        """.trimIndent()
         view?.evaluateJavascript(script, null)
     }
 
@@ -364,7 +359,7 @@ class YouTubeBrowserScreen(var listingQuery: String? = null, var targetUrl: Stri
         } catch (e) {}
     });
 })();
-""".trimIndent(),
+            """.trimIndent(),
             null,
         )
     }

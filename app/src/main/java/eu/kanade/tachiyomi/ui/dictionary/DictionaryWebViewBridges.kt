@@ -41,7 +41,9 @@ internal class DictionaryReadyBridge(
                         override fun onComplete(requestId: Long) {
                             if (state.contentReadyGeneration != generation ||
                                 state.nextContentReadyRequestId != requestId
-                            ) return
+                            ) {
+                                return
+                            }
                             stateProvider()?.onContentReady?.invoke()
                         }
                     },
@@ -61,9 +63,11 @@ internal class DictionaryReadyBridge(
  */
 internal class PayloadBridge {
     @Volatile var rawPayloadJson: String = ""
+
     @Volatile var rawEntryJsons: List<String> = emptyList()
 
     @JavascriptInterface fun getPayloadJson(): String = rawPayloadJson
+
     @JavascriptInterface fun getEntryCount(): Int = rawEntryJsons.size
 
     @JavascriptInterface fun getEntry(index: Int): String? = rawEntryJsons.getOrNull(index)
@@ -118,10 +122,12 @@ internal class WordAudioBridge(
             val results = wordAudioService.findWordAudio(term, reading)
             val jsonArray = org.json.JSONArray().apply {
                 results.forEach { result ->
-                    put(org.json.JSONObject().apply {
-                        put("name", result.name)
-                        put("url", result.url)
-                    })
+                    put(
+                        org.json.JSONObject().apply {
+                            put("name", result.name)
+                            put("url", result.url)
+                        },
+                    )
                 }
             }.toString()
             webViewProvider()?.evaluateJavascript(

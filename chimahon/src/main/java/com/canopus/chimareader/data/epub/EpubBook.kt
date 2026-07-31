@@ -69,7 +69,7 @@ data class EpubBook(
      */
     fun getChapterCharacters(index: Int): Int {
         if (chapterLengthCache.containsKey(index)) return chapterLengthCache[index]!!
-        
+
         val spineType = linearSpineItems.getOrNull(index)?.type
         if (spineType == SpineItemType.IMAGE_ONLY) {
             chapterLengthCache[index] = 0
@@ -78,7 +78,7 @@ data class EpubBook(
 
         return try {
             val content = EpubParser().parseChapter(this, index) ?: return 0
-            
+
             // Use the same approach as Hoshi Reader's characterCount():
             // 1. Extract <body>...</body>
             // 2. Strip <rt> (furigana), <script>, <style>, then ALL tags
@@ -104,17 +104,17 @@ data class EpubBook(
             // TTSU character filter (matching Hoshi's regex with \p{Unified_Ideograph} and \p{IsHangul})
             val ttsuRegex = Regex("[^0-9A-Za-z○◯々-〇〻ぁ-ゖゝ-ゞァ-ヺー０-９Ａ-Ｚａ-ｚｦ-ﾝ\\p{IsHan}\\p{IsHangul}]")
             val filteredText = text.replace(ttsuRegex, "")
-            
+
             val charCount = filteredText.codePointCount(0, filteredText.length)
             chapterLengthCache[index] = charCount
             charCount
-        } catch(e: Exception) {
+        } catch (e: Exception) {
             0
         }
     }
 
     /**
-     * Converts an absolute character count back into a 
+     * Converts an absolute character count back into a
      * specific chapter index and decimal progress (0.0 to 1.0) for that chapter.
      */
     fun convertCharsToProgress(totalExploredChars: Int): Pair<Int, Double> {

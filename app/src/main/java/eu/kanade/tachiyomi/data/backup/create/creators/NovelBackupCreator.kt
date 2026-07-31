@@ -9,16 +9,16 @@ import com.canopus.chimareader.data.md5Hex
 import eu.kanade.tachiyomi.data.backup.models.BackupNovel
 import eu.kanade.tachiyomi.data.backup.models.BackupNovelCategory
 import eu.kanade.tachiyomi.data.backup.models.BackupStatEntry
-import java.io.File
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
+import java.io.File
 
 class NovelBackupCreator(
     private val context: Context,
-    private val novelCategoryStorage: com.canopus.chimareader.data.NovelCategoryStorage = Injekt.get()
+    private val novelCategoryStorage: com.canopus.chimareader.data.NovelCategoryStorage = Injekt.get(),
 ) {
 
-    private val TAG = "NovelBackupCreator"
+    private val logTag = "NovelBackupCreator"
 
     fun backupNovels(): List<BackupNovel> {
         val backupNovelsById = linkedMapOf<String, BackupNovel>()
@@ -48,7 +48,7 @@ class NovelBackupCreator(
                     mergeBackupNovel(existing, backupNovel)
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to backup novel in ${entry.directory.name}", e)
+                Log.e(logTag, "Failed to backup novel in ${entry.directory.name}", e)
             }
         }
 
@@ -62,7 +62,7 @@ class NovelBackupCreator(
                 id = it.id,
                 name = it.name,
                 order = it.order.toLong(),
-                flags = it.flags.toLong()
+                flags = it.flags.toLong(),
             )
         }
     }
@@ -152,5 +152,4 @@ class NovelBackupCreator(
         val directory: File,
         val metadata: BookMetadata,
     )
-
 }

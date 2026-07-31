@@ -176,7 +176,6 @@ internal class PermissionStep : OnboardingStep {
                 )
             }
             // KMK <--
-
         }
     }
 

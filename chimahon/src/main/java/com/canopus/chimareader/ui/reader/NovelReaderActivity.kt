@@ -11,16 +11,16 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.core.graphics.ColorUtils
 import androidx.core.view.WindowCompat
+import chimahon.ocr.OcrLanguage
+import chimahon.ocr.OcrResult
 import com.canopus.chimareader.data.BookMetadata
 import com.canopus.chimareader.data.BookStorage
 import com.canopus.chimareader.data.NovelReaderSettings
-import chimahon.ocr.OcrLanguage
-import chimahon.ocr.OcrResult
-import androidx.core.graphics.ColorUtils
 import java.io.File
 
 open class NovelReaderActivity : ComponentActivity() {
@@ -29,15 +29,34 @@ open class NovelReaderActivity : ComponentActivity() {
         internal const val EXTRA_BOOK_DIR = "extra_book_dir"
 
         /**
+         * Identifies the source range a deep link points at, so statistics can
+         * open the exact passage a character was read in rather than the book.
+         */
+        private const val EXTRA_SOURCE_DOCUMENT_ID = "extra_source_document_id"
+        private const val EXTRA_SOURCE_CHAPTER_INDEX = "extra_source_chapter_index"
+        private const val EXTRA_SOURCE_SECTION_ID = "extra_source_section_id"
+        private const val EXTRA_SOURCE_RANGE_START = "extra_source_range_start"
+
+        /**
          * Set to [ChimaReaderActivity] from AppModule so that BookshelfScreen's
          * existing [launch] call lands in the app-side subclass (which has the
          * lookup popup), without requiring chimahon to import from app.
          */
         var activityClass: Class<out ComponentActivity> = NovelReaderActivity::class.java
 
-        fun launch(context: Context, bookDir: File) {
+        fun launch(
+            context: Context,
+            bookDir: File,
+            sourceTarget: NovelSourceNavigationTarget? = null,
+        ) {
             val intent = Intent(context, activityClass).apply {
                 putExtra(EXTRA_BOOK_DIR, bookDir.absolutePath)
+                sourceTarget?.let { target ->
+                    putExtra(EXTRA_SOURCE_DOCUMENT_ID, target.documentId)
+                    putExtra(EXTRA_SOURCE_CHAPTER_INDEX, target.chapterIndex)
+                    putExtra(EXTRA_SOURCE_SECTION_ID, target.sectionId)
+                    putExtra(EXTRA_SOURCE_RANGE_START, target.rangeStart)
+                }
                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
             }
             context.startActivity(intent)
@@ -49,6 +68,26 @@ open class NovelReaderActivity : ComponentActivity() {
 
     protected var readerViewModel by androidx.compose.runtime.mutableStateOf<ReaderViewModel?>(null)
     protected var bookMetadata: BookMetadata? = null
+
+    /**
+     * Source position a deep link asked for, if the link matched this book.
+     *
+     * Carried through the intent and exposed for subclasses, but the reader does
+     * not scroll to it yet: doing so needs a round trip through the WebView's
+     * pagination, which is not wired up. Until it is, a statistics deep link
+     * opens the right book at the reader's own resume position rather than at the
+     * exact passage. That is a smaller surprise than opening the wrong book, and
+     * it is why [StatsSourceNavigator] still reports success.
+     */
+    protected var requestedSourceTarget: RequestedSourcePosition? = null
+        private set
+
+    data class RequestedSourcePosition(
+        val documentId: String,
+        val chapterIndex: Int,
+        val sectionId: String,
+        val rangeStart: Int,
+    )
     protected var showHud by androidx.compose.runtime.mutableStateOf(false)
 
     protected open fun handleVolumeKey(forward: Boolean): Boolean {
@@ -64,7 +103,8 @@ open class NovelReaderActivity : ComponentActivity() {
             android.view.KeyEvent.KEYCODE_DPAD_LEFT, android.view.KeyEvent.KEYCODE_DPAD_RIGHT,
             android.view.KeyEvent.KEYCODE_DPAD_UP, android.view.KeyEvent.KEYCODE_DPAD_DOWN,
             android.view.KeyEvent.KEYCODE_PAGE_UP, android.view.KeyEvent.KEYCODE_PAGE_DOWN,
-            android.view.KeyEvent.KEYCODE_MENU -> return true
+            android.view.KeyEvent.KEYCODE_MENU,
+            -> return true
         }
         return super.onKeyDown(keyCode, event)
     }
@@ -187,6 +227,21 @@ open class NovelReaderActivity : ComponentActivity() {
 
         val metadata = BookStorage.loadMetadata(root) ?: BookMetadata(folder = root.name)
         bookMetadata = metadata
+
+        // A deep link that names a different book than the one on disk is stale
+        // -- the library entry was replaced. Opening the book anyway is more
+        // useful than refusing, so only the in-book position is discarded.
+        requestedSourceTarget = intent.getStringExtra(EXTRA_SOURCE_DOCUMENT_ID)
+            ?.takeIf { it == BookStorage.bookIdentityKey(metadata) }
+            ?.let { documentId ->
+                RequestedSourcePosition(
+                    documentId = documentId,
+                    chapterIndex = intent.getIntExtra(EXTRA_SOURCE_CHAPTER_INDEX, -1),
+                    sectionId = intent.getStringExtra(EXTRA_SOURCE_SECTION_ID).orEmpty(),
+                    rangeStart = intent.getIntExtra(EXTRA_SOURCE_RANGE_START, -1),
+                )
+            }
+            ?.takeIf { it.chapterIndex >= 0 && it.sectionId.isNotBlank() && it.rangeStart >= 0 }
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
 

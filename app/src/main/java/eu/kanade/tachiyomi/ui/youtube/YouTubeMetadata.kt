@@ -25,8 +25,7 @@ fun Video.allowsExternalSubtitleLookup(): Boolean {
         .none { it.trim().equals(DISABLE_EXTERNAL_SUBTITLE_LOOKUP, ignoreCase = true) }
 }
 
-data class YouTubeVideoMetadata
-(
+data class YouTubeVideoMetadata(
     // Video
     var videoId: String,
     var videoName: String,
@@ -45,8 +44,7 @@ data class YouTubeVideoMetadata
     var channelUrl: String,
 )
 
-data class YouTubeChannelMetadata
-(
+data class YouTubeChannelMetadata(
     var id: String,
     var name: String,
     var url: String,

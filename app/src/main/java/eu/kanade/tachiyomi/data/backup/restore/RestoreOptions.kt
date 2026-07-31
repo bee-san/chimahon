@@ -16,6 +16,7 @@ data class RestoreOptions(
     // SY <--
     // Chimahon -->
     val novels: Boolean = true,
+    val immersionStats: Boolean = true,
     val history: Boolean = true,
     // Chimahon <--
     val animeEntries: Boolean = true,
@@ -34,6 +35,10 @@ data class RestoreOptions(
         novels,
         // Chimahon <--
         animeEntries,
+        // Chimahon -->
+        immersionStats,
+        history,
+        // Chimahon <--
     )
 
     fun canRestore() =
@@ -44,6 +49,8 @@ data class RestoreOptions(
             sourceSettings /* SY --> */ ||
             savedSearchesFeeds /* SY <-- */ ||
             novels ||
+            immersionStats ||
+            history ||
             animeEntries
 
     companion object {
@@ -93,6 +100,11 @@ data class RestoreOptions(
                 getter = RestoreOptions::novels,
                 setter = { options, enabled -> options.copy(novels = enabled) },
             ),
+            Entry(
+                label = KMR.strings.backup_option_immersion_stats,
+                getter = RestoreOptions::immersionStats,
+                setter = { options, enabled -> options.copy(immersionStats = enabled) },
+            ),
             // Chimahon <--
         )
 
@@ -107,6 +119,8 @@ data class RestoreOptions(
             // SY <--
             // Chimahon -->
             novels = array.getOrElse(6) { true },
+            immersionStats = array.getOrElse(8) { true },
+            history = array.getOrElse(9) { true },
             // Chimahon <--
             animeEntries = array.getOrElse(7) { true },
         )

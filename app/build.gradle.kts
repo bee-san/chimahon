@@ -242,7 +242,6 @@ dependencies {
 
     implementation(libs.bundles.sqlite)
 
-
     implementation(kotlinx.reflect)
     implementation(kotlinx.immutables)
 

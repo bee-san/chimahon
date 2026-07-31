@@ -1,0 +1,724 @@
+package com.canopus.chimareader.stats.capture
+
+import io.kotest.matchers.collections.shouldHaveSize
+import io.kotest.matchers.shouldBe
+import io.kotest.matchers.types.shouldBeInstanceOf
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+import tachiyomi.domain.immersion.model.EventType
+import tachiyomi.domain.immersion.model.ImmersionSession
+import tachiyomi.domain.immersion.model.ImmersionTitle
+import tachiyomi.domain.immersion.model.MediaKind
+import tachiyomi.domain.immersion.model.MillisecondDuration
+import tachiyomi.domain.immersion.model.NetCharacterProgress
+import tachiyomi.domain.immersion.model.NonNegativeCounter
+import tachiyomi.domain.immersion.model.RawTextRetention
+import tachiyomi.domain.immersion.model.SessionId
+import tachiyomi.domain.immersion.model.SessionStatus
+import tachiyomi.domain.immersion.model.SourceUnitId
+import tachiyomi.domain.immersion.service.CaptureCommand
+import tachiyomi.domain.immersion.service.CaptureSuppressionReason
+import tachiyomi.domain.immersion.service.FinalizeReason
+import tachiyomi.domain.immersion.service.ImmersionCaptureAdapter
+import tachiyomi.domain.immersion.service.ImmersionDiagnosticErrorCode
+import tachiyomi.domain.immersion.service.ImmersionRecorder
+import tachiyomi.domain.immersion.service.ImmersionRecorderSnapshot
+import tachiyomi.domain.immersion.service.ImmersionSessionState
+import tachiyomi.domain.immersion.service.ImmersionShadowResult
+import tachiyomi.domain.immersion.service.ImmersionStatsDiagnosticsStore
+import tachiyomi.domain.immersion.service.InteractionProvenance
+import tachiyomi.domain.immersion.service.PauseReason
+import tachiyomi.domain.immersion.service.RecordResult
+import tachiyomi.domain.immersion.service.ResumeReason
+import tachiyomi.domain.immersion.service.SessionContext
+import tachiyomi.domain.immersion.service.SessionHandle
+import tachiyomi.domain.immersion.service.SessionStartResult
+import java.time.Instant
+import java.time.ZoneId
+import java.util.UUID
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class NovelCaptureAdapterTest {
+
+    @BeforeEach
+    fun resetReport() {
+        NovelCaptureReconciliationReporter.resetForTest()
+    }
+
+    @Test
+    fun `forward reading records canonical Unicode gross unique and signed net metrics`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+
+        adapter.start("chapter-1.xhtml", 100)
+        adapter.onVisibleRanges(
+            "chapter-1.xhtml",
+            ranges(NovelVisibleRange(0, 6, "日本A😀 한")),
+        )
+        adapter.onProgress(120)
+        adapter.finalize(legacy(net = 20)).await()
+
+        val exposure = recorder.commands.filterIsInstance<CaptureCommand.Exposure>().single()
+        exposure.grossCharacters shouldBe NonNegativeCounter(4)
+        exposure.uniqueSourceCharacters shouldBe NonNegativeCounter(4)
+        exposure.source.sourceStart shouldBe 0
+        exposure.source.sourceEnd shouldBe 6
+        exposure.source.rawText shouldBe "日本A😀 한"
+        recorder.commands.filterIsInstance<CaptureCommand.Progress>()
+            .single()
+            .netCharacters shouldBe NetCharacterProgress(20)
+    }
+
+    @Test
+    fun `lookup selection resolves the active session and exact visible source range`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+        val selectedRange = visibleRange(0, "😀彼は本を読む。")
+        val otherRange = visibleRange(64, "彼女は海を見る。")
+        val sentenceOffset = selectedRange.text.indexOf("読む")
+
+        adapter.start("chapter-1.xhtml", 0)
+        adapter.onVisibleRanges(
+            "chapter-1.xhtml",
+            ranges(selectedRange, otherRange),
+        )
+        runCurrent()
+
+        val selectedSource = recorder.commands
+            .filterIsInstance<CaptureCommand.Exposure>()
+            .single { it.source.sourceStart == selectedRange.start }
+            .source
+        adapter.resolveLookupProvenance(
+            sectionId = "chapter-1.xhtml",
+            selectedText = "読む",
+            contextText = selectedRange.text,
+            selectionOffset = sentenceOffset,
+        ) shouldBe
+            tachiyomi.domain.immersion.service.InteractionProvenance(
+                sessionId = requireNotNull(recorder.activeSessionId),
+                sourceUnitId = selectedSource.id,
+            )
+        adapter.finalize(legacy()).await()
+    }
+
+    @Test
+    fun `lookup provenance keeps the session for missing stale mismatched and ambiguous ranges`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+        val repeatedText = "同じ文を読む。"
+        val selectedOffset = repeatedText.indexOf("読む")
+
+        adapter.start("chapter-1.xhtml", 0)
+        runCurrent()
+        val sessionOnly = InteractionProvenance(
+            sessionId = requireNotNull(recorder.activeSessionId),
+            sourceUnitId = null,
+        )
+        adapter.resolveLookupProvenance(
+            "chapter-1.xhtml",
+            "読む",
+            repeatedText,
+            selectedOffset,
+        ) shouldBe sessionOnly
+
+        adapter.onVisibleRanges(
+            "chapter-1.xhtml",
+            ranges(
+                visibleRange(0, repeatedText),
+                visibleRange(64, repeatedText),
+            ),
+        )
+        runCurrent()
+        adapter.resolveLookupProvenance(
+            "chapter-1.xhtml",
+            "読む",
+            repeatedText,
+            selectedOffset,
+        ) shouldBe sessionOnly
+        adapter.resolveLookupProvenance(
+            "chapter-2.xhtml",
+            "読む",
+            repeatedText,
+            selectedOffset,
+        ) shouldBe sessionOnly
+        adapter.resolveLookupProvenance(
+            "chapter-1.xhtml",
+            "泳ぐ",
+            "海で泳ぐ。",
+            "海で泳ぐ。".indexOf("泳ぐ"),
+        ) shouldBe sessionOnly
+
+        adapter.onChapterChanged(
+            "chapter-2.xhtml",
+            100,
+            NovelNavigationCause.NEXT_CHAPTER,
+        )
+        adapter.lookupProvenanceSnapshot() shouldBe null
+        adapter.finalize(legacy()).await()
+    }
+
+    @Test
+    fun `immediate range lookup keeps session provenance until exact ranges are published`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+        val text = "すぐに読む。"
+        val offset = text.indexOf("読む")
+
+        adapter.start("chapter-1.xhtml", 0)
+        runCurrent()
+        adapter.onVisibleRanges(
+            "chapter-1.xhtml",
+            ranges(visibleRange(0, text)),
+        )
+
+        adapter.resolveLookupProvenance(
+            "chapter-1.xhtml",
+            "読む",
+            text,
+            offset,
+        ) shouldBe InteractionProvenance(
+            sessionId = requireNotNull(recorder.activeSessionId),
+            sourceUnitId = null,
+        )
+        runCurrent()
+        adapter.resolveLookupProvenance(
+            "chapter-1.xhtml",
+            "読む",
+            text,
+            offset,
+        )?.sourceUnitId shouldBe recorder.commands
+            .filterIsInstance<CaptureCommand.Exposure>()
+            .single()
+            .source
+            .id
+        adapter.finalize(legacy()).await()
+    }
+
+    @Test
+    fun `lookup snapshot is immutable and invalidation prevents queued ranges from resurfacing`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+        val firstText = "最初の文を読む。"
+        val secondText = "次の文を見る。"
+
+        adapter.start("chapter-1.xhtml", 0)
+        adapter.onVisibleRanges(
+            "chapter-1.xhtml",
+            ranges(visibleRange(0, firstText)),
+        )
+        runCurrent()
+        val capturedSnapshot = requireNotNull(adapter.lookupProvenanceSnapshot())
+        val capturedProvenance = requireNotNull(
+            capturedSnapshot.resolve(
+                "chapter-1.xhtml",
+                "読む",
+                firstText,
+                firstText.indexOf("読む"),
+            ),
+        )
+
+        adapter.onVisibleRanges(
+            "chapter-1.xhtml",
+            ranges(visibleRange(64, secondText)),
+        )
+        runCurrent()
+        capturedSnapshot.resolve(
+            "chapter-1.xhtml",
+            "読む",
+            firstText,
+            firstText.indexOf("読む"),
+        ) shouldBe capturedProvenance
+        adapter.resolveLookupProvenance(
+            "chapter-1.xhtml",
+            "読む",
+            firstText,
+            firstText.indexOf("読む"),
+        ) shouldBe InteractionProvenance(
+            sessionId = requireNotNull(recorder.activeSessionId),
+            sourceUnitId = null,
+        )
+
+        adapter.onVisibleRanges(
+            "chapter-1.xhtml",
+            ranges(visibleRange(128, "遅延した文を読む。")),
+        )
+        adapter.setOverlayVisible(NovelCaptureOverlay.IMAGE_VIEWER, true)
+        runCurrent()
+        adapter.lookupProvenanceSnapshot() shouldBe null
+        adapter.finalize(legacy()).await()
+    }
+
+    @Test
+    fun `reflow callbacks deduplicate while a real leave and reread adds only gross`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+        val page = ranges(NovelVisibleRange(0, 4, "日本語A"))
+
+        adapter.start("chapter-1.xhtml", 0)
+        adapter.onVisibleRanges("chapter-1.xhtml", page)
+        adapter.onVisibleRanges("chapter-1.xhtml", page)
+        adapter.onVisibleRanges("chapter-1.xhtml", "[]")
+        adapter.onVisibleRanges("chapter-1.xhtml", page)
+        adapter.finalize(legacy()).await()
+
+        val exposures = recorder.commands.filterIsInstance<CaptureCommand.Exposure>()
+        exposures shouldHaveSize 2
+        exposures.map { it.grossCharacters.value } shouldBe listOf(4L, 4L)
+        exposures.map { it.uniqueSourceCharacters.value } shouldBe listOf(4L, 0L)
+        exposures.map(CaptureCommand.Exposure::replayOrdinal) shouldBe listOf(0, 1)
+        exposures.map { it.source.id }.distinct() shouldHaveSize 1
+    }
+
+    @Test
+    fun `stable ranges survive reopen and global unique source stays deduplicated`() = runTest {
+        val firstRecorder = FakeRecorder()
+        val first = adapter(firstRecorder, retention = RawTextRetention.NEVER)
+        val visible = ranges(NovelVisibleRange(64, 68, "한국語A"))
+
+        first.start("chapter-2.xhtml", 10)
+        first.onVisibleRanges("chapter-2.xhtml", visible)
+        first.finalize(legacy()).await()
+        val firstExposure = firstRecorder.commands.filterIsInstance<CaptureCommand.Exposure>().single()
+        firstExposure.source.rawText shouldBe null
+
+        val secondRecorder = FakeRecorder(seenSources = mutableSetOf(firstExposure.source.id))
+        val second = adapter(secondRecorder)
+        second.start("chapter-2.xhtml", 10)
+        second.onVisibleRanges("chapter-2.xhtml", visible)
+        second.finalize(legacy()).await()
+        val secondExposure = secondRecorder.commands.filterIsInstance<CaptureCommand.Exposure>().single()
+
+        secondExposure.source.id shouldBe firstExposure.source.id
+        secondExposure.source.canonicalLocator shouldBe firstExposure.source.canonicalLocator
+        secondExposure.uniqueSourceCharacters shouldBe NonNegativeCounter.ZERO
+    }
+
+    @Test
+    fun `backward reading stays signed while reread is additional gross exposure`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+        val visible = ranges(NovelVisibleRange(0, 3, "日本語"))
+
+        adapter.start("chapter-1.xhtml", 100)
+        adapter.onVisibleRanges("chapter-1.xhtml", visible)
+        adapter.onProgress(140)
+        adapter.onVisibleRanges("chapter-1.xhtml", "[]")
+        adapter.onProgress(110)
+        adapter.onVisibleRanges("chapter-1.xhtml", visible)
+        adapter.finalize(legacy(net = 10)).await()
+
+        recorder.commands.filterIsInstance<CaptureCommand.Exposure>()
+            .sumOf { it.grossCharacters.value } shouldBe 6
+        recorder.commands.filterIsInstance<CaptureCommand.Exposure>()
+            .sumOf { it.uniqueSourceCharacters.value } shouldBe 3
+        recorder.commands.filterIsInstance<CaptureCommand.Progress>()
+            .sumOf { it.netCharacters.value } shouldBe 10
+    }
+
+    @Test
+    fun `chapter search bookmark style jumps reset net baseline without fabricating distance`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+
+        adapter.start("chapter-1.xhtml", 100)
+        adapter.onProgress(120)
+        adapter.onChapterChanged("chapter-8.xhtml", 2_000, NovelNavigationCause.SEARCH)
+        adapter.onProgress(2_012)
+        adapter.onChapterChanged("chapter-3.xhtml", 700, NovelNavigationCause.BOOKMARK)
+        adapter.onProgress(705)
+        adapter.resetProgressBaseline(900, recordSeek = true)
+        adapter.onProgress(905)
+        adapter.resetProgressBaseline(1_200, recordSeek = false)
+        adapter.onProgress(1_202)
+        adapter.finalize(legacy(net = 44)).await()
+
+        recorder.commands.filterIsInstance<CaptureCommand.Progress>()
+            .sumOf { it.netCharacters.value } shouldBe 44
+        recorder.commands.filterIsInstance<CaptureCommand.Activity>()
+            .count { it.eventType == EventType.SEEK } shouldBe 3
+    }
+
+    @Test
+    fun `overlay and background block capture until the reader is visible again`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+        val visible = ranges(NovelVisibleRange(0, 3, "日本語"))
+
+        adapter.start("chapter-1.xhtml", 10)
+        adapter.setOverlayVisible(NovelCaptureOverlay.LOOKUP_POPUP, true)
+        adapter.onProgress(20)
+        adapter.onVisibleRanges("chapter-1.xhtml", visible)
+        adapter.setBackgrounded(true)
+        adapter.setOverlayVisible(NovelCaptureOverlay.LOOKUP_POPUP, false)
+        adapter.setBackgrounded(false)
+        adapter.onVisibleRanges("chapter-1.xhtml", visible)
+        adapter.onProgress(22)
+        adapter.finalize(legacy(net = 2)).await()
+
+        recorder.pauses shouldBe listOf(PauseReason.USER)
+        recorder.resumes shouldBe listOf(ResumeReason.FOREGROUND)
+        recorder.commands.filterIsInstance<CaptureCommand.Exposure>() shouldHaveSize 1
+        recorder.commands.filterIsInstance<CaptureCommand.Progress>()
+            .single()
+            .netCharacters shouldBe NetCharacterProgress(2)
+    }
+
+    @Test
+    fun `completion events are idempotent and incognito suppression creates no capture`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+
+        adapter.start("chapter-1.xhtml", 0)
+        adapter.onChapterCompleted()
+        adapter.onChapterCompleted()
+        adapter.onTitleCompleted()
+        adapter.onTitleCompleted()
+        adapter.finalize(legacy()).await()
+
+        recorder.commands.filterIsInstance<CaptureCommand.Activity>()
+            .map(CaptureCommand.Activity::eventType) shouldBe
+            listOf(EventType.UNIT_COMPLETED, EventType.TITLE_COMPLETED)
+
+        val suppressedRecorder = FakeRecorder(suppressStart = true)
+        val suppressed = adapter(suppressedRecorder)
+        suppressed.start("chapter-1.xhtml", 0)
+        suppressed.onVisibleRanges("chapter-1.xhtml", ranges(NovelVisibleRange(0, 1, "日")))
+        suppressed.onProgress(1)
+        suppressed.finalize(legacy()).await()
+        suppressedRecorder.commands shouldBe emptyList()
+    }
+
+    @Test
+    fun `progress bursts coalesce to an exact net delta before completion`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+
+        adapter.start("chapter-1.xhtml", 100)
+        repeat(2_000) { index ->
+            adapter.onProgress(101L + index)
+        }
+        adapter.onChapterCompleted()
+        adapter.onTitleCompleted()
+        adapter.finalize(legacy(net = 2_000)).await()
+
+        recorder.commands.filterIsInstance<CaptureCommand.Progress>()
+            .single()
+            .netCharacters shouldBe NetCharacterProgress(2_000)
+        recorder.commands.filterIsInstance<CaptureCommand.Activity>()
+            .map(CaptureCommand.Activity::eventType) shouldBe
+            listOf(EventType.UNIT_COMPLETED, EventType.TITLE_COMPLETED)
+        adapter.queueDiagnostics.value.let {
+            it.depth shouldBe 0
+            it.coalescedCommands shouldBe 1_999
+            it.droppedSnapshots shouldBe 0
+            it.semanticOverflowCommands shouldBe 0
+            it.droppedSemanticCommands shouldBe 0
+        }
+    }
+
+    @Test
+    fun `bounded queue saturation is diagnosed without escaping into reading`() = runTest {
+        val recorder = FakeRecorder()
+        val adapter = adapter(recorder)
+
+        val failure = runCatching {
+            adapter.start("chapter-0.xhtml", 0)
+            repeat(128) { index ->
+                adapter.onChapterChanged(
+                    sectionId = "chapter-${index + 1}.xhtml",
+                    netPosition = index + 1L,
+                    cause = NovelNavigationCause.TABLE_OF_CONTENTS,
+                )
+            }
+        }.exceptionOrNull()
+
+        failure shouldBe null
+        adapter.queueDiagnostics.value.let {
+            it.depth shouldBe 128
+            it.overflowDepth shouldBe 64
+            it.highWatermark shouldBe 128
+            it.semanticOverflowCommands shouldBe 64
+            it.droppedSemanticCommands shouldBe 1
+        }
+        adapter.finalize(legacy()).await()
+        recorder.commands.filterIsInstance<CaptureCommand.Activity>()
+            .count { it.eventType == EventType.SEEK } shouldBe 127
+    }
+
+    @Test
+    fun `recorder exception is diagnosed and later reading commands still drain`() = runTest {
+        val recorder = FakeRecorder(recordFailuresRemaining = 1)
+        val diagnostics = ImmersionStatsDiagnosticsStore()
+        val adapter = adapter(recorder, diagnostics = diagnostics)
+
+        adapter.start("chapter-1.xhtml", 0)
+        adapter.onChapterChanged("chapter-2.xhtml", 10, NovelNavigationCause.SEARCH)
+        adapter.onChapterCompleted()
+        adapter.finalize(legacy()).await()
+
+        adapter.queueDiagnostics.value.workerFailures shouldBe 1
+        diagnostics.state.value.adapterDiagnostics
+            .getValue(ImmersionCaptureAdapter.NOVEL)
+            .workerFailureCount shouldBe NonNegativeCounter(1)
+        recorder.commands.filterIsInstance<CaptureCommand.Activity>().single().let {
+            it.eventType shouldBe EventType.UNIT_COMPLETED
+            it.completionUnitId shouldBe "chapter-2.xhtml"
+        }
+    }
+
+    @Test
+    fun `codec counts supplementary code points and rejects overlapping source ranges`() {
+        val decoded = NovelVisibleRangeCodec.decode(
+            ranges(
+                NovelVisibleRange(0, 3, "𠮷A한"),
+                NovelVisibleRange(3, 5, "日本"),
+            ),
+        )
+        decoded.first().text.length shouldBe 4
+        decoded.first().endExclusive shouldBe 3
+
+        runCatching {
+            NovelVisibleRangeCodec.decode(
+                """[{"start":0,"endExclusive":2,"text":"日本"},{"start":1,"endExclusive":3,"text":"本語"}]""",
+            )
+        }.isFailure shouldBe true
+        runCatching {
+            NovelVisibleRange(0, 1, "\uD800")
+        }.isFailure shouldBe true
+    }
+
+    @Test
+    fun `session and day reconciliation expose exact net divergence and midnight day keys`() {
+        val session = completedSession(
+            activeMillis = 60_000,
+            net = 30,
+            endedAt = Instant.parse("2026-07-26T00:30:00Z").toEpochMilli(),
+        )
+        NovelCaptureReconciliationReporter.record(
+            session = session,
+            legacy = legacy(activeMillis = 60_000, net = 30),
+            idleToleranceMillis = 120_000,
+            zoneId = ZoneId.of("Europe/London"),
+        )
+
+        val report = NovelCaptureReconciliationReporter.report.value
+        report.entries shouldHaveSize 2
+        report.entries.single { it.scope == NovelReconciliationScope.SESSION }
+            .result.shouldBeInstanceOf<ImmersionShadowResult.Matched>()
+        report.entries.single { it.scope == NovelReconciliationScope.DAY }.let {
+            it.key shouldBe "2026-07-26"
+            it.result.shouldBeInstanceOf<ImmersionShadowResult.Matched>()
+        }
+
+        NovelCaptureReconciliationReporter.record(
+            session = completedSession(activeMillis = 1_000, net = 4),
+            legacy = legacy(activeMillis = 1_000, net = 3),
+            idleToleranceMillis = 120_000,
+            zoneId = ZoneId.of("UTC"),
+        )
+        NovelCaptureReconciliationReporter.report.value.entries
+            .first { it.scope == NovelReconciliationScope.SESSION }
+            .result.shouldBeInstanceOf<ImmersionShadowResult.Diverged>()
+    }
+
+    private fun TestScope.adapter(
+        recorder: FakeRecorder,
+        retention: RawTextRetention = RawTextRetention.UNTIL_DELETED,
+        diagnostics: ImmersionStatsDiagnosticsStore? = null,
+    ) = NovelCaptureAdapter(
+        book = NovelCaptureBook(
+            documentId = "stable-book",
+            displayTitle = "Test novel",
+            profileId = "reader-profile",
+            languageTag = null,
+            createdAtEpochMillis = 0,
+        ),
+        recorder = recorder,
+        rawTextRetention = { retention },
+        idleTimeoutMillis = 120_000,
+        clock = { 1_000 },
+        zoneId = { ZoneId.of("UTC") },
+        workerScope = this,
+        diagnostics = diagnostics,
+    )
+
+    private fun ranges(vararg values: NovelVisibleRange): String =
+        Json.encodeToString(values.toList())
+
+    private fun visibleRange(
+        start: Long,
+        text: String,
+    ): NovelVisibleRange =
+        NovelVisibleRange(
+            start = start,
+            endExclusive = start + text.codePointCount(0, text.length),
+            text = text,
+        )
+
+    private fun legacy(
+        activeMillis: Long = 1_000,
+        net: Long = 0,
+    ) = LegacyNovelSessionSnapshot(
+        activeDurationMillis = activeMillis,
+        netCharacters = net,
+        equivalentPolicy = true,
+    )
+
+    private class FakeRecorder(
+        val seenSources: MutableSet<SourceUnitId> = mutableSetOf(),
+        private val suppressStart: Boolean = false,
+        private var recordFailuresRemaining: Int = 0,
+    ) : ImmersionRecorder {
+        private val mutableState = MutableStateFlow(ImmersionRecorderSnapshot())
+        override val state: StateFlow<ImmersionRecorderSnapshot> = mutableState
+        val commands = mutableListOf<CaptureCommand>()
+        val pauses = mutableListOf<PauseReason>()
+        val resumes = mutableListOf<ResumeReason>()
+        private var context: SessionContext? = null
+        private var handle: SessionHandle? = null
+        val activeSessionId: SessionId?
+            get() = handle?.sessionId
+
+        override suspend fun startSession(context: SessionContext): SessionStartResult {
+            if (suppressStart) {
+                return SessionStartResult.Suppressed(CaptureSuppressionReason.INCOGNITO)
+            }
+            val handle = SessionHandle(SessionId(UUID.randomUUID().toString()))
+            this.context = context
+            this.handle = handle
+            mutableState.value = ImmersionRecorderSnapshot(
+                sessionId = handle.sessionId,
+                state = ImmersionSessionState.ACTIVE,
+            )
+            return SessionStartResult.Started(handle)
+        }
+
+        override fun record(command: CaptureCommand): RecordResult {
+            val active = handle ?: return RecordResult.Rejected(ImmersionSessionState.NOT_STARTED)
+            return record(active, command)
+        }
+
+        override fun record(
+            handle: SessionHandle,
+            command: CaptureCommand,
+        ): RecordResult {
+            if (handle != this.handle) return RecordResult.Rejected(ImmersionSessionState.ACTIVE)
+            if (recordFailuresRemaining > 0) {
+                recordFailuresRemaining -= 1
+                error("test recorder failure")
+            }
+            commands += command
+            return RecordResult.Enqueued(1)
+        }
+
+        override suspend fun pause(reason: PauseReason) {
+            pauses += reason
+        }
+
+        override suspend fun pause(
+            handle: SessionHandle,
+            reason: PauseReason,
+        ) {
+            if (handle == this.handle) pauses += reason
+        }
+
+        override suspend fun resume(reason: ResumeReason) {
+            resumes += reason
+        }
+
+        override suspend fun resume(
+            handle: SessionHandle,
+            reason: ResumeReason,
+        ) {
+            if (handle == this.handle) resumes += reason
+        }
+
+        override suspend fun finalize(reason: FinalizeReason) {
+            handle?.let { finalize(it, reason) }
+        }
+
+        override suspend fun finalize(
+            handle: SessionHandle,
+            reason: FinalizeReason,
+        ): ImmersionSession? {
+            if (handle != this.handle) return null
+            val session = completedSession(
+                id = handle.sessionId,
+                title = requireNotNull(context).title,
+                activeMillis = 1_000,
+                net = commands.sumOf { command ->
+                    when (command) {
+                        is CaptureCommand.Progress -> command.netCharacters.value
+                        is CaptureCommand.Exposure -> command.netCharacters.value
+                        is CaptureCommand.Activity -> 0
+                        is CaptureCommand.AnkiOperation -> 0
+                    }
+                },
+                gross = commands.filterIsInstance<CaptureCommand.Exposure>()
+                    .sumOf { it.grossCharacters.value },
+                unique = commands.filterIsInstance<CaptureCommand.Exposure>()
+                    .sumOf { it.uniqueSourceCharacters.value },
+            )
+            this.handle = null
+            return session
+        }
+
+        override suspend fun setIncognito(enabled: Boolean) = Unit
+
+        override suspend fun recoverAbandonedSessions(): Long = 0
+
+        override suspend fun hasSeenSource(sourceUnitId: SourceUnitId): Boolean =
+            sourceUnitId in seenSources
+    }
+}
+
+private fun completedSession(
+    id: SessionId = SessionId(UUID.randomUUID().toString()),
+    title: ImmersionTitle? = null,
+    activeMillis: Long,
+    net: Long,
+    gross: Long = 0,
+    unique: Long = 0,
+    endedAt: Long = 1_000,
+): ImmersionSession {
+    val resolvedTitle = title ?: ImmersionTitle(
+        id = tachiyomi.domain.immersion.model.TitleId(UUID.randomUUID().toString()),
+        mediaKind = MediaKind.NOVEL,
+        sourceKey = "test",
+        displayTitle = "Test",
+        createdAtEpochMillis = 0,
+        updatedAtEpochMillis = 0,
+    )
+    return ImmersionSession(
+        id = id,
+        deviceId = "device",
+        titleId = resolvedTitle.id,
+        mediaKind = MediaKind.NOVEL,
+        languageTag = resolvedTitle.languageTag,
+        profileId = resolvedTitle.profileId,
+        startedAtEpochMillis = 0,
+        endedAtEpochMillis = endedAt,
+        startZoneId = "UTC",
+        startOffsetSeconds = 0,
+        status = SessionStatus.COMPLETED,
+        activeDuration = MillisecondDuration(activeMillis),
+        elapsedDuration = MillisecondDuration(activeMillis),
+        grossCharacters = NonNegativeCounter(gross),
+        uniqueSourceCharacters = NonNegativeCounter(unique),
+        netCharacters = NetCharacterProgress(net),
+        sourceUnitCount = NonNegativeCounter.ZERO,
+        lastSequence = 1,
+        lastHeartbeatAtEpochMillis = endedAt,
+        captureVersion = 1,
+        schemaVersion = 1,
+        legacyImport = false,
+    )
+}

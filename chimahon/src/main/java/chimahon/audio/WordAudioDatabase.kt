@@ -33,7 +33,10 @@ class WordAudioDatabase(private val context: Context) {
 
     /** Opens a database by local file path — bypasses ContentResolver entirely. */
     fun updatePath(path: String?): Boolean {
-        if (path.isNullOrBlank()) { close(); return false }
+        if (path.isNullOrBlank()) {
+            close()
+            return false
+        }
         close()
         lastError = null
         fallbackUsed = false
@@ -218,7 +221,10 @@ class WordAudioDatabase(private val context: Context) {
 
     fun testConnection(): Boolean {
         if (fallbackUsed) {
-            val db = legacyDb ?: run { lastError = "No database open"; return false }
+            val db = legacyDb ?: run {
+                lastError = "No database open"
+                return false
+            }
             try {
                 db.rawQuery("SELECT count(*) FROM entries LIMIT 1", null).use { cursor ->
                     if (cursor.moveToFirst()) return true
@@ -230,7 +236,10 @@ class WordAudioDatabase(private val context: Context) {
             lastError = "Database is missing the required 'entries' table"
             return false
         }
-        if (handle == 0L) { lastError = "No database open"; return false }
+        if (handle == 0L) {
+            lastError = "No database open"
+            return false
+        }
         if (!nativeTestConnection(handle)) {
             lastError = "Database is missing the required 'entries' table"
             return false
@@ -243,7 +252,9 @@ class WordAudioDatabase(private val context: Context) {
         if (handle == 0L) return emptyList()
         val normalizedReading = katakanaToHiragana(reading)
         val rows = nativeFindEntries(
-            handle, term, normalizedReading,
+            handle,
+            term,
+            normalizedReading,
             defaultSources.joinToString(","),
         )
         return rows?.toList() ?: emptyList()
@@ -347,17 +358,24 @@ class WordAudioDatabase(private val context: Context) {
 
     companion object {
         private const val TAG = "WordAudioDatabase"
-        init { System.loadLibrary("word_audio_jni") }
+        init {
+            System.loadLibrary("word_audio_jni")
+        }
     }
 
     private external fun nativeOpen(fd: Int, size: Long): Long
     private external fun nativeClose(handle: Long)
     private external fun nativeTestConnection(handle: Long): Boolean
     private external fun nativeFindEntries(
-        handle: Long, term: String, reading: String, sourceOrder: String,
+        handle: Long,
+        term: String,
+        reading: String,
+        sourceOrder: String,
     ): Array<LocalEntry>?
     private external fun nativeGetAudioData(
-        handle: Long, filePath: String, sourceId: String,
+        handle: Long,
+        filePath: String,
+        sourceId: String,
     ): ByteArray?
 
     private fun getPathFromUri(context: Context, uri: Uri): String? {
@@ -386,7 +404,7 @@ class WordAudioDatabase(private val context: Context) {
                     return validatePath(context, id.substring(4))
                 }
             }
-            
+
             try {
                 context.contentResolver.query(uri, arrayOf("_data"), null, null, null)?.use { cursor ->
                     if (cursor.moveToFirst()) {
@@ -408,7 +426,7 @@ class WordAudioDatabase(private val context: Context) {
         try {
             val file = java.io.File(path)
             val canonicalPath = file.canonicalPath
-            
+
             // Path Traversal Mitigation: Ensure the path is not pointing to the app's internal sandbox
             val internalDir = context.filesDir.parentFile?.canonicalPath
             if (internalDir != null && canonicalPath.startsWith(internalDir)) {

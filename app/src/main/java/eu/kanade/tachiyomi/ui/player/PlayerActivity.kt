@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-/**
+/*
  * Code is a mix between PlayerActivity from mpvKt and the former
  * PlayerActivity from Aniyomi.
  */
@@ -34,8 +34,6 @@ import android.content.pm.PackageManager
 import android.content.res.AssetManager
 import android.content.res.Configuration
 import android.graphics.Rect
-import android.view.MotionEvent
-import android.view.ViewConfiguration
 import android.media.AudioManager
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
@@ -45,7 +43,9 @@ import android.os.Bundle
 import android.os.Environment
 import android.util.Rational
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -175,6 +175,9 @@ class PlayerActivity : BaseActivity() {
         private const val EXTRA_YOUTUBE_VIDEO = "youtubeVideo"
         private const val EXTRA_YOUTUBE_VIDEO_URL = "youtubeVideoUrl"
 
+        /** Resume position for deep links that point at a specific moment. */
+        const val EXTRA_START_POSITION_MILLIS = "startPositionMillis"
+
         fun newIntent(
             context: Context,
             animeId: Long?,
@@ -182,10 +185,12 @@ class PlayerActivity : BaseActivity() {
             hostList: List<Hoster>? = null,
             hostIndex: Int? = null,
             vidIndex: Int? = null,
+            startPositionMillis: Long? = null,
         ): Intent {
             return Intent(context, PlayerActivity::class.java).apply {
                 putExtra("animeId", animeId)
                 putExtra("episodeId", episodeId)
+                startPositionMillis?.let { putExtra(EXTRA_START_POSITION_MILLIS, it) }
                 hostIndex?.let { putExtra("hostIndex", it) }
                 vidIndex?.let { putExtra("vidIndex", it) }
                 hostList?.let { putExtra("hostList", it.serialize()) }
@@ -218,8 +223,7 @@ class PlayerActivity : BaseActivity() {
         fun newYoutubeIntent(
             context: Context,
             videoUrl: String,
-        ): Intent
-        {
+        ): Intent {
             return Intent(context, PlayerActivity::class.java).apply {
                 putExtra(EXTRA_YOUTUBE_VIDEO, true)
                 putExtra(EXTRA_YOUTUBE_VIDEO_URL, videoUrl)
@@ -228,24 +232,25 @@ class PlayerActivity : BaseActivity() {
         }
     }
 
+    /**
+     * Position a statistics deep link asked to resume from, consumed by the first
+     * [setVideo] so a later return to the episode resumes normally instead.
+     */
+    private var requestedStartPositionMillis: Long? = null
 
     @SuppressLint("MissingSuperCall")
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
 
-        if (intent.isYoutubeVideoIntent())
-        {
+        if (intent.isYoutubeVideoIntent()) {
             player.isExiting = false
             val videoUrl = intent.getStringExtra(EXTRA_YOUTUBE_VIDEO_URL)
-            if (videoUrl != null)
-            {
+            if (videoUrl != null) {
                 // Create anime and episodes
                 viewModel.loadYoutubeVideo(videoUrl)
                 setIntent(intent)
                 return
-            }
-            else
-            {
+            } else {
                 toast("Failed to get youtube url")
                 logcat(LogPriority.ERROR) { "Failed to get youtube url" }
                 finish()
@@ -270,6 +275,9 @@ class PlayerActivity : BaseActivity() {
         val hostList = intent.getStringExtra("hostList") ?: ""
         val hostIndex = intent.getIntExtra("hostIndex", -1)
         val vidIndex = intent.getIntExtra("vidIndex", -1)
+        requestedStartPositionMillis = intent
+            .takeIf { it.hasExtra(EXTRA_START_POSITION_MILLIS) }
+            ?.getLongExtra(EXTRA_START_POSITION_MILLIS, 0L)
         if (animeId == -1L || episodeId == -1L) {
             val standaloneVideo = intent.toStandaloneVideo()
             if (standaloneVideo != null) {
@@ -343,7 +351,7 @@ class PlayerActivity : BaseActivity() {
         return Video(
             videoUrl = uriString,
             videoTitle = title,
-            initialized = true
+            initialized = true,
         )
     }
 
@@ -529,7 +537,6 @@ class PlayerActivity : BaseActivity() {
         player.destroy()
         castManager.cleanup()
 
-
         super.onDestroy()
     }
 
@@ -538,8 +545,6 @@ class PlayerActivity : BaseActivity() {
 
         // Mantener sesión Cast activa
         castManager.maintainCastSessionBackground()
-
-
 
         if (isInPictureInPictureMode) {
             super.onPause()
@@ -625,7 +630,6 @@ class PlayerActivity : BaseActivity() {
                 if (it != -1f) viewModel.changeBrightnessTo(it)
             }
         }
-
 
         castManager.apply {
             registerSessionListener()
@@ -883,8 +887,6 @@ class PlayerActivity : BaseActivity() {
             registerSessionListener()
         }
 
-
-
         if (!player.isExiting) {
             super.onResume()
             return
@@ -965,7 +967,6 @@ class PlayerActivity : BaseActivity() {
                 runCatching {
                     setPictureInPictureParams(createPipParams())
                 }
-
             }
 
             "paused-for-cache" -> {
@@ -1351,6 +1352,9 @@ class PlayerActivity : BaseActivity() {
             viewModel.currentEpisode.value?.let { episode ->
                 val preservePos = playerPreferences.preserveWatchingPosition().get()
                 val resumePosition = position
+                    // Consumed once: a deep link positions the first load only, so
+                    // returning to the episode later resumes where the user stopped.
+                    ?: requestedStartPositionMillis?.also { requestedStartPositionMillis = null }
                     ?: if (episode.seen && !preservePos) {
                         0L
                     } else {
@@ -1406,7 +1410,6 @@ class PlayerActivity : BaseActivity() {
             }
             loadPlayableUrl(playableUrl)
         }
-
     }
 
     private fun torrentLinkHandler(videoUrl: String, quality: String) {
@@ -1638,5 +1641,4 @@ class PlayerActivity : BaseActivity() {
             viewModel.changeEpisode(previous = false, autoPlay = true)
         }
     }
-
 }
