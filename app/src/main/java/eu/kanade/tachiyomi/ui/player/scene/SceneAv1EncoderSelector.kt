@@ -56,9 +56,9 @@ internal fun selectAv1Encoder(
             return@forEach
         }
 
-        val widthAlignment = combinedAlignment(candidate.widthAlignment, SCENE_PIXEL_ALIGNMENT)
+        val widthAlignment = combinedAlignment(candidate.widthAlignment, SCENE_MEDIACODEC_CANVAS_ALIGNMENT)
             ?: return@forEach
-        val heightAlignment = combinedAlignment(candidate.heightAlignment, SCENE_PIXEL_ALIGNMENT)
+        val heightAlignment = combinedAlignment(candidate.heightAlignment, SCENE_MEDIACODEC_CANVAS_ALIGNMENT)
             ?: return@forEach
         if (widthAlignment > boundedOutputDimension || heightAlignment > boundedOutputDimension) {
             return@forEach
@@ -294,5 +294,6 @@ private fun combinedAlignment(first: Int, second: Int): Int? {
 
 internal const val SCENE_MAX_OUTPUT_DIMENSION = 640
 internal const val SCENE_PIXEL_ALIGNMENT = 2
+internal const val SCENE_MEDIACODEC_CANVAS_ALIGNMENT = 16
 internal const val SCENE_FRAME_RATE = 8.0
 private const val MAX_CONTENT_ASPECT_ERROR = 0.002

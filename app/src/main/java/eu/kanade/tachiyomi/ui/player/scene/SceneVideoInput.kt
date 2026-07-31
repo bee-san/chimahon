@@ -190,7 +190,7 @@ internal object SceneVideoInputResolver {
 }
 
 internal object SceneFfmpegArguments {
-    fun av1MediaCodecPackets(
+    fun animatedAvifMediaCodec(
         input: SceneVideoInputSpec,
         acquiredInputValue: String,
         range: SceneTimeRange,
@@ -230,35 +230,13 @@ internal object SceneFfmpegArguments {
             add("1")
             add("-pix_fmt")
             add("yuv420p")
+            add("-loop")
+            add("0")
             add("-f")
-            add("data")
+            add("avif")
             add("-y")
             add(outputFile)
         }.toTypedArray()
-    }
-
-    fun animatedAvifFromObu(
-        inputFile: String,
-        outputFile: String,
-    ): Array<String> {
-        return arrayOf(
-            "-f",
-            "obu",
-            "-framerate",
-            FRAME_RATE.toInt().toString(),
-            "-i",
-            inputFile,
-            "-map",
-            "0:v:0",
-            "-c:v",
-            "copy",
-            "-loop",
-            "0",
-            "-f",
-            "avif",
-            "-y",
-            outputFile,
-        )
     }
 
     fun videoProbe(
@@ -382,9 +360,11 @@ internal object SceneFfmpegArguments {
             outputSize.width in SCENE_PIXEL_ALIGNMENT..SCENE_MAX_OUTPUT_DIMENSION &&
                 outputSize.height in SCENE_PIXEL_ALIGNMENT..SCENE_MAX_OUTPUT_DIMENSION &&
                 outputSize.width % SCENE_PIXEL_ALIGNMENT == 0 &&
-                outputSize.height % SCENE_PIXEL_ALIGNMENT == 0,
+                outputSize.height % SCENE_PIXEL_ALIGNMENT == 0 &&
+                outputSize.width % SCENE_MEDIACODEC_CANVAS_ALIGNMENT == 0 &&
+                outputSize.height % SCENE_MEDIACODEC_CANVAS_ALIGNMENT == 0,
         ) {
-            "Scene output size must be even and no larger than $SCENE_MAX_OUTPUT_DIMENSION"
+            "Scene output size must be 16-pixel aligned and no larger than $SCENE_MAX_OUTPUT_DIMENSION"
         }
         require(
             contentSize.width in SCENE_PIXEL_ALIGNMENT..outputSize.width &&

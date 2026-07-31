@@ -6,14 +6,14 @@ import org.junit.jupiter.api.Test
 
 class SceneAv1EncoderSelectorTest {
     @Test
-    fun `landscape input checks an aspect preserving codec aligned output`() {
+    fun `landscape input pads the MediaCodec canvas to sixteen pixels`() {
         val checkedSizes = mutableListOf<SceneVideoDimensions>()
         val selection = selectAv1Encoder(
             source = SceneVideoDimensions(width = 320, height = 180),
             candidates = sequenceOf(
                 candidate { size, _ ->
                     checkedSizes += size
-                    size == SceneVideoDimensions(width = 320, height = 180)
+                    size == SceneVideoDimensions(width = 320, height = 192)
                 },
             ),
         )
@@ -22,11 +22,11 @@ class SceneAv1EncoderSelectorTest {
             Av1EncoderSelection(
                 name = ENCODER_NAME,
                 contentSize = SceneVideoDimensions(width = 320, height = 180),
-                outputSize = SceneVideoDimensions(width = 320, height = 180),
+                outputSize = SceneVideoDimensions(width = 320, height = 192),
             ),
             selection,
         )
-        assertEquals(listOf(SceneVideoDimensions(width = 320, height = 180)), checkedSizes)
+        assertEquals(listOf(SceneVideoDimensions(width = 320, height = 192)), checkedSizes)
     }
 
     @Test
@@ -57,7 +57,7 @@ class SceneAv1EncoderSelectorTest {
             SceneVideoDimensions(width = 1248, height = 702),
         ).forEach { source ->
             assertEquals(
-                SceneVideoDimensions(width = 640, height = 360),
+                SceneVideoDimensions(width = 640, height = 368),
                 selectAv1Encoder(
                     source = source,
                     candidates = sequenceOf(candidate()),
@@ -77,7 +77,7 @@ class SceneAv1EncoderSelectorTest {
             ),
         )
 
-        assertEquals(SceneVideoDimensions(width = 528, height = 630), selection?.outputSize)
+        assertEquals(SceneVideoDimensions(width = 528, height = 640), selection?.outputSize)
     }
 
     @Test
@@ -224,7 +224,7 @@ class SceneAv1EncoderSelectorTest {
             candidates = sequenceOf(candidate()),
         )
 
-        assertEquals(SceneVideoDimensions(width = 640, height = 360), selection?.outputSize)
+        assertEquals(SceneVideoDimensions(width = 640, height = 368), selection?.outputSize)
     }
 
     @Test
