@@ -65,6 +65,7 @@ import eu.kanade.tachiyomi.di.PreferenceModule
 import eu.kanade.tachiyomi.di.SYPreferenceModule
 import eu.kanade.tachiyomi.network.NetworkHelper
 import eu.kanade.tachiyomi.ui.base.delegate.SecureActivityDelegate
+import eu.kanade.tachiyomi.ui.player.scene.SceneCommandProcess
 import eu.kanade.tachiyomi.util.CrashLogUtil
 import eu.kanade.tachiyomi.util.system.DeviceUtil
 import eu.kanade.tachiyomi.util.system.GLUtil
@@ -114,6 +115,15 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
     @SuppressLint("LaunchActivityFromNotification")
     override fun onCreate() {
         super<Application>.onCreate()
+        if (SceneCommandProcess.isCurrent()) {
+            if (!LogcatLogger.isInstalled) {
+                LogcatLogger.install()
+            }
+            if (LogcatLogger.loggers.none { it is AndroidLogcatLogger }) {
+                LogcatLogger.loggers += AndroidLogcatLogger(LogPriority.INFO)
+            }
+            return
+        }
         patchInjekt()
 
         // KMK -->

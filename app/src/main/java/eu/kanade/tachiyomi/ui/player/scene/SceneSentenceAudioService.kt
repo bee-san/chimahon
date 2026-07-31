@@ -22,7 +22,7 @@ internal class FrozenSceneSentenceAudioService private constructor(
     constructor(context: Context) : this(
         cacheDirectory = context.cacheDir,
         inputAcquirer = AndroidSceneInputAcquirer(context),
-        commandExecutor = FfmpegKitSceneCommandExecutor(),
+        commandExecutor = IsolatedSceneCommandExecutor(context),
     )
 
     override suspend fun prepare(request: SceneCaptureRequest): AnkiMediaSource? {
