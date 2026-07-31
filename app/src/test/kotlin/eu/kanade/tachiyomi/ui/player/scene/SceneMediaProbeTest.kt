@@ -21,12 +21,21 @@ class SceneMediaProbeTest {
     }
 
     @Test
-    fun `ten bit and HDR video are rejected`() {
+    fun `ten bit SDR video is safe`() {
         listOf(
             "pix_fmt=yuv420p10le\ncolor_transfer=bt709",
+            "pix_fmt=yuv420p\nbits_per_raw_sample=10",
+            "pix_fmt=yuv420p10le\nprofile=Main 10",
+        ).forEach { output ->
+            assertTrue(SceneMediaProbe.inspect(output))
+        }
+    }
+
+    @Test
+    fun `HDR video is rejected`() {
+        listOf(
             "pix_fmt=yuv420p\ncolor_transfer=smpte2084",
             "pix_fmt=yuv420p\ncolor_primaries=bt2020",
-            "pix_fmt=yuv420p\nbits_per_raw_sample=10",
         ).forEach { output ->
             assertFalse(SceneMediaProbe.inspect(output))
         }

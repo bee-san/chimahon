@@ -3,10 +3,13 @@ package eu.kanade.tachiyomi.ui.player.scene
 import com.arthenica.ffmpegkit.FFmpegKitConfig
 import com.arthenica.ffmpegkit.FFmpegSession
 import com.arthenica.ffmpegkit.FFprobeSession
+import com.arthenica.ffmpegkit.Level
 import com.arthenica.ffmpegkit.LogCallback
 import com.arthenica.ffmpegkit.LogRedirectionStrategy
 import com.arthenica.ffmpegkit.ReturnCode
+import com.arthenica.ffmpegkit.Session
 import com.arthenica.ffmpegkit.StatisticsCallback
+import eu.kanade.tachiyomi.data.animedownload.buildFFmpegFailureMessage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.util.concurrent.atomic.AtomicBoolean
@@ -37,24 +40,52 @@ internal interface SceneCommandExecutor {
 internal class SceneNativeCleanup(
     private val cleanup: () -> Unit,
 ) {
-    private val nativeFinished = AtomicBoolean(false)
-    private val released = AtomicBoolean(false)
-    private val cleaned = AtomicBoolean(false)
+    private val lock = Any()
+    private val initialNativeFinished = AtomicBoolean(false)
+    private var activeNativeUses = 1
+    private var released = false
+    private var cleaned = false
 
     fun nativeFinished() {
-        nativeFinished.set(true)
-        cleanIfReady()
+        finishNativeUse(initialNativeFinished)
+    }
+
+    fun retainNativeUse(): () -> Unit {
+        synchronized(lock) {
+            check(!released) { "Cannot retain a released native resource" }
+            activeNativeUses++
+        }
+        val finished = AtomicBoolean(false)
+        return {
+            finishNativeUse(finished)
+        }
     }
 
     fun release() {
-        released.set(true)
-        cleanIfReady()
+        val shouldClean = synchronized(lock) {
+            released = true
+            markCleanIfReady()
+        }
+        if (shouldClean) runCatching(cleanup)
     }
 
-    private fun cleanIfReady() {
-        if (nativeFinished.get() && released.get() && cleaned.compareAndSet(false, true)) {
-            runCatching(cleanup)
+    private fun finishNativeUse(finished: AtomicBoolean) {
+        if (finished.compareAndSet(false, true)) {
+            val shouldClean = synchronized(lock) {
+                check(activeNativeUses > 0)
+                activeNativeUses--
+                markCleanIfReady()
+            }
+            if (shouldClean) runCatching(cleanup)
         }
+    }
+
+    private fun markCleanIfReady(): Boolean {
+        if (activeNativeUses == 0 && released && !cleaned) {
+            cleaned = true
+            return true
+        }
+        return false
     }
 }
 
@@ -68,7 +99,7 @@ internal class FfmpegKitSceneCommandExecutor : SceneCommandExecutor {
                 FFmpegSession.create(
                     arguments,
                     {},
-                    DISCARD_LOG_CALLBACK,
+                    SCENE_LOG_CALLBACK,
                     DISCARD_STATISTICS_CALLBACK,
                     LogRedirectionStrategy.NEVER_PRINT_LOGS,
                 )
@@ -79,6 +110,7 @@ internal class FfmpegKitSceneCommandExecutor : SceneCommandExecutor {
                 if (ReturnCode.isSuccess(session.returnCode)) {
                     SceneCommandResult.Success()
                 } else {
+                    sceneLog { "ffmpeg: ${session.describeFailure()}" }
                     SceneCommandResult.Failed
                 }
             },
@@ -95,7 +127,7 @@ internal class FfmpegKitSceneCommandExecutor : SceneCommandExecutor {
                 FFprobeSession.create(
                     arguments,
                     {},
-                    DISCARD_LOG_CALLBACK,
+                    SCENE_LOG_CALLBACK,
                     LogRedirectionStrategy.NEVER_PRINT_LOGS,
                 )
             },
@@ -105,6 +137,7 @@ internal class FfmpegKitSceneCommandExecutor : SceneCommandExecutor {
                 if (ReturnCode.isSuccess(session.returnCode)) {
                     SceneCommandResult.Success(session.output.orEmpty())
                 } else {
+                    sceneLog { "ffprobe: ${session.describeFailure()}" }
                     SceneCommandResult.Failed
                 }
             },
@@ -201,7 +234,28 @@ internal class FfmpegKitSceneCommandExecutor : SceneCommandExecutor {
     }
 
     private companion object {
-        val DISCARD_LOG_CALLBACK = LogCallback {}
         val DISCARD_STATISTICS_CALLBACK = StatisticsCallback {}
+
+        /**
+         * FFmpegKit hands every line to the session callback before consulting the redirection
+         * strategy, so [LogRedirectionStrategy.NEVER_PRINT_LOGS] still yields the full output here
+         * while suppressing FFmpegKit's own unredacted logcat writes.
+         */
+        val SCENE_LOG_CALLBACK = LogCallback { log ->
+            if (log.level.value <= Level.AV_LOG_WARNING.value) {
+                log.message?.takeIf(String::isNotBlank)?.let { message ->
+                    sceneLog { "ffmpeg output: ${redactSceneLogLine(message)}" }
+                }
+            }
+        }
+
+        fun Session.describeFailure(): String {
+            val message = buildFFmpegFailureMessage(
+                exitCode = returnCode?.toString() ?: "<none>",
+                failStackTrace = failStackTrace,
+                logs = allLogsAsString,
+            )
+            return redactSceneLogLine(message)
+        }
     }
 }
