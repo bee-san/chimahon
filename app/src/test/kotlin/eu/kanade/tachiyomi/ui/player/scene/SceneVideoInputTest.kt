@@ -70,6 +70,8 @@ class SceneVideoInputTest {
             range = SceneTimeRange(1.25, 11.25),
             outputFile = "/cache/output.obu",
             encoderName = TEST_AV1_ENCODER_NAME,
+            contentSize = SceneVideoDimensions(width = 640, height = 360),
+            outputSize = SceneVideoDimensions(width = 640, height = 360),
             tlsCaFile = "/files/cacert.pem",
         ).toList()
 
@@ -104,10 +106,42 @@ class SceneVideoInputTest {
             ),
         )
         assertEquals(1, arguments.count { it == "-c:v" })
-        assertEquals(SceneFfmpegArguments.FRAME_FILTER, arguments[arguments.indexOf("-vf") + 1])
-        assertTrue(SceneFfmpegArguments.FRAME_FILTER.contains("force_divisible_by=16"))
+        assertEquals(
+            "fps=8,scale=w=640:h=360,setsar=1",
+            arguments[arguments.indexOf("-vf") + 1],
+        )
         assertFalse(arguments.contains("avif"))
         assertFalse(arguments.contains("-loop"))
+    }
+
+    @Test
+    fun `AV1 encode pads aspect preserving content into the codec canvas`() {
+        val arguments = SceneFfmpegArguments.av1MediaCodecPackets(
+            input = supportedInput(),
+            acquiredInputValue = "https://media.example/video.mp4",
+            range = SceneTimeRange(1.25, 11.25),
+            outputFile = "/cache/output.obu",
+            encoderName = TEST_AV1_ENCODER_NAME,
+            contentSize = SceneVideoDimensions(width = 320, height = 180),
+            outputSize = SceneVideoDimensions(width = 320, height = 192),
+            tlsCaFile = "/files/cacert.pem",
+        ).toList()
+
+        assertEquals(
+            "fps=8,scale=w=320:h=180,setsar=1,pad=w=320:h=192:x=0:y=6:color=black",
+            arguments[arguments.indexOf("-vf") + 1],
+        )
+    }
+
+    @Test
+    fun `AV1 padding uses explicit chroma aligned offsets`() {
+        assertEquals(
+            "fps=8,scale=w=318:h=178,setsar=1,pad=w=320:h=180:x=0:y=0:color=black",
+            SceneFfmpegArguments.frameFilter(
+                contentSize = SceneVideoDimensions(width = 318, height = 178),
+                outputSize = SceneVideoDimensions(width = 320, height = 180),
+            ),
+        )
     }
 
     @Test
@@ -150,6 +184,8 @@ class SceneVideoInputTest {
                 range = range,
                 outputFile = "/cache/scene.obu",
                 encoderName = TEST_AV1_ENCODER_NAME,
+                contentSize = SceneVideoDimensions(width = 640, height = 360),
+                outputSize = SceneVideoDimensions(width = 640, height = 360),
                 tlsCaFile = caFile,
             ),
             SceneFfmpegArguments.videoProbe(input, input.value, caFile),
@@ -164,6 +200,29 @@ class SceneVideoInputTest {
             assertFalse("magicyuv" in whitelist)
             val inputIndex = arguments.indexOf("-i").takeIf { it >= 0 } ?: arguments.lastIndex
             assertTrue(arguments.indexOf("-codec_whitelist") < inputIndex)
+        }
+    }
+
+    @Test
+    fun `embedded MP4 subtitles do not block scene probe or encode`() {
+        val input = supportedInput()
+        val commands = listOf(
+            SceneFfmpegArguments.videoProbe(input, input.value, "/files/cacert.pem"),
+            SceneFfmpegArguments.av1MediaCodecPackets(
+                input = input,
+                acquiredInputValue = input.value,
+                range = SceneTimeRange(1.25, 2.25),
+                outputFile = "/cache/scene.obu",
+                encoderName = TEST_AV1_ENCODER_NAME,
+                contentSize = SceneVideoDimensions(width = 640, height = 360),
+                outputSize = SceneVideoDimensions(width = 640, height = 360),
+                tlsCaFile = "/files/cacert.pem",
+            ),
+        )
+
+        commands.forEach { command ->
+            val whitelist = command[command.indexOf("-codec_whitelist") + 1].split(',')
+            assertTrue("mov_text" in whitelist, "mov_text missing from $whitelist")
         }
     }
 
@@ -188,6 +247,8 @@ class SceneVideoInputTest {
                 range = range,
                 outputFile = "/cache/scene.obu",
                 encoderName = TEST_AV1_ENCODER_NAME,
+                contentSize = SceneVideoDimensions(width = 640, height = 360),
+                outputSize = SceneVideoDimensions(width = 640, height = 360),
             ),
             SceneFfmpegArguments.videoProbe(input, safValue),
             SceneFfmpegArguments.audioProbe(input, safValue),
@@ -218,6 +279,8 @@ class SceneVideoInputTest {
                 range = range,
                 outputFile = "/cache/scene.obu",
                 encoderName = TEST_AV1_ENCODER_NAME,
+                contentSize = SceneVideoDimensions(width = 640, height = 360),
+                outputSize = SceneVideoDimensions(width = 640, height = 360),
                 tlsCaFile = caFile,
             )
             .toList()
