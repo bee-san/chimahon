@@ -22,7 +22,7 @@ aniyomi-mpv-lib = "1.17.n"
 seeker = "1.2.2"
 media = "1.7.1"
 truetypeparser = "2.1.4"
-ffmpeg-kit = "1.17.6.1"
+ffmpeg-kit = "1.17.7.1"
 
 [libraries]
 desugar = "com.android.tools:desugar_jdk_libs:2.1.5"
