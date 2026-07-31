@@ -216,6 +216,11 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <service
+            android:name=".ui.player.scene.IsolatedSceneCommandService"
+            android:exported="false"
+            android:process=":scene_processing" />
+
         <meta-data
             android:name="com.google.android.gms.cast.framework.OPTIONS_PROVIDER_CLASS_NAME"
             android:value="eu.kanade.tachiyomi.ui.player.cast.CastOptionsProvider" />
