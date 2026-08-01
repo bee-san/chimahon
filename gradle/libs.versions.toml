@@ -22,7 +22,7 @@ aniyomi-mpv-lib = "1.17.n"
 seeker = "1.2.2"
 media = "1.7.1"
 truetypeparser = "2.1.4"
-ffmpeg-kit = "1.17"
+ffmpeg-kit = "1.17.8.1"
 
 [libraries]
 desugar = "com.android.tools:desugar_jdk_libs:2.1.5"
@@ -94,7 +94,7 @@ truetypeparser = { module = "io.github.yubyf:truetypeparser-light", version.ref 
 torrentserver = "com.github.Diegopyl1209:torrentserver-aniyomi:c18f58e51b"
 media-router = "androidx.mediarouter:mediarouter:1.8.1"
 cast-play-services = "com.google.android.gms:play-services-cast-framework:22.1.0"
-ffmpeg-kit = { module = "com.github.jmir1:ffmpeg-kit", version.ref = "ffmpeg-kit" }
+ffmpeg-kit = { module = "com.github.bee-san:ffmpeg-kit", version.ref = "ffmpeg-kit" }
 smart-exception-java = "com.arthenica:smart-exception-java:0.2.1"
 nanohttpd = { module = "org.nanohttpd:nanohttpd", version = "2.3.1" }
 
