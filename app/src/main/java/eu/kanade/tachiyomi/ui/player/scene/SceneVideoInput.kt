@@ -33,26 +33,53 @@ internal data class SceneVideoInputSnapshot(
 internal object SceneVideoInputResolver {
     fun resolve(snapshot: SceneVideoInputSnapshot): SceneVideoInputSpec? {
         if (snapshot.originalVideoValue.isBlank() && snapshot.playableValue.isNullOrBlank()) {
+            sceneLog { "resolve: rejected, both originalVideoValue and playableValue blank" }
             return null
         }
-        if (isDash(snapshot.originalVideoValue) || isDash(snapshot.playableValue)) return null
+        if (isDash(snapshot.originalVideoValue) || isDash(snapshot.playableValue)) {
+            sceneLog { "resolve: rejected, DASH input is unsupported" }
+            return null
+        }
         if (snapshot.ffmpegStreamArgs.isNotEmpty() || snapshot.ffmpegVideoArgs.isNotEmpty()) {
+            sceneLog {
+                "resolve: rejected, extension supplied ffmpeg args " +
+                    "(stream=${snapshot.ffmpegStreamArgs.size} video=${snapshot.ffmpegVideoArgs.size})"
+            }
             return null
         }
-        if (snapshot.seekable != true) return null
+        if (snapshot.seekable != true) {
+            sceneLog { "resolve: rejected, input not seekable (seekable=${snapshot.seekable})" }
+            return null
+        }
 
         val original = snapshot.originalVideoValue.takeIf(String::isNotBlank)
-        if (original != null && isTransient(original)) return null
+        if (original != null && isTransient(original)) {
+            sceneLog { "resolve: rejected, originalVideoValue has a transient scheme" }
+            return null
+        }
         val normalized = original?.let(::normalizeInput)
             ?: snapshot.playableValue?.takeIf(String::isNotBlank)?.let { playable ->
-                if (isTransient(playable)) return null
+                if (isTransient(playable)) {
+                    sceneLog { "resolve: rejected, playableValue has a transient scheme" }
+                    return null
+                }
                 normalizeInput(playable)
             }
-            ?: return null
+            ?: run {
+                sceneLog {
+                    "resolve: rejected, unrecognized input scheme " +
+                        "original=${redactSceneValue(snapshot.originalVideoValue)} " +
+                        "playable=${redactSceneValue(snapshot.playableValue)}"
+                }
+                return null
+            }
 
         val headers = when (normalized.second) {
             SceneVideoInputKind.REMOTE_HTTP -> validateRemoteInput(normalized.first, snapshot.headers)
-                ?: return null
+                ?: run {
+                    sceneLog { "resolve: rejected, remote input failed validation (credentials or headers)" }
+                    return null
+                }
             SceneVideoInputKind.LOCAL_FILE,
             SceneVideoInputKind.CONTENT_URI,
             -> emptyList()
@@ -163,12 +190,14 @@ internal object SceneVideoInputResolver {
 }
 
 internal object SceneFfmpegArguments {
-    fun animatedAvif(
+    fun animatedAvifMediaCodec(
         input: SceneVideoInputSpec,
         acquiredInputValue: String,
         range: SceneTimeRange,
         outputFile: String,
         encoderName: String,
+        contentSize: SceneVideoDimensions,
+        outputSize: SceneVideoDimensions,
         tlsCaFile: String? = null,
     ): Array<String> {
         require(encoderName.isNotBlank()) { "AV1 encoder name must not be blank" }
@@ -186,7 +215,7 @@ internal object SceneFfmpegArguments {
             add("-t")
             add(range.durationSeconds.toFfmpegSeconds())
             add("-vf")
-            add(FRAME_FILTER)
+            add(frameFilter(contentSize, outputSize))
             add("-frames:v")
             add(MAX_FRAME_COUNT.toString())
             add("-c:v")
@@ -222,7 +251,10 @@ internal object SceneFfmpegArguments {
             add("-select_streams")
             add(input.videoProbeSelector())
             add("-show_entries")
-            add("stream=pix_fmt,color_transfer,color_primaries,bits_per_raw_sample,profile:stream_side_data")
+            add(
+                "stream=width,height,sample_aspect_ratio,pix_fmt,color_transfer,color_primaries," +
+                    "bits_per_raw_sample,profile:stream_side_data",
+            )
             add("-of")
             add("default=noprint_wrappers=1")
             add(acquiredInputValue)
@@ -320,14 +352,54 @@ internal object SceneFfmpegArguments {
         return String.format(Locale.ROOT, "%.6f", this).trimEnd('0').trimEnd('.')
     }
 
-    internal const val FRAME_FILTER =
-        "fps=8,scale=w='min(640,iw)':h='min(640,ih)':force_original_aspect_ratio=decrease:force_divisible_by=16,setsar=1"
-    internal const val FRAME_RATE = 8.0
+    internal fun frameFilter(
+        contentSize: SceneVideoDimensions,
+        outputSize: SceneVideoDimensions,
+    ): String {
+        require(
+            outputSize.width in SCENE_PIXEL_ALIGNMENT..SCENE_MAX_OUTPUT_DIMENSION &&
+                outputSize.height in SCENE_PIXEL_ALIGNMENT..SCENE_MAX_OUTPUT_DIMENSION &&
+                outputSize.width % SCENE_PIXEL_ALIGNMENT == 0 &&
+                outputSize.height % SCENE_PIXEL_ALIGNMENT == 0 &&
+                outputSize.width % SCENE_MEDIACODEC_CANVAS_ALIGNMENT == 0 &&
+                outputSize.height % SCENE_MEDIACODEC_CANVAS_ALIGNMENT == 0,
+        ) {
+            "Scene output size must be 16-pixel aligned and no larger than $SCENE_MAX_OUTPUT_DIMENSION"
+        }
+        require(
+            contentSize.width in SCENE_PIXEL_ALIGNMENT..outputSize.width &&
+                contentSize.height in SCENE_PIXEL_ALIGNMENT..outputSize.height &&
+                contentSize.width % SCENE_PIXEL_ALIGNMENT == 0 &&
+                contentSize.height % SCENE_PIXEL_ALIGNMENT == 0,
+        ) {
+            "Scene content size must be even and fit inside the output"
+        }
+        return buildList {
+            add("fps=8")
+            add("scale=w=${contentSize.width}:h=${contentSize.height}")
+            add("setsar=1")
+            if (contentSize != outputSize) {
+                val horizontalGap = outputSize.width - contentSize.width
+                val verticalGap = outputSize.height - contentSize.height
+                add(
+                    "pad=w=${outputSize.width}:h=${outputSize.height}:" +
+                        "x=${horizontalGap.centeredChromaOffset()}:" +
+                        "y=${verticalGap.centeredChromaOffset()}:color=black",
+                )
+            }
+        }.joinToString(separator = ",")
+    }
+
+    private fun Int.centeredChromaOffset(): Int {
+        return (this / 2).let { center -> center - (center % SCENE_PIXEL_ALIGNMENT) }
+    }
+
+    internal const val FRAME_RATE = SCENE_FRAME_RATE
     internal const val MAX_FRAME_COUNT = 80
     private const val REMOTE_PROTOCOLS = "http,https,tls,tcp,crypto"
     private const val REMOTE_IO_TIMEOUT_MICROSECONDS = "15000000"
     internal const val ALLOWED_INPUT_DECODERS =
-        "aac,ac3,alac,av1,dca,eac3,ffv1,flac,h263,h264,hevc,libdav1d,mjpeg,mp3,mp3float,mpeg1video," +
-            "mpeg2video,mpeg4,opus,pcm_f32le,pcm_s16le,pcm_s24le,pcm_s32le,png,prores,theora,truehd," +
-            "vorbis,vp8,vp9"
+        "aac,ac3,alac,av1,dca,eac3,ffv1,flac,h263,h264,hevc,libdav1d,mjpeg,mov_text,mp3,mp3float," +
+            "mpeg1video,mpeg2video,mpeg4,opus,pcm_f32le,pcm_s16le,pcm_s24le,pcm_s32le,png,prores," +
+            "theora,truehd,vorbis,vp8,vp9"
 }

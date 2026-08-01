@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 
 internal fun interface SceneCaptureService {
     suspend fun prepare(request: SceneCaptureRequest): AnkiScreenshotPreparation
@@ -21,90 +22,209 @@ internal class AndroidSceneCaptureService private constructor(
     private val inputAcquirer: SceneInputAcquirer,
     private val commandExecutor: SceneCommandExecutor,
     private val validate: (File) -> AnimatedAvifInfo?,
-    private val av1EncoderName: () -> String?,
+    private val av1Encoder: (SceneVideoDimensions) -> Av1EncoderSelection?,
 ) : SceneCaptureService {
     constructor(context: Context) : this(
         sceneDirectory = File(context.cacheDir, SCENE_CACHE_DIRECTORY),
         inputAcquirer = AndroidSceneInputAcquirer(context),
         commandExecutor = FfmpegKitSceneCommandExecutor(),
         validate = AnimatedAvifValidator::validate,
-        av1EncoderName = ::platformAv1EncoderName,
+        av1Encoder = ::platformAv1Encoder,
     )
 
     override suspend fun prepare(request: SceneCaptureRequest): AnkiScreenshotPreparation {
-        val input = request.videoInput ?: return AnkiScreenshotPreparation.Failed(stillFallback = null)
-        val range = request.resolvedTiming?.animationRange
-            ?: return AnkiScreenshotPreparation.Failed(stillFallback = null)
-        val encoderName = av1EncoderName()
-        if (encoderName.isNullOrBlank()) {
+        val input = request.videoInput ?: run {
+            sceneLog { "prepare: videoInput was null" }
             return AnkiScreenshotPreparation.Failed(stillFallback = null)
         }
-
-        return withContext(Dispatchers.IO) {
-            if (!isSafe(input)) {
-                return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
+        val range = request.resolvedTiming?.animationRange
+            ?: run {
+                sceneLog { "prepare: resolvedTiming.animationRange was null" }
+                return AnkiScreenshotPreparation.Failed(stillFallback = null)
             }
-            val lease = inputAcquirer.acquire(input)
-                ?: return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
-            sceneDirectory.mkdirs()
-            val output = File(sceneDirectory, "${UUID.randomUUID()}.avif")
-            val inputCleanup = SceneNativeCleanup(lease::close)
-            val outputCleanup = SceneNativeCleanup(output::delete)
-            var transferred = false
-            try {
-                val result = commandExecutor.executeFfmpeg(
-                    SceneFfmpegArguments.animatedAvif(
+
+        val undeliveredOutput = AtomicReference<SceneNativeCleanup?>()
+        return try {
+            val result = withContext(Dispatchers.IO) {
+                try {
+                    val sourceDimensions = inspectSafeVideo(input)
+                    if (sourceDimensions == null) {
+                        sceneLog { "prepare: input rejected by ffprobe safety check" }
+                        return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
+                    }
+                    val encoder = av1Encoder(sourceDimensions)
+                        ?: run {
+                            sceneLog {
+                                "prepare: no usable av1 MediaCodec encoder found for " +
+                                    "${sourceDimensions.width}x${sourceDimensions.height}"
+                            }
+                            return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
+                        }
+                    sceneLog {
+                        "prepare: starting, encoder=${encoder.name} source=${sourceDimensions.width}x" +
+                            "${sourceDimensions.height} content=${encoder.contentSize.width}x" +
+                            "${encoder.contentSize.height} output=${encoder.outputSize.width}x" +
+                            "${encoder.outputSize.height} range=${range.startSeconds}..${range.endSeconds} " +
+                            "(${range.durationSeconds}s) input=${input.describe()}"
+                    }
+                    prepareOnIo(
                         input = input,
-                        acquiredInputValue = lease.ffmpegValue,
                         range = range,
-                        outputFile = output.absolutePath,
-                        encoderName = encoderName,
-                        tlsCaFile = lease.tlsCaFile,
-                    ),
-                ) {
+                        encoder = encoder,
+                        undeliveredOutput = undeliveredOutput,
+                    )
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    sceneLog(throwable = e) { "prepare: threw before scene generation" }
+                    AnkiScreenshotPreparation.Failed(stillFallback = null)
+                }
+            }
+            undeliveredOutput.set(null)
+            result
+        } finally {
+            undeliveredOutput.getAndSet(null)?.release()
+        }
+    }
+
+    private suspend fun prepareOnIo(
+        input: SceneVideoInputSpec,
+        range: SceneTimeRange,
+        encoder: Av1EncoderSelection,
+        undeliveredOutput: AtomicReference<SceneNativeCleanup?>,
+    ): AnkiScreenshotPreparation {
+        sceneDirectory.mkdirs()
+        val outputBaseName = UUID.randomUUID().toString()
+        val output = File(sceneDirectory, "$outputBaseName.avif")
+        val lease = inputAcquirer.acquire(input)
+            ?: run {
+                sceneLog { "prepare: could not acquire input lease" }
+                return AnkiScreenshotPreparation.Failed(stillFallback = null)
+            }
+        val encodeArguments = try {
+            SceneFfmpegArguments.animatedAvifMediaCodec(
+                input = input,
+                acquiredInputValue = lease.ffmpegValue,
+                range = range,
+                outputFile = output.absolutePath,
+                encoderName = encoder.name,
+                contentSize = encoder.contentSize,
+                outputSize = encoder.outputSize,
+                tlsCaFile = lease.tlsCaFile,
+            )
+        } catch (e: Exception) {
+            lease.close()
+            sceneLog(throwable = e) { "prepare: could not build AV1 encode arguments" }
+            return AnkiScreenshotPreparation.Failed(stillFallback = null)
+        }
+        val inputCleanup = SceneNativeCleanup(lease::close)
+        val outputCleanup = SceneNativeCleanup(output::delete)
+        var transferred = false
+        return try {
+            val encodeResult = try {
+                commandExecutor.executeFfmpeg(encodeArguments) {
                     inputCleanup.nativeFinished()
                     outputCleanup.nativeFinished()
                 }
-                when (result) {
-                    SceneCommandResult.Failed -> {
-                        return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
-                    }
-                    is SceneCommandResult.Success -> Unit
-                }
-                val info = validate(output)
-                    ?.takeIf {
-                        it.width in 1..MAX_OUTPUT_DIMENSION &&
-                            it.height in 1..MAX_OUTPUT_DIMENSION &&
-                            it.frameCount in 2..SceneFfmpegArguments.MAX_FRAME_COUNT &&
-                            it.totalDurationMillis > 0L
-                    }
-                    ?: return@withContext AnkiScreenshotPreparation.Failed(stillFallback = null)
-                val animation = AnkiMediaNaming.sceneFileSource(output)
-                transferred = true
-                AnkiScreenshotPreparation.Animated(
-                    animation = animation,
-                    stillFallback = null,
-                )
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {
-                AnkiScreenshotPreparation.Failed(stillFallback = null)
-            } finally {
-                inputCleanup.release()
-                if (!transferred) outputCleanup.release()
+            } catch (e: Exception) {
+                inputCleanup.nativeFinished()
+                outputCleanup.nativeFinished()
+                throw e
+            }
+            inputCleanup.release()
+            when (encodeResult) {
+                SceneCommandResult.Failed -> {
+                    sceneLog { "prepare: direct av1_mediacodec AVIF encode failed" }
+                    return AnkiScreenshotPreparation.Failed(stillFallback = null)
+                }
+                is SceneCommandResult.Success -> Unit
+            }
+            val validated = validate(output)
+            if (validated == null) {
+                sceneLog { "prepare: AVIF structure validation failed, ${output.length()} bytes" }
+                return AnkiScreenshotPreparation.Failed(stillFallback = null)
+            }
+            val info = validated
+                .takeIf {
+                    it.width == encoder.outputSize.width &&
+                        it.height == encoder.outputSize.height &&
+                        it.frameCount in 2..SceneFfmpegArguments.MAX_FRAME_COUNT &&
+                        it.totalDurationMillis > 0L
+                }
+                ?: run {
+                    sceneLog {
+                        "prepare: AVIF outside selection, width=${validated.width} " +
+                            "height=${validated.height} expected=${encoder.outputSize.width}x" +
+                            "${encoder.outputSize.height} frameCount=${validated.frameCount} " +
+                            "(need 2..${SceneFfmpegArguments.MAX_FRAME_COUNT}) " +
+                            "durationMs=${validated.totalDurationMillis}"
+                    }
+                    return AnkiScreenshotPreparation.Failed(stillFallback = null)
+                }
+            val animation = AnkiMediaNaming.sceneFileSource(output)
+            val prepared = AnkiScreenshotPreparation.Animated(
+                animation = animation,
+                stillFallback = null,
+            )
+            undeliveredOutput.set(outputCleanup)
+            transferred = true
+            sceneLog {
+                "prepare: success, ${info.frameCount} frames ${info.width}x${info.height} " +
+                    "${info.totalDurationMillis}ms ${output.length()} bytes"
+            }
+            prepared
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            sceneLog(throwable = e) { "prepare: threw during scene generation" }
+            return AnkiScreenshotPreparation.Failed(stillFallback = null)
+        } finally {
+            inputCleanup.release()
+            if (!transferred) {
+                outputCleanup.release()
             }
         }
     }
 
-    private suspend fun isSafe(input: SceneVideoInputSpec): Boolean {
-        val lease = inputAcquirer.acquire(input) ?: return false
+    private suspend fun inspectSafeVideo(input: SceneVideoInputSpec): SceneVideoDimensions? {
+        val lease = inputAcquirer.acquire(input) ?: run {
+            sceneLog { "isSafe: could not acquire input lease for probe" }
+            return null
+        }
+        val arguments = try {
+            SceneFfmpegArguments.videoProbe(input, lease.ffmpegValue, lease.tlsCaFile)
+        } catch (e: Exception) {
+            lease.close()
+            sceneLog(throwable = e) { "isSafe: could not build ffprobe arguments" }
+            return null
+        }
         val cleanup = SceneNativeCleanup(lease::close)
         return try {
-            val result = commandExecutor.executeFfprobe(
-                SceneFfmpegArguments.videoProbe(input, lease.ffmpegValue, lease.tlsCaFile),
-                cleanup::nativeFinished,
-            )
-            result is SceneCommandResult.Success && SceneMediaProbe.inspect(result.output)
+            val result = try {
+                commandExecutor.executeFfprobe(arguments, cleanup::nativeFinished)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                cleanup.nativeFinished()
+                throw e
+            }
+            when (result) {
+                SceneCommandResult.Failed -> {
+                    sceneLog { "isSafe: ffprobe failed to run" }
+                    null
+                }
+                is SceneCommandResult.Success -> {
+                    // An absent pix_fmt and an HDR rejection both return false, so print the output.
+                    SceneMediaProbe.inspectVideo(result.output).also { inspected ->
+                        if (inspected == null) {
+                            val output = redactSceneLogLine(result.output)
+                            sceneLog { "isSafe: probe rejected input, ffprobe output=<<<$output>>>" }
+                        }
+                    }
+                }
+            }
         } finally {
             cleanup.release()
         }
@@ -112,25 +232,24 @@ internal class AndroidSceneCaptureService private constructor(
 
     internal companion object {
         private const val SCENE_CACHE_DIRECTORY = "chimahon_scene_capture"
-        private const val MAX_OUTPUT_DIMENSION = 640
 
         fun forTests(
             sceneDirectory: File,
             inputAcquirer: SceneInputAcquirer,
             commandExecutor: SceneCommandExecutor,
             validate: (File) -> AnimatedAvifInfo?,
-            av1EncoderName: () -> String? = { TEST_AV1_ENCODER_NAME },
+            av1Encoder: (SceneVideoDimensions) -> Av1EncoderSelection? = ::testAv1Encoder,
         ): AndroidSceneCaptureService {
             return AndroidSceneCaptureService(
                 sceneDirectory = sceneDirectory,
                 inputAcquirer = inputAcquirer,
                 commandExecutor = commandExecutor,
                 validate = validate,
-                av1EncoderName = av1EncoderName,
+                av1Encoder = av1Encoder,
             )
         }
 
-        private fun platformAv1EncoderName(): String? {
+        private fun platformAv1Encoder(source: SceneVideoDimensions): Av1EncoderSelection? {
             val mimeTypes = MimeTypeMap.getSingleton()
             val hasMimeMapping = mimeTypes.getMimeTypeFromExtension("avif")
                 ?.equals("image/avif", ignoreCase = true) == true &&
@@ -139,34 +258,68 @@ internal class AndroidSceneCaptureService private constructor(
             if (!hasMimeMapping) return null
 
             return runCatching {
-                MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+                val candidates = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
                     .asSequence()
                     .filter(MediaCodecInfo::isEncoder)
                     .filter { info ->
                         info.supportedTypes.any { it.equals(AV1_MIME_TYPE, ignoreCase = true) }
                     }
-                    .firstOrNull { info ->
+                    .mapNotNull { info ->
                         runCatching {
                             val capabilities = info.getCapabilitiesForType(AV1_MIME_TYPE)
-                            val encoder = capabilities.encoderCapabilities ?: return@runCatching false
-                            val video = capabilities.videoCapabilities ?: return@runCatching false
-                            val supportsYuv420Planar = capabilities.colorFormats.contains(
-                                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar,
-                            )
-                            supportsYuv420Planar &&
-                                encoder.isBitrateModeSupported(
+                            val encoder = capabilities.encoderCapabilities ?: return@runCatching null
+                            val video = capabilities.videoCapabilities ?: return@runCatching null
+                            Av1EncoderCandidate(
+                                name = info.name,
+                                supportsPlanarYuv420 = capabilities.colorFormats.contains(
+                                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar,
+                                ),
+                                supportsConstantQuality = encoder.isBitrateModeSupported(
                                     MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CQ,
-                                ) &&
-                                encoder.qualityRange.contains(MEDIACODEC_QUALITY) &&
-                                video.areSizeAndRateSupported(
-                                    MAX_OUTPUT_DIMENSION,
-                                    MAX_OUTPUT_DIMENSION,
-                                    SceneFfmpegArguments.FRAME_RATE,
-                                )
-                        }.getOrDefault(false)
+                                ),
+                                supportsTargetQuality = encoder.qualityRange.contains(MEDIACODEC_QUALITY),
+                                widthAlignment = video.widthAlignment,
+                                heightAlignment = video.heightAlignment,
+                                minimumWidth = video.supportedWidths.lower,
+                                minimumHeight = video.supportedHeights.lower,
+                                maximumWidth = video.supportedWidths.upper,
+                                maximumHeight = video.supportedHeights.upper,
+                                supportedWidthsForHeight = { height ->
+                                    runCatching {
+                                        video.getSupportedWidthsFor(height)
+                                    }.getOrNull()?.let { range ->
+                                        range.lower..range.upper
+                                    }
+                                },
+                                supportsSizeAndRate = { size, rate ->
+                                    video.areSizeAndRateSupported(size.width, size.height, rate)
+                                },
+                            )
+                        }.getOrNull()
                     }
-                    ?.name
+                selectAv1Encoder(
+                    source = source,
+                    candidates = candidates,
+                    frameRate = SceneFfmpegArguments.FRAME_RATE,
+                )
             }.getOrNull()
+        }
+
+        private fun testAv1Encoder(source: SceneVideoDimensions): Av1EncoderSelection? {
+            return selectAv1Encoder(
+                source = source,
+                candidates = sequenceOf(
+                    Av1EncoderCandidate(
+                        name = TEST_AV1_ENCODER_NAME,
+                        supportsPlanarYuv420 = true,
+                        supportsConstantQuality = true,
+                        supportsTargetQuality = true,
+                        widthAlignment = SCENE_PIXEL_ALIGNMENT,
+                        heightAlignment = SCENE_PIXEL_ALIGNMENT,
+                        supportsSizeAndRate = { _, _ -> true },
+                    ),
+                ),
+            )
         }
 
         internal const val TEST_AV1_ENCODER_NAME = "test.av1.encoder"

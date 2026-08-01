@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -62,14 +63,16 @@ class SceneVideoInputTest {
     }
 
     @Test
-    fun `AVIF command has the single bounded native recipe`() {
+    fun `AV1 encode muxes MediaCodec output directly into animated AVIF`() {
         val input = supportedInput()
-        val arguments = SceneFfmpegArguments.animatedAvif(
+        val arguments = SceneFfmpegArguments.animatedAvifMediaCodec(
             input = input,
             acquiredInputValue = "https://media.example/video.mp4",
             range = SceneTimeRange(1.25, 11.25),
             outputFile = "/cache/output.avif",
             encoderName = TEST_AV1_ENCODER_NAME,
+            contentSize = SceneVideoDimensions(width = 640, height = 360),
+            outputSize = SceneVideoDimensions(width = 640, height = 368),
             tlsCaFile = "/files/cacert.pem",
         ).toList()
 
@@ -104,9 +107,51 @@ class SceneVideoInputTest {
             ),
         )
         assertEquals(1, arguments.count { it == "-c:v" })
-        assertEquals(SceneFfmpegArguments.FRAME_FILTER, arguments[arguments.indexOf("-vf") + 1])
-        assertTrue(SceneFfmpegArguments.FRAME_FILTER.contains("force_divisible_by=16"))
-        assertFalse(arguments.any { it.contains("webp", ignoreCase = true) })
+        assertEquals(
+            "fps=8,scale=w=640:h=360,setsar=1,pad=w=640:h=368:x=0:y=4:color=black",
+            arguments[arguments.indexOf("-vf") + 1],
+        )
+        assertEquals("/cache/output.avif", arguments.last())
+    }
+
+    @Test
+    fun `AV1 encode pads aspect preserving content into the codec canvas`() {
+        val arguments = SceneFfmpegArguments.animatedAvifMediaCodec(
+            input = supportedInput(),
+            acquiredInputValue = "https://media.example/video.mp4",
+            range = SceneTimeRange(1.25, 11.25),
+            outputFile = "/cache/output.avif",
+            encoderName = TEST_AV1_ENCODER_NAME,
+            contentSize = SceneVideoDimensions(width = 320, height = 180),
+            outputSize = SceneVideoDimensions(width = 320, height = 192),
+            tlsCaFile = "/files/cacert.pem",
+        ).toList()
+
+        assertEquals(
+            "fps=8,scale=w=320:h=180,setsar=1,pad=w=320:h=192:x=0:y=6:color=black",
+            arguments[arguments.indexOf("-vf") + 1],
+        )
+    }
+
+    @Test
+    fun `AV1 padding uses explicit chroma aligned offsets`() {
+        assertEquals(
+            "fps=8,scale=w=318:h=178,setsar=1,pad=w=320:h=192:x=0:y=6:color=black",
+            SceneFfmpegArguments.frameFilter(
+                contentSize = SceneVideoDimensions(width = 318, height = 178),
+                outputSize = SceneVideoDimensions(width = 320, height = 192),
+            ),
+        )
+    }
+
+    @Test
+    fun `AV1 filter rejects a canvas that is not sixteen pixel aligned`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            SceneFfmpegArguments.frameFilter(
+                contentSize = SceneVideoDimensions(width = 320, height = 180),
+                outputSize = SceneVideoDimensions(width = 320, height = 180),
+            )
+        }
     }
 
     @Test
@@ -115,12 +160,14 @@ class SceneVideoInputTest {
         val range = SceneTimeRange(1.25, 2.25)
         val caFile = "/files/cacert.pem"
         val commands = listOf(
-            SceneFfmpegArguments.animatedAvif(
+            SceneFfmpegArguments.animatedAvifMediaCodec(
                 input = input,
                 acquiredInputValue = input.value,
                 range = range,
                 outputFile = "/cache/scene.avif",
                 encoderName = TEST_AV1_ENCODER_NAME,
+                contentSize = SceneVideoDimensions(width = 640, height = 360),
+                outputSize = SceneVideoDimensions(width = 640, height = 368),
                 tlsCaFile = caFile,
             ),
             SceneFfmpegArguments.videoProbe(input, input.value, caFile),
@@ -139,6 +186,67 @@ class SceneVideoInputTest {
     }
 
     @Test
+    fun `embedded MP4 subtitles do not block scene probe or encode`() {
+        val input = supportedInput()
+        val commands = listOf(
+            SceneFfmpegArguments.videoProbe(input, input.value, "/files/cacert.pem"),
+            SceneFfmpegArguments.animatedAvifMediaCodec(
+                input = input,
+                acquiredInputValue = input.value,
+                range = SceneTimeRange(1.25, 2.25),
+                outputFile = "/cache/scene.avif",
+                encoderName = TEST_AV1_ENCODER_NAME,
+                contentSize = SceneVideoDimensions(width = 640, height = 360),
+                outputSize = SceneVideoDimensions(width = 640, height = 368),
+                tlsCaFile = "/files/cacert.pem",
+            ),
+        )
+
+        commands.forEach { command ->
+            val whitelist = command[command.indexOf("-codec_whitelist") + 1].split(',')
+            assertTrue("mov_text" in whitelist, "mov_text missing from $whitelist")
+        }
+    }
+
+    /**
+     * SAF documents reach FFmpeg as FFmpegKit's `saf:<id>.<ext>` pseudo-URL, because reopening a
+     * `/proc/self/fd/N` path re-checks permissions against the real file and loses the SAF grant.
+     * `-protocol_whitelist` would filter that scheme out, so it must stay confined to remote input.
+     */
+    @Test
+    fun `content uri commands pass a saf value through without restricting protocols`() {
+        val input = SceneVideoInputSpec(
+            value = "content://com.android.externalstorage.documents/tree/primary%3AAnime",
+            kind = SceneVideoInputKind.CONTENT_URI,
+            headers = emptyList(),
+        )
+        val safValue = "saf:37.mp4"
+        val range = SceneTimeRange(1.25, 2.25)
+        val commands = listOf(
+            SceneFfmpegArguments.animatedAvifMediaCodec(
+                input = input,
+                acquiredInputValue = safValue,
+                range = range,
+                outputFile = "/cache/scene.avif",
+                encoderName = TEST_AV1_ENCODER_NAME,
+                contentSize = SceneVideoDimensions(width = 640, height = 360),
+                outputSize = SceneVideoDimensions(width = 640, height = 368),
+            ),
+            SceneFfmpegArguments.videoProbe(input, safValue),
+            SceneFfmpegArguments.audioProbe(input, safValue),
+            SceneFfmpegArguments.sentenceAudio(input, safValue, range, "/cache/audio.m4a"),
+        )
+
+        commands.forEach { command ->
+            val arguments = command.toList()
+            assertTrue(safValue in arguments, "saf value missing from $arguments")
+            assertFalse("-protocol_whitelist" in arguments, "saf scheme would be filtered out")
+            // The content uri itself must never reach ffmpeg -- it is not an openable path.
+            assertFalse(arguments.any { it.startsWith("content://") }, arguments.toString())
+        }
+    }
+
+    @Test
     fun `sentence audio maps the frozen selected stream`() {
         val input = supportedInput().copy(videoStreamIndex = 2, audioStreamIndex = 3)
         val range = SceneTimeRange(1.25, 2.25)
@@ -147,12 +255,14 @@ class SceneVideoInputTest {
             .sentenceAudio(input, input.value, range, "/cache/audio.m4a", caFile)
             .toList()
         val video = SceneFfmpegArguments
-            .animatedAvif(
+            .animatedAvifMediaCodec(
                 input = input,
                 acquiredInputValue = input.value,
                 range = range,
                 outputFile = "/cache/scene.avif",
                 encoderName = TEST_AV1_ENCODER_NAME,
+                contentSize = SceneVideoDimensions(width = 640, height = 360),
+                outputSize = SceneVideoDimensions(width = 640, height = 368),
                 tlsCaFile = caFile,
             )
             .toList()
