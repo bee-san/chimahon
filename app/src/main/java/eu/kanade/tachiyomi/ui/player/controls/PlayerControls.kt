@@ -644,7 +644,7 @@ fun PlayerControls(
                         isPipAvailable = activity.isPipSupportedAndEnabled,
                         onPipClick = {
                             if (!viewModel.isLoadingEpisode.value) {
-                                activity.enterPictureInPictureMode(activity.createPipParams())
+                                activity.enterPictureInPictureIfAvailable()
                             }
                         },
                         onAspectClick = {

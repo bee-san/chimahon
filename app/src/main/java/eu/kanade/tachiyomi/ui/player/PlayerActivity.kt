@@ -43,6 +43,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.Looper
 import android.util.Rational
 import android.view.KeyEvent
 import android.view.View
@@ -142,10 +143,19 @@ class PlayerActivity : BaseActivity() {
     private var restoreAudioFocus: () -> Unit = {}
 
     private var pipRect: Rect? = null
-    val isPipSupportedAndEnabled by lazy {
-        packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE) &&
-            playerPreferences.enablePip().get()
+    private val pipGuard by lazy {
+        PictureInPictureGuard(
+            initiallyAvailable = packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE) &&
+                playerPreferences.enablePip().get(),
+            onRejected = { error ->
+                logcat(LogPriority.WARN, error) {
+                    "Picture-in-picture disabled after framework rejection"
+                }
+            },
+        )
     }
+    val isPipSupportedAndEnabled: Boolean
+        get() = pipGuard.isAvailable
 
     private var pipReceiver: BroadcastReceiver? = null
 
@@ -396,7 +406,9 @@ class PlayerActivity : BaseActivity() {
                     castManager = castManager, // Pass the castManager instance
                     onBackPress = {
                         if (isPipSupportedAndEnabled && player.paused == false && playerPreferences.pipOnExit().get()) {
-                            enterPictureInPictureMode(createPipParams())
+                            if (!enterPictureInPictureIfAvailable()) {
+                                finish()
+                            }
                         } else {
                             finish()
                         }
@@ -525,7 +537,7 @@ class PlayerActivity : BaseActivity() {
 
         MPVLib.removeLogObserver(playerObserver)
         MPVLib.removeObserver(playerObserver)
-        player.destroy()
+        player.destroyPlayer()
         castManager.cleanup()
 
 
@@ -574,7 +586,7 @@ class PlayerActivity : BaseActivity() {
     @SuppressLint("MissingSuperCall")
     override fun onUserLeaveHint() {
         if (isPipSupportedAndEnabled && player.paused == false && playerPreferences.pipOnExit().get()) {
-            enterPictureInPictureMode()
+            enterPictureInPictureIfAvailable()
         }
         super.onUserLeaveHint()
     }
@@ -586,7 +598,9 @@ class PlayerActivity : BaseActivity() {
                 viewModel.panelShown.value == Panels.None &&
                 viewModel.dialogShown.value == Dialogs.None
             ) {
-                enterPictureInPictureMode()
+                if (!enterPictureInPictureIfAvailable()) {
+                    super.onBackPressed()
+                }
             }
         } else {
             super.onBackPressed()
@@ -595,7 +609,7 @@ class PlayerActivity : BaseActivity() {
 
     override fun onStart() {
         super.onStart()
-        setPictureInPictureParams(createPipParams())
+        updatePictureInPictureParamsIfAvailable()
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.setFlags(
             WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
@@ -642,18 +656,24 @@ class PlayerActivity : BaseActivity() {
     }
 
     private fun loadPlayableUrl(url: String) {
-        MPVLib.command(arrayOf("loadfile", url, "replace"))
+        player.loadFileWhenSurfaceReady(url)
     }
 
     private fun setupPlayerMPV() {
         val logLevel = if (networkPreferences.verboseLogging().get()) "info" else "warn"
         val internalConfigDir = applicationContext.filesDir.path
 
-        val configDir = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()) {
-            storageManager.getMPVConfigDirectory()!!.filePath!!
-        } else {
-            internalConfigDir
-        }
+        val configDir = resolveMpvConfigDirectory(
+            internalConfigDirectory = internalConfigDir,
+            useExternalConfigDirectory = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                Environment.isExternalStorageManager(),
+            externalConfigDirectory = { storageManager.getMPVConfigDirectory()?.filePath },
+            onExternalFailure = { error ->
+                logcat(LogPriority.WARN, error) {
+                    "Failed to resolve external MPV config directory; using internal storage"
+                }
+            },
+        )
 
         val mpvConfFile = File("$configDir/mpv.conf")
         advancedPlayerPreferences.mpvConf().get().let { mpvConfFile.writeText(it) }
@@ -890,6 +910,7 @@ class PlayerActivity : BaseActivity() {
         }
 
         player.isExiting = false
+        player.retryPendingLoad()
         super.onResume()
 
         viewModel.currentVolume.update {
@@ -962,7 +983,7 @@ class PlayerActivity : BaseActivity() {
                 }
 
                 runCatching {
-                    setPictureInPictureParams(createPipParams())
+                    updatePictureInPictureParamsIfAvailable()
                 }
 
             }
@@ -1023,6 +1044,19 @@ class PlayerActivity : BaseActivity() {
         }
     }
 
+    internal fun updatePictureInPictureParamsIfAvailable(): Boolean {
+        return pipGuard.runIfAvailable {
+            setPictureInPictureParams(createPipParams())
+            true
+        }
+    }
+
+    internal fun enterPictureInPictureIfAvailable(): Boolean {
+        return pipGuard.runIfAvailable {
+            enterPictureInPictureMode(createPipParams())
+        }
+    }
+
     fun createPipParams(): PictureInPictureParams {
         val builder = PictureInPictureParams.Builder()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -1065,7 +1099,7 @@ class PlayerActivity : BaseActivity() {
                 pipReceiver = null
             }
         } else {
-            setPictureInPictureParams(createPipParams())
+            updatePictureInPictureParamsIfAvailable()
             viewModel.hideControls()
             viewModel.hideSeekBar()
             viewModel.isBrightnessSliderShown.update { false }
@@ -1081,7 +1115,7 @@ class PlayerActivity : BaseActivity() {
                         PIP_PREVIOUS -> viewModel.changeEpisode(true)
                         PIP_SKIP -> viewModel.seekBy(10)
                     }
-                    setPictureInPictureParams(createPipParams())
+                    updatePictureInPictureParamsIfAvailable()
                 }
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -1341,6 +1375,10 @@ class PlayerActivity : BaseActivity() {
     }
 
     fun setVideo(video: Video?, position: Long? = null) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            runOnUiThread { setVideo(video, position) }
+            return
+        }
         if (player.isExiting) return
         if (video == null) return
 
