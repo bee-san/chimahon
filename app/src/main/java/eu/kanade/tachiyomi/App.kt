@@ -46,8 +46,8 @@ import eu.kanade.domain.ui.model.setAppCompatDelegateThemeMode
 import eu.kanade.tachiyomi.core.security.PrivacyPreferences
 import eu.kanade.tachiyomi.crash.CrashActivity
 import eu.kanade.tachiyomi.crash.GlobalExceptionHandler
-import eu.kanade.tachiyomi.data.coil.AnimeImageFetcher
 import eu.kanade.tachiyomi.data.coil.AnimeCoverKeyer
+import eu.kanade.tachiyomi.data.coil.AnimeImageFetcher
 import eu.kanade.tachiyomi.data.coil.AnimeKeyer
 import eu.kanade.tachiyomi.data.coil.BufferedSourceFetcher
 import eu.kanade.tachiyomi.data.coil.MangaCoverFetcher
@@ -65,6 +65,7 @@ import eu.kanade.tachiyomi.di.PreferenceModule
 import eu.kanade.tachiyomi.di.SYPreferenceModule
 import eu.kanade.tachiyomi.network.NetworkHelper
 import eu.kanade.tachiyomi.ui.base.delegate.SecureActivityDelegate
+import eu.kanade.tachiyomi.ui.player.scene.SceneCommandProcess
 import eu.kanade.tachiyomi.util.CrashLogUtil
 import eu.kanade.tachiyomi.util.system.DeviceUtil
 import eu.kanade.tachiyomi.util.system.GLUtil
@@ -114,6 +115,15 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
     @SuppressLint("LaunchActivityFromNotification")
     override fun onCreate() {
         super<Application>.onCreate()
+        if (SceneCommandProcess.isCurrent()) {
+            if (!LogcatLogger.isInstalled) {
+                LogcatLogger.install()
+            }
+            if (LogcatLogger.loggers.none { it is AndroidLogcatLogger }) {
+                LogcatLogger.loggers += AndroidLogcatLogger(LogPriority.INFO)
+            }
+            return
+        }
         patchInjekt()
 
         // KMK -->
@@ -223,7 +233,7 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
         }
 
         initializeMigrator()
-        
+
         // Chimahon -->
         com.canopus.chimareader.data.NovelMigration.migrateOldBooks(this)
         chimahon.DictionaryRepository.migrateFlatDictionaries(File(getExternalFilesDir(null), "dictionaries"))
@@ -318,7 +328,7 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
         // AM (DISCORD) -->
         DiscordRPCService.stop(applicationContext)
         // <-- AM (DISCORD)
-        
+
         eu.kanade.tachiyomi.glance.ChimahonWidgetManager.updateAllWidgets(this)
     }
 

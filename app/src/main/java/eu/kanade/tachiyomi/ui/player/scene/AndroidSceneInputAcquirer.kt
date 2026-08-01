@@ -40,16 +40,13 @@ internal class AndroidSceneInputAcquirer(
         }.getOrNull()
     }
 
+    /**
+     * Keep the SAF URI encoded until it reaches the process that owns FFmpegKit. A
+     * `/proc/self/fd/N` path is process-local and cannot be handed to the isolated worker.
+     */
     private fun acquireContentUri(value: String): SceneInputLease? {
-        val descriptor = runCatching {
-            applicationContext.contentResolver.openFileDescriptor(Uri.parse(value), "r")
-        }.getOrNull() ?: return null
-        return object : SceneInputLease {
-            override val ffmpegValue = "/proc/self/fd/${descriptor.fd}"
-            override val tlsCaFile: String? = null
-
-            override fun close() = descriptor.close()
-        }
+        val uri = runCatching { Uri.parse(value) }.getOrNull() ?: return null
+        return acquired(SceneSafInput.encodeForRead(uri))
     }
 
     private fun acquired(

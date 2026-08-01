@@ -26,7 +26,7 @@ internal class AndroidSceneCaptureService private constructor(
     constructor(context: Context) : this(
         sceneDirectory = File(context.cacheDir, SCENE_CACHE_DIRECTORY),
         inputAcquirer = AndroidSceneInputAcquirer(context),
-        commandExecutor = FfmpegKitSceneCommandExecutor(),
+        commandExecutor = IsolatedSceneCommandExecutor(context),
         validate = AnimatedAvifValidator::validate,
         av1EncoderName = ::platformAv1EncoderName,
     )
