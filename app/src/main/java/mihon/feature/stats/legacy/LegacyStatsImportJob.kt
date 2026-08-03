@@ -9,6 +9,7 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import exh.log.xLogE
 import kotlinx.coroutines.CancellationException
+import mihon.feature.stats.rollup.ImmersionRollupJob
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 
@@ -21,6 +22,14 @@ class LegacyStatsImportJob(
     override suspend fun doWork(): Result =
         try {
             val report = importer.importAll()
+            // The import writes session rows and marks their rollup ranges
+            // dirty, but writes no events, so no other trigger fires for it:
+            // the recorder's persistence observer needs events and the index
+            // job needs exposure events. Without this hand-off the imported
+            // days stay dirty and the dashboard reads zero.
+            if (report.results.isNotEmpty()) {
+                ImmersionRollupJob.start(applicationContext)
+            }
             Result.success(
                 workDataOf(
                     "importedSources" to report.results.size,

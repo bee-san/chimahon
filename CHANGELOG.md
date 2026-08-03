@@ -4,6 +4,27 @@ All notable changes to Chimahon are documented here.
 
 The format follows a Keep a Changelog style and uses Semantic Versioning.
 
+## [v2.6.2]
+
+### Fixed
+- Immersion statistics showed zero for every metric even though sessions were
+  being recorded. The periodic rollup worker was never registered with
+  WorkManager, so the aggregate tables the dashboard reads were never built and
+  only the manual "Rebuild aggregate statistics" action populated them
+  ([#21](https://github.com/bee-san/chimahon/issues/21))
+- The legacy statistics import marked the days it imported as needing a rollup
+  but never scheduled one, so imported history stayed invisible
+- The 24-hour raw-text retention sweep was never registered either, so a chosen
+  retention window was not enforced on schedule. The scheduled sweep now only
+  enforces a real age window: clearing raw text outright stays a deliberate
+  maintenance action, so restored reading text is never discarded in the
+  background
+- Maintenance progress and results now appear at the top of the maintenance
+  screen instead of below every action, so running a rebuild no longer looks
+  like it did nothing. Rebuild actions read "Run" rather than "Open", and the
+  storage-summary action reads "Reload counts" so it is no longer confused with
+  rebuilding
+
 ## [v2.4.0]
 
 ### Added

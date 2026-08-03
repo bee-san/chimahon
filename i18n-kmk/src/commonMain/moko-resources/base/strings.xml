@@ -566,7 +566,7 @@
     <string name="stats_maintenance_error_summary">The operation could not be completed. Internal error details are hidden to protect local paths and provider data. Check storage and provider permissions, then try again.</string>
     <string name="stats_maintenance_history">Maintenance history</string>
     <string name="stats_maintenance_title">Stats data and privacy</string>
-    <string name="stats_maintenance_working">Maintenance is running. You can leave this screen.</string>
+    <string name="stats_maintenance_working">Maintenance is running. Stay on this screen until it finishes.</string>
     <string name="stats_maturity">Maturity: %1$s</string>
     <string name="stats_maturity_label">Maturity</string>
     <string name="stats_maturity_learning">Learning</string>
@@ -634,6 +634,7 @@
     <string name="stats_recents_privacy">Recent apps privacy</string>
     <string name="stats_recents_privacy_summary">Stats screens are hidden in the recent-apps preview. While they are visible, screenshot access follows the global secure-screen setting.</string>
     <string name="stats_refresh">Refresh statistics</string>
+    <string name="stats_reload_counts">Reload counts</string>
     <string name="stats_removed">Removed</string>
     <string name="stats_reset_all">Reset all immersion statistics</string>
     <string name="stats_reset_all_summary">Erase sessions, source text, characters, Anki cache, goals, and derived totals. Deletion tombstones remain for sync safety.</string>
@@ -650,6 +651,7 @@
     <string name="stats_rollout_controls">Preview and rollback controls</string>
     <string name="stats_rollout_legacy_writes_active">Legacy rollback writes remain active while the event-backed system is in shadow rollout.</string>
     <string name="stats_rollout_legacy_writes_inactive">Legacy rollback writes are inactive.</string>
+    <string name="stats_run">Run</string>
     <string name="stats_script_label">Script</string>
     <string name="stats_search_characters">Search characters</string>
     <string name="stats_search_characters_fields">Matches a glyph, code point, reading, metadata or a word containing the character.</string>
