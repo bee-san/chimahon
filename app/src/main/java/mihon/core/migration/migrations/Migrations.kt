@@ -46,6 +46,7 @@ val migrations: List<Migration>
         // KMK -->
         IntegratedHentaiMigration(),
         SetupAppUpdateMigration(),
+        SetupImmersionStatsJobsMigration(),
         EHentaiMigration(),
         MergedMangaDedupeModeMigration(),
         // KMK <--

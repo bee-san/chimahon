@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -35,6 +36,7 @@ import cafe.adriel.voyager.core.model.rememberScreenModel
 import cafe.adriel.voyager.navigator.LocalNavigator
 import cafe.adriel.voyager.navigator.currentOrThrow
 import dev.icerock.moko.resources.PluralsResource
+import dev.icerock.moko.resources.StringResource
 import eu.kanade.presentation.components.AppBar
 import eu.kanade.presentation.more.settings.widget.SwitchPreferenceWidget
 import eu.kanade.presentation.util.Screen
@@ -295,6 +297,44 @@ private fun StatsMaintenanceContent(
         contentPadding = paddingValues,
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
+        // Progress and results lead the list. These used to render after every
+        // action item, so tapping a button put its only feedback below the fold
+        // and the operation looked like it had done nothing at all.
+        if (state.busy) {
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(Modifier.size(20.dp))
+                    Text(stringResource(KMR.strings.stats_maintenance_working))
+                }
+            }
+        }
+        state.error?.let {
+            item {
+                ListItem(
+                    headlineContent = { Text(stringResource(KMR.strings.stats_maintenance_error)) },
+                    supportingContent = {
+                        Text(stringResource(KMR.strings.stats_maintenance_error_summary))
+                    },
+                )
+            }
+        }
+        state.lastOperation?.let {
+            item {
+                Text(
+                    text = stringResource(
+                        KMR.strings.stats_maintenance_complete,
+                        pluralCount(KMR.plurals.stats_row_count, state.lastAffectedRows),
+                    ),
+                    modifier = Modifier.padding(16.dp),
+                )
+            }
+        }
         item {
             ListItem(
                 headlineContent = { Text(stringResource(KMR.strings.stats_storage_summary)) },
@@ -316,7 +356,7 @@ private fun StatsMaintenanceContent(
                 },
                 trailingContent = {
                     TextButton(onClick = onRefresh, enabled = !state.busy) {
-                        Text(stringResource(KMR.strings.stats_refresh))
+                        Text(stringResource(KMR.strings.stats_reload_counts))
                     }
                 },
             )
@@ -533,6 +573,7 @@ private fun StatsMaintenanceContent(
                 description = stringResource(KMR.strings.stats_rebuild_rollups_summary),
                 enabled = !state.busy,
                 onClick = onRebuildRollups,
+                actionLabel = KMR.strings.stats_run,
             )
         }
         item {
@@ -541,6 +582,7 @@ private fun StatsMaintenanceContent(
                 description = stringResource(KMR.strings.stats_rebuild_index_summary),
                 enabled = !state.busy,
                 onClick = onRebuildIndex,
+                actionLabel = KMR.strings.stats_run,
             )
         }
         item {
@@ -550,35 +592,6 @@ private fun StatsMaintenanceContent(
                 enabled = !state.busy && (state.deletionPreview?.sessions ?: 0) > 0,
                 onClick = onResetAllStats,
             )
-        }
-        if (state.busy) {
-            item {
-                Column(Modifier.padding(16.dp)) {
-                    CircularProgressIndicator()
-                    Text(stringResource(KMR.strings.stats_maintenance_working))
-                }
-            }
-        }
-        state.error?.let {
-            item {
-                ListItem(
-                    headlineContent = { Text(stringResource(KMR.strings.stats_maintenance_error)) },
-                    supportingContent = {
-                        Text(stringResource(KMR.strings.stats_maintenance_error_summary))
-                    },
-                )
-            }
-        }
-        state.lastOperation?.let {
-            item {
-                Text(
-                    text = stringResource(
-                        KMR.strings.stats_maintenance_complete,
-                        pluralCount(KMR.plurals.stats_row_count, state.lastAffectedRows),
-                    ),
-                    modifier = Modifier.padding(16.dp),
-                )
-            }
         }
     }
 }
@@ -608,13 +621,14 @@ private fun MaintenanceAction(
     description: String,
     enabled: Boolean,
     onClick: () -> Unit,
+    actionLabel: StringResource = KMR.strings.stats_open,
 ) {
     ListItem(
         headlineContent = { Text(title) },
         supportingContent = { Text(description) },
         trailingContent = {
             Button(onClick = onClick, enabled = enabled) {
-                Text(stringResource(KMR.strings.stats_open))
+                Text(stringResource(actionLabel))
             }
         },
     )

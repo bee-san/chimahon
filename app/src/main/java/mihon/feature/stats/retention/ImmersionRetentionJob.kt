@@ -35,6 +35,15 @@ class ImmersionRetentionJob(
             val cutoff = retention.cutoffEpochMillis(now)
             val affected = when {
                 retention == RawTextRetention.UNTIL_DELETED -> 0L
+                // A null cutoff carries no age bound, so `deleteRawText` degrades
+                // to "every row that has raw text". That is what the user asked
+                // for when they tap the maintenance action, and `start` says so
+                // explicitly. The periodic sweep must never do it unasked:
+                // `effectiveRawTextRetention` also returns NEVER whenever the
+                // disclosure is unanswered, so a restored collection can hold raw
+                // text while the effective policy reads NEVER, and an unbounded
+                // scheduled delete would silently discard it.
+                cutoff == null && !inputData.getBoolean(ALLOW_UNBOUNDED, false) -> 0L
                 inputData.getBoolean(DRY_RUN, false) ->
                     repository.previewRawTextDeletion(beforeEpochMillis = cutoff)
                 else -> repository.deleteRawText(
@@ -68,6 +77,7 @@ class ImmersionRetentionJob(
         private const val PERIODIC_WORK_NAME = "immersion-statistics-retention-periodic"
         private const val MANUAL_WORK_NAME = "immersion-statistics-retention-manual"
         private const val DRY_RUN = "dry_run"
+        private const val ALLOW_UNBOUNDED = "allow_unbounded"
         private const val HEARTBEAT_COMPACTION_BATCH_SIZE = 100
         const val AFFECTED_PRIVATE_TEXT_RECORDS = "affected_private_text_records"
         const val COMPACTED_HEARTBEAT_EVENTS = "compacted_heartbeat_events"
@@ -85,12 +95,17 @@ class ImmersionRetentionJob(
             )
         }
 
+        /**
+         * Runs the sweep now, on the user's behalf. Both call sites are explicit
+         * maintenance actions, so this path may honour a retention policy with no
+         * age bound and clear raw text outright; the periodic sweep may not.
+         */
         fun start(
             context: Context,
             dryRun: Boolean = false,
         ) {
             val request = OneTimeWorkRequestBuilder<ImmersionRetentionJob>()
-                .setInputData(workDataOf(DRY_RUN to dryRun))
+                .setInputData(workDataOf(DRY_RUN to dryRun, ALLOW_UNBOUNDED to true))
                 .setConstraints(defaultConstraints())
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
                 .build()
