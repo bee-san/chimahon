@@ -19,14 +19,26 @@ import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 
-class AnkiDroidBridge(private val context: Context) {
+interface AnkiCardBridge {
+    fun hasPermission(): Boolean
+    suspend fun ensureDefaultDeckName(): String
+    suspend fun ensureLapisModelName(): String
+    suspend fun getDeckId(deckName: String): Long
+    suspend fun findNotes(expression: String, modelName: String? = null, deckId: Long? = null): List<Long>
+    suspend fun addNote(deckName: String, modelName: String, fields: Map<String, String>, tags: List<String>): Long
+    suspend fun updateNoteFields(noteId: Long, fields: Map<String, String>): Any?
+    suspend fun storeMedia(filename: String, data: ByteArray): String
+    suspend fun storeMedia(source: AnkiSentenceAudioSource): String
+    fun triggerSync()
+}
+
+class AnkiDroidBridge(private val context: Context) : AnkiCardBridge {
 
     companion object {
         private const val TAG = "AnkiDroidBridge"
         private const val SYNC_COOLDOWN_MS = 120_000L
         private var lastSyncTimeMs = 0L
 
-        private const val ANKIDROID_PACKAGE = "com.ichi2.anki"
         const val PERMISSION = "com.ichi2.anki.permission.READ_WRITE_DATABASE"
         const val PERMISSION_REQUEST_CODE = 2001
 
@@ -83,7 +95,7 @@ class AnkiDroidBridge(private val context: Context) {
         }
     }
 
-    fun hasPermission(): Boolean {
+    override fun hasPermission(): Boolean {
         return context.checkSelfPermission(PERMISSION) == PackageManager.PERMISSION_GRANTED
     }
 
@@ -168,14 +180,14 @@ class AnkiDroidBridge(private val context: Context) {
         result
     }
 
-    suspend fun ensureDefaultDeckName(): String = withContext(Dispatchers.IO) {
+    override suspend fun ensureDefaultDeckName(): String = withContext(Dispatchers.IO) {
         if (!hasPermission()) return@withContext ""
         val defaultName = LapisPreset.DEFAULT_DECK_NAME
         findDeckIdOrNull(defaultName) ?: createDeck(defaultName)
         defaultName
     }
 
-    suspend fun ensureLapisModelName(): String = withContext(Dispatchers.IO) {
+    override suspend fun ensureLapisModelName(): String = withContext(Dispatchers.IO) {
         if (!hasPermission()) return@withContext ""
 
         val models = readModelInfos()
@@ -187,11 +199,11 @@ class AnkiDroidBridge(private val context: Context) {
         }
     }
 
-    suspend fun getDeckId(deckName: String): Long = withContext(Dispatchers.IO) {
+    override suspend fun getDeckId(deckName: String): Long = withContext(Dispatchers.IO) {
         findDeckId(deckName)
     }
 
-    suspend fun findNotes(expression: String, modelName: String? = null, deckId: Long? = null): List<Long> =
+    override suspend fun findNotes(expression: String, modelName: String?, deckId: Long?): List<Long> =
         withContext(Dispatchers.IO) {
             if (!hasPermission()) return@withContext emptyList()
             val ids = mutableListOf<Long>()
@@ -222,7 +234,7 @@ class AnkiDroidBridge(private val context: Context) {
             ids
         }
 
-    suspend fun addNote(
+    override suspend fun addNote(
         deckName: String,
         modelName: String,
         fields: Map<String, String>,
@@ -259,7 +271,7 @@ class AnkiDroidBridge(private val context: Context) {
         newNoteId
     }
 
-    suspend fun updateNoteFields(noteId: Long, fields: Map<String, String>) =
+    override suspend fun updateNoteFields(noteId: Long, fields: Map<String, String>) =
         withContext(Dispatchers.IO) {
             val uri = Uri.withAppendedPath(NOTES_URI, noteId.toString())
             context.contentResolver.query(
@@ -310,27 +322,16 @@ class AnkiDroidBridge(private val context: Context) {
         guiBrowse("nid:$noteId")
     }
 
-    suspend fun storeMedia(filename: String, data: ByteArray): String =
+    override suspend fun storeMedia(filename: String, data: ByteArray): String =
         withContext(Dispatchers.IO) {
             saveMediaBytes(filename, data)
         }
 
-    suspend fun storeMedia(source: AnkiMediaSource): String =
+    override suspend fun storeMedia(source: AnkiSentenceAudioSource): String =
         withContext(Dispatchers.IO) {
-            when (source) {
-                is AnkiMediaSource.Bytes -> {
-                    val extension = AnkiMediaNaming.safeExtension(source.extension, "bin")
-                    val baseName = sanitizePreferredBaseName(source.preferredBaseName)
-                    saveMediaBytes("$baseName.$extension", source.data)
-                }
-                is AnkiMediaSource.FileSource -> {
-                    saveMediaFile(
-                        file = source.file,
-                        preferredBaseName = source.preferredBaseName,
-                        extension = source.extension,
-                    )
-                }
-            }
+            val baseName = sanitizePreferredBaseName(source.preferredBaseName)
+            val extension = AnkiSentenceAudioSource.safeExtension(source.extension, "m4a")
+            saveMediaBytes("$baseName.$extension", source.data)
         }
 
     suspend fun storeMediaFromBase64(filename: String, base64: String): String =
@@ -370,7 +371,7 @@ class AnkiDroidBridge(private val context: Context) {
             saveMediaBytes(filename, file.readBytes())
         }
 
-    fun triggerSync() {
+    override fun triggerSync() {
         try {
             val now = SystemClock.elapsedRealtime()
             val elapsed = now - lastSyncTimeMs
@@ -590,76 +591,33 @@ class AnkiDroidBridge(private val context: Context) {
         mediaDir.mkdirs()
 
         val file = File(mediaDir, name)
-        return try {
-            file.writeBytes(data)
-            saveMediaFile(
-                file = file,
-                preferredBaseName = name.replace(Regex("\\.[^.]*$"), ""),
-                extension = name.substringAfterLast('.', "bin"),
-            )
-        } finally {
-            file.delete()
-        }
-    }
+        file.writeBytes(data)
 
-    private fun saveMediaFile(
-        file: File,
-        preferredBaseName: String,
-        extension: String,
-    ): String {
-        require(file.isFile && file.canRead() && file.length() > 0L) {
-            "Media file is not readable"
-        }
-        val safeBaseName = sanitizePreferredBaseName(preferredBaseName)
-        val expectedExtension = AnkiMediaNaming.safeExtension(extension, "bin")
-        require(file.extension.equals(expectedExtension, ignoreCase = true)) {
-            "Media file extension does not match its declared type"
-        }
         val contentUri = FileProvider.getUriForFile(
             context,
             "${context.packageName}.provider",
             file,
         )
-        if (expectedExtension == "avif") {
-            require(context.contentResolver.getType(contentUri).equals("image/avif", ignoreCase = true)) {
-                "FileProvider did not expose the scene as image/avif"
-            }
-        }
 
         context.grantUriPermission(
-            ANKIDROID_PACKAGE,
+            "com.ichi2.anki",
             contentUri,
             Intent.FLAG_GRANT_READ_URI_PERMISSION,
         )
-        try {
-            val mediaCv = ContentValues().apply {
-                put(MEDIA_FILE_URI, contentUri.toString())
-                put(MEDIA_PREFERRED_NAME, safeBaseName)
-            }
-            val result = context.contentResolver.insert(MEDIA_URI, mediaCv)
-                ?: throw Exception("AnkiDroid failed to copy the media")
-            val returnedName = result.lastPathSegment
-                ?.takeIf(String::isNotBlank)
-                ?: result.path
-                    ?.let(::File)
-                    ?.name
-                    ?.takeIf(String::isNotBlank)
-                ?: throw Exception("AnkiDroid returned an invalid media name")
-            if (expectedExtension == "avif") {
-                require(returnedName.substringAfterLast('.', "").equals("avif", ignoreCase = true)) {
-                    "AnkiDroid did not return an AVIF media filename"
-                }
-            }
-            return returnedName
-        } finally {
-            runCatching {
-                context.revokeUriPermission(
-                    ANKIDROID_PACKAGE,
-                    contentUri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                )
-            }
+
+        val mediaCv = ContentValues().apply {
+            put(MEDIA_FILE_URI, contentUri.toString())
+            put(MEDIA_PREFERRED_NAME, name.replace(Regex("\\.[^.]*$"), ""))
         }
+
+        val res = context.contentResolver.insert(MEDIA_URI, mediaCv)
+        file.delete()
+
+        if (res != null) {
+            return File(res.path!!).name
+        }
+
+        throw Exception("AnkiDroid failed to copy the media")
     }
 
     private fun sanitizePreferredBaseName(value: String): String =

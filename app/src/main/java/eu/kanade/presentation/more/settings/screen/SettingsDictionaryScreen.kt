@@ -2010,7 +2010,7 @@ object SettingsDictionaryScreen : SearchableSettings {
             "full" to "Screenshot",
             "crop" to "Crop Overlay",
             AnkiScreenshotMode.ANIMATED_SCENE.storageValue to
-                stringResource(KMR.strings.pref_anki_screenshot_animated_scene),
+                stringResource(MR.strings.pref_anki_screenshot_animated_scene),
             "no_screenshot" to "No Screenshot",
         ).associate { it.first to it.second }.toPersistentMap()
         val cropPresetEntries = persistentListOf(

@@ -12,17 +12,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import chimahon.DictionaryRepository
 import chimahon.MediaInfo
-import chimahon.anki.AnkiScreenshotMode
+import chimahon.anki.AnkiMediaRequest
 import eu.kanade.tachiyomi.ui.dictionary.DictionaryPopupWebViewWarmup
 import eu.kanade.tachiyomi.ui.dictionary.DictionaryPreferences
 import eu.kanade.tachiyomi.ui.dictionary.getDictionaryPaths
 import eu.kanade.tachiyomi.ui.player.PlayerViewModel
-import eu.kanade.tachiyomi.ui.player.scene.SceneCaptureRequest
 import eu.kanade.tachiyomi.ui.reader.viewer.OcrLookupPopup
-import eu.kanade.tachiyomi.util.system.toast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import tachiyomi.i18n.kmk.KMR
 import tachiyomi.presentation.core.util.collectAsState
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
@@ -45,7 +42,8 @@ internal data class SubtitleLookupRequest(
     val lineHeight: Float,
     val matchedCharCount: Int = 0,
     val matchOffset: Int = 0,
-    val sceneCaptureRequest: SceneCaptureRequest? = null,
+    val cueStartSeconds: Double? = null,
+    val cueEndSeconds: Double? = null,
 )
 
 @Composable
@@ -62,7 +60,6 @@ internal fun PlayerSubtitleLookupPopup(
     val anime by viewModel.currentAnime.collectAsState()
     val episode by viewModel.currentEpisode.collectAsState()
     val source by viewModel.currentSource.collectAsState()
-    val miningProgress by viewModel.sceneMiningProgress.collectAsState()
     val activeProfile = remember(anime?.id, source?.id, source?.lang) {
         dictionaryPreferences.profileResolver.resolve(
             sourceId = source?.id ?: 0L,
@@ -88,16 +85,10 @@ internal fun PlayerSubtitleLookupPopup(
     BackHandler(enabled = request != null, onBack = onDismiss)
 
     val visible = request != null
-    val sceneRequest = request?.sceneCaptureRequest
-    val screenshotMode = AnkiScreenshotMode.fromStorageValue(activeProfile.ankiCropMode)
-    val mediaRequest = remember(sceneRequest, screenshotMode) {
-        viewModel.createSceneMediaRequest(
-            request = sceneRequest,
-            screenshotMode = screenshotMode.storageValue,
-        )
-    }
-    val launchMiningJob: (suspend () -> Unit) -> Boolean = remember(sceneRequest) {
-        { block -> viewModel.launchSceneMining(sceneRequest, block) }
+    val mediaRequest: AnkiMediaRequest? = remember(request) {
+        request?.let {
+            viewModel.createSubtitleAudioMediaRequest(it.cueStartSeconds, it.cueEndSeconds)
+        }
     }
 
     OcrLookupPopup(
@@ -119,12 +110,16 @@ internal fun PlayerSubtitleLookupPopup(
             mangaTitle = anime?.title.orEmpty(),
             chapterName = episode?.name.orEmpty(),
         ),
-        mediaRequest = mediaRequest,
-        miningBusy = miningProgress.isBusy,
-        launchMiningJob = launchMiningJob,
-        onMiningBusy = {
-            context.toast(KMR.strings.anki_scene_busy)
+        onRequestScreenshot = {
+            viewModel.captureVideoFrameForOcr()
         },
+        onRequestAnimatedScene = {
+            viewModel.captureAnimatedVideoForAnki(
+                startSeconds = request?.cueStartSeconds,
+                endSeconds = request?.cueEndSeconds,
+            )
+        },
+        mediaRequest = mediaRequest,
         onAnkiMediaWarnings = context::showPlayerAnkiMediaWarnings,
         usePopup = false,
         onTermMatched = onTermMatched,

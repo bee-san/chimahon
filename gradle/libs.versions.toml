@@ -1,7 +1,6 @@
 [versions]
 aboutlib_version = "13.2.1"
-newpipe-extractor = "v0.26.2"
-protobuf-javalite = "4.35.1"
+newpipe-extractor = "v0.26.4"
 leakcanary = "2.14"
 moko = "0.26.4"
 okhttp_version = "5.3.2"
@@ -23,9 +22,10 @@ seeker = "1.2.2"
 media = "1.7.1"
 truetypeparser = "2.1.4"
 ffmpeg-kit = "1.17"
+libavif = "1.0.0"
 
 [libraries]
-desugar = "com.android.tools:desugar_jdk_libs:2.1.5"
+desugar = "com.android.tools:desugar_jdk_libs_nio:2.1.5"
 
 rxjava = "io.reactivex:rxjava:1.3.8"
 
@@ -45,7 +45,6 @@ quickjs-android = { group = "com.github.zhanghai.quickjs-java", name = "quickjs-
 jsoup = "org.jsoup:jsoup:1.22.2"
 
 newpipe-extractor = { module = "com.github.TeamNewPipe:NewPipeExtractor", version.ref = "newpipe-extractor" }
-protobuf-javalite = { module = "com.google.protobuf:protobuf-javalite", version.ref = "protobuf-javalite" }
 
 disklrucache = "com.jakewharton:disklrucache:2.0.2"
 unifile = "com.github.komikku-app:UniFile:084a54140a"
@@ -95,6 +94,7 @@ torrentserver = "com.github.Diegopyl1209:torrentserver-aniyomi:c18f58e51b"
 media-router = "androidx.mediarouter:mediarouter:1.8.1"
 cast-play-services = "com.google.android.gms:play-services-cast-framework:22.1.0"
 ffmpeg-kit = { module = "com.github.jmir1:ffmpeg-kit", version.ref = "ffmpeg-kit" }
+libavif = { module = "com.github.sohilsayed:chimahon-libavif", version.ref = "libavif" }
 smart-exception-java = "com.arthenica:smart-exception-java:0.2.1"
 nanohttpd = { module = "org.nanohttpd:nanohttpd", version = "2.3.1" }
 

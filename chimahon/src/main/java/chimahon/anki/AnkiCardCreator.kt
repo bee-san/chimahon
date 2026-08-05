@@ -15,17 +15,11 @@ import eu.kanade.tachiyomi.network.NetworkHelper
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.CancellationException
 
 // =============================================================================
 // Legacy FieldType enum for UI backwards compatibility
@@ -203,7 +197,10 @@ object Marker {
 // =============================================================================
 
 sealed class AnkiResult {
-    data class Success(val noteId: Long, val warnings: List<AnkiMediaWarning> = emptyList()) : AnkiResult()
+    data class Success(
+        val noteId: Long,
+        val mediaWarnings: List<AnkiMediaWarning> = emptyList(),
+    ) : AnkiResult()
     data class CardExists(val noteId: Long) : AnkiResult()
     data class OpenCard(val noteId: Long) : AnkiResult()
     data class Error(val message: String) : AnkiResult()
@@ -218,12 +215,22 @@ sealed class AnkiResult {
 object AnkiCardCreator {
 
     private const val TAG = "AnkiCardCreator"
-    private const val TRANSPARENT_IMAGE_DATA_URI =
-        "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
-    private const val SCREENSHOT_MEDIA_PLACEHOLDER = "__chimahon_screenshot_media__"
-    private const val WORD_AUDIO_MEDIA_PLACEHOLDER = "__chimahon_word_audio_media__"
-    private const val SENTENCE_AUDIO_MEDIA_PLACEHOLDER = "__chimahon_sentence_audio_media__"
-    private val addLocks = List(16) { Mutex() }
+    private const val SCREENSHOT_MEDIA_PLACEHOLDER = "chimahon_screenshot_pending.webp"
+    private const val WORD_AUDIO_MEDIA_PLACEHOLDER = "chimahon_word_audio_pending.mp3"
+    private const val SENTENCE_AUDIO_MEDIA_PLACEHOLDER = "chimahon_sentence_audio_pending.m4a"
+    private val duplicateGate = AnkiDuplicateGate()
+    @Volatile
+    internal var bridgeFactory: (Context) -> AnkiCardBridge = ::AnkiDroidBridge
+    @Volatile
+    internal var fieldMapParser: (String) -> Map<String, String> = ::parseFieldMap
+
+    internal fun resetBridgeFactoryForTests() {
+        bridgeFactory = ::AnkiDroidBridge
+    }
+
+    internal fun resetFieldMapParserForTests() {
+        fieldMapParser = ::parseFieldMap
+    }
 
     private data class DictionaryMediaReference(
         val dictionary: String,
@@ -284,12 +291,10 @@ object AnkiCardCreator {
     ): AnkiResult {
         android.util.Log.d(TAG, "addToAnki: deck=$deck, model=$model, forceOpen=$forceOpen, glossaryIndex=$glossaryIndex")
 
-        val bridge = AnkiDroidBridge(context)
+        val bridge = bridgeFactory(context)
         if (!bridge.hasPermission()) {
             return AnkiResult.PermissionDenied
         }
-
-        val ownedPreparedFiles = mutableListOf<AnkiMediaSource.FileSource>()
         return try {
             val effectiveDeck = deck.ifBlank { bridge.ensureDefaultDeckName() }
             val effectiveModel = if (model.isBlank()) {
@@ -311,7 +316,7 @@ object AnkiCardCreator {
                 return AnkiResult.NotConfigured
             }
 
-            val fieldMap = parseFieldMap(effectiveFieldMapJson)
+            val fieldMap = fieldMapParser(effectiveFieldMapJson)
             android.util.Log.d(TAG, "addToAnki: parsed fieldMap=$fieldMap")
             val cloze = if (sentence.isNotEmpty() && offset >= 0) {
                 // Use result.matched (the exact surface form the dictionary engine consumed)
@@ -328,195 +333,128 @@ object AnkiCardCreator {
             }
             val hasSentenceAudioMarker = fieldMap.values.any { it.contains("{${Marker.SENTENCE_AUDIO}}") }
             val hasScreenshotMarker = fieldMap.values.any { it.contains("{${Marker.SCREENSHOT}}") }
-
-            // Keep duplicate lookup and insertion atomic for rapid repeated taps.
-            val lockKey = "${if (dupScope == "deck") effectiveDeck else ""}\u0000${result.term.expression}"
-            val addLock = addLocks[lockKey.hashCode().ushr(1) % addLocks.size]
-            addLock.withLock {
-                var overwriteNoteId: Long? = null
-                if (dupCheck || forceOpen) {
-                    val targetDeckId = if (dupScope == "deck" && effectiveDeck.isNotBlank()) {
-                        try {
-                            bridge.getDeckId(effectiveDeck)
-                        } catch (e: Exception) {
-                            null
-                        }
-                    } else {
+            val lockKey = "${dupScope.lowercase()}|${if (dupScope == "deck") effectiveDeck else ""}|${result.term.expression}"
+            suspend fun duplicateDecision(): AnkiDuplicateDecision {
+                if (!dupCheck && !forceOpen) return AnkiDuplicateDecision.Insert
+                val targetDeckId = if (dupScope == "deck" && effectiveDeck.isNotBlank()) {
+                    try {
+                        bridge.getDeckId(effectiveDeck)
+                    } catch (_: Exception) {
                         null
-                    }
-
-                    val existing = bridge.findNotes(result.term.expression, null, targetDeckId)
-                    if (existing.isNotEmpty()) {
-                        if (forceOpen) return@withLock AnkiResult.OpenCard(existing.first())
-                        when (dupAction) {
-                            "prevent" -> return@withLock AnkiResult.CardExists(existing.first())
-                            "open" -> return@withLock AnkiResult.OpenCard(existing.first())
-                            "overwrite" -> overwriteNoteId = existing.first()
-                        }
-                    }
-                }
-
-                val eagerStill = screenshotBytes?.let { bytes ->
-                    val filename = generateScreenshotFilename(bytes)
-                    AnkiMediaSource.Bytes(
-                        data = bytes,
-                        preferredBaseName = filename.substringBeforeLast('.', filename),
-                        extension = "webp",
-                    )
-                }
-                val screenshotPreparation = when {
-                    !hasScreenshotMarker -> null
-                    mediaRequest?.screenshotProvider != null -> {
-                        val prepared = try {
-                            mediaRequest.screenshotProvider.prepare()
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            android.util.Log.w(TAG, "addToAnki: failed to prepare screenshot media", e)
-                            AnkiScreenshotPreparation.Failed(eagerStill)
-                        }
-                        prepared.withStillFallback(eagerStill)
-                    }
-                    eagerStill != null -> AnkiScreenshotPreparation.Still(eagerStill)
-                    else -> null
-                }
-                if (screenshotPreparation is AnkiScreenshotPreparation.Animated) {
-                    ownedPreparedFiles += screenshotPreparation.animation
-                }
-
-                val sentenceAudioSource = if (hasSentenceAudioMarker) {
-                    val lazySource = try {
-                        mediaRequest?.sentenceAudioProvider?.prepare()
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        android.util.Log.w(TAG, "addToAnki: failed to prepare sentence audio", e)
-                        null
-                    }
-                    lazySource ?: sentenceAudioBytes?.let { bytes ->
-                        val filename = generateSentenceAudioFilename(bytes, sentenceAudioExtension)
-                        AnkiMediaSource.Bytes(
-                            data = bytes,
-                            preferredBaseName = filename.substringBeforeLast('.', filename),
-                            extension = AnkiMediaNaming.safeExtension(filename, "m4a"),
-                        )
                     }
                 } else {
                     null
                 }
-                if (sentenceAudioSource is AnkiMediaSource.FileSource) {
-                    ownedPreparedFiles += sentenceAudioSource
+                val existing = bridge.findNotes(result.term.expression, null, targetDeckId)
+                if (existing.isEmpty()) return AnkiDuplicateDecision.Insert
+                val noteId = existing.first()
+                return when {
+                    forceOpen -> AnkiDuplicateDecision.Return(AnkiResult.OpenCard(noteId))
+                    dupAction == "prevent" -> AnkiDuplicateDecision.Return(AnkiResult.CardExists(noteId))
+                    dupAction == "open" -> AnkiDuplicateDecision.Return(AnkiResult.OpenCard(noteId))
+                    dupAction == "overwrite" -> AnkiDuplicateDecision.Overwrite(noteId)
+                    else -> AnkiDuplicateDecision.Insert
                 }
+            }
 
-                val wordAudioSource = if (hasWordAudioMarker) {
-                    prepareWordAudio(result)
-                } else {
-                    null
-                }
+            val firstDecision = duplicateGate.preflight(lockKey, ::duplicateDecision)
+            if (firstDecision is AnkiDuplicateDecision.Return) return firstDecision.result
 
-                val exportMedia = ExportMediaContext()
-                val fieldsWithPlaceholders = withContext(Dispatchers.Default) {
-                    buildFields(
-                        result,
-                        fieldMap,
-                        cloze,
-                        media,
-                        if (hasScreenshotMarker) SCREENSHOT_MEDIA_PLACEHOLDER else null,
-                        if (hasWordAudioMarker) WORD_AUDIO_MEDIA_PLACEHOLDER else null,
-                        if (hasSentenceAudioMarker) SENTENCE_AUDIO_MEDIA_PLACEHOLDER else null,
-                        selectedDict,
-                        popupSelection,
-                        glossaryIndex,
-                        styles,
-                        exportMedia,
+            val sentenceAudioPreparation = prepareSentenceAudioForMarker(
+                hasSentenceAudioMarker,
+                mediaRequest?.sentenceAudioProvider,
+            ) ?: when {
+                hasSentenceAudioMarker && sentenceAudioBytes != null -> {
+                    AnkiSentenceAudioPreparation.Ready(
+                        AnkiSentenceAudioSource.fromBytes(sentenceAudioBytes, sentenceAudioExtension),
                     )
                 }
-                val tagsWithPlaceholders = withContext(Dispatchers.Default) {
-                    // Split configured tags before rendering markers so commas from a
-                    // resolved value (for example a title) stay inside one tag.
-                    tags.split(",").map { template ->
+                else -> null
+            }
+            val exportMedia = ExportMediaContext()
+            val fieldsWithPlaceholders = withContext(Dispatchers.Default) {
+                buildFields(
+                    result,
+                    fieldMap,
+                    cloze,
+                    media,
+                    SCREENSHOT_MEDIA_PLACEHOLDER.takeIf { hasScreenshotMarker },
+                    WORD_AUDIO_MEDIA_PLACEHOLDER.takeIf { hasWordAudioMarker },
+                    SENTENCE_AUDIO_MEDIA_PLACEHOLDER.takeIf { hasSentenceAudioMarker },
+                    selectedDict,
+                    popupSelection,
+                    glossaryIndex,
+                    styles,
+                    exportMedia,
+                )
+            }
+            val tagsWithPlaceholders = withContext(Dispatchers.Default) {
+                // Split configured tags before rendering markers so commas from a
+                // resolved value (for example a title) stay inside one tag.
+                tags.split(",")
+                    .map { template ->
                         formatField(
                             template,
                             result,
                             cloze,
                             media,
-                            if (hasScreenshotMarker) SCREENSHOT_MEDIA_PLACEHOLDER else null,
-                            if (hasWordAudioMarker) WORD_AUDIO_MEDIA_PLACEHOLDER else null,
-                            if (hasSentenceAudioMarker) SENTENCE_AUDIO_MEDIA_PLACEHOLDER else null,
+                            SCREENSHOT_MEDIA_PLACEHOLDER.takeIf { hasScreenshotMarker },
+                            WORD_AUDIO_MEDIA_PLACEHOLDER.takeIf { hasWordAudioMarker },
+                            SENTENCE_AUDIO_MEDIA_PLACEHOLDER.takeIf { hasSentenceAudioMarker },
                             selectedDict,
                             popupSelection,
                             glossaryIndex,
-                            styles,
-                            exportMedia,
+                            styles, exportMedia,
                         )
                     }
-                }
+            }
+            val preparedMedia = PreparedAnkiCardMedia(
+                screenshot = screenshotBytes
+                    ?.let { PreparedAnkiMediaPayload(generateScreenshotFilename(it), it) },
+                wordAudio = if (hasWordAudioMarker) prepareWordAudioPayload(result) else null,
+                dictionaryMedia = prepareDictionaryMedia(exportMedia),
+                sentenceAudio = sentenceAudioPreparation,
+            )
 
-                // Check the caller's job from inside the non-cancellable
-                // commit block. Cancellation observed before this check
-                // prevents media and note writes; cancellation after it
-                // cannot split those writes.
-                val parentJob = currentCoroutineContext()[Job]
-                withContext(NonCancellable) {
-                    parentJob?.ensureActive()
-                    mediaRequest?.onCommitStarted?.invoke()
-                    val screenshotResult = AnkiScreenshotMediaCommitter(bridge::storeMedia)
-                        .store(screenshotPreparation)
-                    val wordAudioFilename = storeOptionalMedia(
-                        bridge,
-                        wordAudioSource,
-                        "word audio",
-                    )
-                    val sentenceAudioFilename = storeOptionalMedia(
-                        bridge,
-                        sentenceAudioSource,
-                        "sentence audio",
-                    )
-                    val fieldsWithDictionaryMedia = resolveDictionaryMediaPlaceholders(
-                        fieldsWithPlaceholders,
-                        exportMedia,
-                        bridge,
-                    )
-                    val fields = fieldsWithDictionaryMedia.mapValues { (_, value) ->
-                        resolveMediaPlaceholders(
-                            value,
-                            screenshotResult.filename,
-                            wordAudioFilename,
-                            sentenceAudioFilename,
-                        )
-                    }
-                    val tagList = tagsWithPlaceholders
-                        .map { value ->
-                            resolveMediaPlaceholders(
-                                value,
-                                screenshotResult.filename,
-                                wordAudioFilename,
-                                sentenceAudioFilename,
-                            )
-                        }
-                        .mapNotNull(::normalizeAnkiTag)
-                    android.util.Log.d(TAG, "addToAnki: built fields=$fields")
-
-                    val noteId = if (overwriteNoteId != null) {
-                        bridge.updateNoteFields(overwriteNoteId, fields)
-                        overwriteNoteId
-                    } else {
-                        bridge.addNote(
-                            deckName = effectiveDeck,
-                            modelName = effectiveModel,
-                            fields = fields,
-                            tags = tagList,
-                        )
-                    }
-                    com.canopus.chimareader.data.AnkiStatsStorage.addCard(
-                        context,
-                        type,
-                        profileId = profileId,
-                        titleId = titleId,
-                    )
-                    if (syncOnCreate) bridge.triggerSync()
-                    AnkiResult.Success(noteId, screenshotResult.warnings)
+            duplicateGate.commit(lockKey, ::duplicateDecision) { finalDecision ->
+                if (finalDecision is AnkiDuplicateDecision.Return) {
+                    return@commit finalDecision.result
                 }
+                val committedMedia = commitPreparedAnkiCardMedia(
+                    prepared = preparedMedia,
+                    storeBytes = bridge::storeMedia,
+                    storeSentenceAudio = bridge::storeMedia,
+                )
+                val fields = resolveMediaPlaceholders(
+                    resolveDictionaryMediaPlaceholders(fieldsWithPlaceholders, committedMedia.dictionaryReplacementByPlaceholder),
+                    committedMedia,
+                )
+                val tagList = tagsWithPlaceholders
+                    .map { value -> resolveMediaPlaceholders(value, committedMedia) }
+                    .mapNotNull(::normalizeAnkiTag)
+                android.util.Log.d(TAG, "addToAnki: built fields=$fields")
+
+                val noteId = when (finalDecision) {
+                    is AnkiDuplicateDecision.Overwrite -> {
+                        bridge.updateNoteFields(finalDecision.noteId, fields)
+                        finalDecision.noteId
+                    }
+                    AnkiDuplicateDecision.Insert -> bridge.addNote(
+                        deckName = effectiveDeck,
+                        modelName = effectiveModel,
+                        fields = fields,
+                        tags = tagList,
+                    )
+                    is AnkiDuplicateDecision.Return -> error("handled above")
+                }
+                com.canopus.chimareader.data.AnkiStatsStorage.addCard(
+                    context,
+                    type,
+                    profileId = profileId,
+                    titleId = titleId,
+                )
+                if (syncOnCreate) bridge.triggerSync()
+                AnkiResult.Success(noteId, committedMedia.sentenceAudio.warnings)
             }
         } catch (e: CancellationException) {
             throw e
@@ -524,98 +462,8 @@ object AnkiCardCreator {
             AnkiResult.PermissionDenied
         } catch (e: Exception) {
             AnkiResult.Error(e.message ?: "Unknown error")
-        } finally {
-            ownedPreparedFiles.forEach { it.file.delete() }
         }
     }
-
-    private fun AnkiScreenshotPreparation.withStillFallback(
-        fallback: AnkiMediaSource.Bytes?,
-    ): AnkiScreenshotPreparation =
-        when (this) {
-            is AnkiScreenshotPreparation.Animated -> {
-                if (stillFallback == null && fallback != null) copy(stillFallback = fallback) else this
-            }
-            is AnkiScreenshotPreparation.Failed -> {
-                if (stillFallback == null && fallback != null) copy(stillFallback = fallback) else this
-            }
-            else -> this
-        }
-
-    private suspend fun prepareWordAudio(result: LookupResult): AnkiMediaSource.Bytes? {
-        return try {
-            val wordAudioService = Injekt.get<WordAudioService>()
-            val bestAudio = wordAudioService
-                .findWordAudio(result.term.expression, result.term.reading)
-                .firstOrNull()
-                ?: return null
-            val audioData = if (bestAudio.url.startsWith("chimahon-local://")) {
-                val uri = android.net.Uri.parse(bestAudio.url)
-                val sourceId = uri.host.orEmpty()
-                val filePath = uri.path?.substring(1).orEmpty()
-                wordAudioService.getAudioData(filePath, sourceId)
-            } else {
-                wordAudioService.fetchRemoteAudioData(bestAudio.url)
-            } ?: return null
-            val extension = android.net.Uri.parse(bestAudio.url).lastPathSegment
-                ?.substringAfterLast('.', "mp3")
-                ?.let { AnkiMediaNaming.safeExtension(it, "mp3") }
-                ?: "mp3"
-            val filename =
-                "chimahon_audio_${result.term.expression}_${result.term.reading}_${System.currentTimeMillis()}.$extension"
-            AnkiMediaSource.Bytes(
-                data = audioData,
-                preferredBaseName = filename.substringBeforeLast('.', filename),
-                extension = extension,
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            android.util.Log.w(TAG, "addToAnki: failed to prepare word audio", e)
-            null
-        }
-    }
-
-    private suspend fun storeOptionalMedia(
-        bridge: AnkiDroidBridge,
-        source: AnkiMediaSource?,
-        description: String,
-    ): String? {
-        if (source == null) return null
-        return try {
-            bridge.storeMedia(source)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            android.util.Log.w(TAG, "addToAnki: failed to store $description media", e)
-            null
-        }
-    }
-
-    private fun resolveMediaPlaceholders(
-        value: String,
-        screenshotFilename: String?,
-        wordAudioFilename: String?,
-        sentenceAudioFilename: String?,
-    ): String =
-        value
-            .resolveImagePlaceholder(SCREENSHOT_MEDIA_PLACEHOLDER, screenshotFilename)
-            .resolveSoundPlaceholder(WORD_AUDIO_MEDIA_PLACEHOLDER, wordAudioFilename)
-            .resolveSoundPlaceholder(SENTENCE_AUDIO_MEDIA_PLACEHOLDER, sentenceAudioFilename)
-
-    private fun String.resolveImagePlaceholder(placeholder: String, filename: String?): String =
-        if (filename == null) {
-            replace("<img src=\"$placeholder\">", "").replace(placeholder, "")
-        } else {
-            replace(placeholder, filename)
-        }
-
-    private fun String.resolveSoundPlaceholder(placeholder: String, filename: String?): String =
-        if (filename == null) {
-            replace("[sound:$placeholder]", "").replace(placeholder, "")
-        } else {
-            replace(placeholder, filename)
-        }
 
     private fun filterToSingleGlossary(result: LookupResult, glossaryIndex: Int): LookupResult {
         val glossary = result.term.glossaries.getOrNull(glossaryIndex) ?: return result
@@ -756,47 +604,84 @@ object AnkiCardCreator {
         }
     }
 
-    private suspend fun resolveDictionaryMediaPlaceholders(
-        fields: Map<String, String>,
+    private suspend fun prepareDictionaryMedia(
         exportMedia: ExportMediaContext,
-        bridge: AnkiDroidBridge,
-    ): Map<String, String> = withContext(Dispatchers.IO) {
+    ): List<PreparedDictionaryMedia> = withContext(Dispatchers.IO) {
         val references = exportMedia.references
-        if (references.isEmpty()) return@withContext fields
-
+        if (references.isEmpty()) return@withContext emptyList()
         val session = Injekt.get<DictionaryRepository>().lookupSession
-        val replacements = linkedMapOf<String, String>()
-        for (reference in references) {
-            val replacement = if (session != null) {
-                storeDictionaryMedia(reference, session, bridge)
-            } else {
+        references.map { reference ->
+            val payload = try {
+                session?.let {
+                    HoshiDicts.getMediaFile(it, reference.dictionary, reference.path)
+                }?.let { bytes ->
+                    PreparedAnkiMediaPayload(dictionaryMediaFilename(reference.path, bytes), bytes)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.w(TAG, "Failed to prepare dictionary media ${reference.path}", e)
                 null
             }
-            replacements[reference.placeholder] = replacement ?: TRANSPARENT_IMAGE_DATA_URI
-        }
-
-        fields.mapValues { (_, value) ->
-            replacements.entries.fold(value) { current, (placeholder, replacement) ->
-                current.replace(placeholder, replacement)
-            }
+            PreparedDictionaryMedia(reference.placeholder, payload)
         }
     }
 
-    private suspend fun storeDictionaryMedia(
-        reference: DictionaryMediaReference,
-        session: Long,
-        bridge: AnkiDroidBridge,
-    ): String? = try {
-        val bytes = HoshiDicts.getMediaFile(session, reference.dictionary, reference.path)
-        if (bytes != null) {
-            bridge.storeMedia(dictionaryMediaFilename(reference.path, bytes), bytes)
+    private suspend fun prepareWordAudioPayload(result: LookupResult): PreparedAnkiMediaPayload? = try {
+        val service = Injekt.get<WordAudioService>()
+        val bestAudio = service.findWordAudio(result.term.expression, result.term.reading).firstOrNull()
+            ?: return null
+        val data = if (bestAudio.url.startsWith("chimahon-local://")) {
+            val uri = android.net.Uri.parse(bestAudio.url)
+            service.getAudioData(uri.path?.substring(1).orEmpty(), uri.host.orEmpty())
         } else {
-            null
-        }
+            service.fetchRemoteAudioData(bestAudio.url)
+        } ?: return null
+        val extension = android.net.Uri.parse(bestAudio.url).lastPathSegment
+            ?.substringAfterLast('.', "mp3")
+            ?.let { AnkiSentenceAudioSource.safeExtension(it, "mp3") }
+            ?: "mp3"
+        PreparedAnkiMediaPayload(
+            "chimahon_audio_${result.term.expression}_${result.term.reading}_${System.currentTimeMillis()}.$extension",
+            data,
+        )
+    } catch (e: CancellationException) {
+        throw e
     } catch (e: Exception) {
-        android.util.Log.w(TAG, "Failed to store dictionary media ${reference.path}", e)
+        android.util.Log.w(TAG, "addToAnki: failed to prepare word audio media", e)
         null
     }
+
+    private fun resolveDictionaryMediaPlaceholders(
+        fields: Map<String, String>,
+        replacements: Map<String, String>,
+    ): Map<String, String> = fields.mapValues { (_, value) ->
+        replacements.entries.fold(value) { current, (placeholder, replacement) ->
+            current.replace(placeholder, replacement)
+        }
+    }
+
+    private fun resolveMediaPlaceholders(
+        value: String,
+        media: CommittedAnkiCardMedia,
+    ): String =
+        value
+            .resolveImagePlaceholder(SCREENSHOT_MEDIA_PLACEHOLDER, media.screenshotFilename)
+            .resolveSoundPlaceholder(WORD_AUDIO_MEDIA_PLACEHOLDER, media.wordAudioFilename)
+            .resolveSoundPlaceholder(SENTENCE_AUDIO_MEDIA_PLACEHOLDER, media.sentenceAudio.filename)
+
+    private fun resolveMediaPlaceholders(
+        fields: Map<String, String>,
+        media: CommittedAnkiCardMedia,
+    ): Map<String, String> = fields.mapValues { (_, value) ->
+        resolveMediaPlaceholders(value, media)
+    }
+
+    private fun String.resolveImagePlaceholder(placeholder: String, filename: String?): String =
+        if (filename == null) replace("<img src=\"$placeholder\">", "").replace(placeholder, "") else replace(placeholder, filename)
+
+    private fun String.resolveSoundPlaceholder(placeholder: String, filename: String?): String =
+        if (filename == null) replace("[sound:$placeholder]", "").replace(placeholder, "") else replace(placeholder, filename)
 
     private fun dictionaryMediaFilename(path: String, bytes: ByteArray): String {
         val extension = path.substringBefore('?')
@@ -2288,7 +2173,21 @@ object AnkiCardCreator {
         } catch (e: Exception) {
             "screenshot_${System.currentTimeMillis()}"
         }
-        return "chimahon_$hash.webp"
+        val extension = if (isAvif(bytes)) "avif" else "webp"
+        return "chimahon_$hash.$extension"
+    }
+
+    private fun isAvif(bytes: ByteArray): Boolean {
+        // ftyp box: 4-byte size + "ftyp" at offset 4
+        return bytes.size >= 12 &&
+            bytes[4] == 'f'.code.toByte() &&
+            bytes[5] == 't'.code.toByte() &&
+            bytes[6] == 'y'.code.toByte() &&
+            bytes[7] == 'p'.code.toByte() &&
+            bytes[8] == 'a'.code.toByte() &&
+            bytes[9] == 'v'.code.toByte() &&
+            bytes[10] == 'i'.code.toByte() &&
+            bytes[11] == 's'.code.toByte()
     }
 
     private fun generateSentenceAudioFilename(bytes: ByteArray, extension: String): String {

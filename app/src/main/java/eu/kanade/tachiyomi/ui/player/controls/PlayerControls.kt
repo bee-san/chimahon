@@ -50,13 +50,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -105,9 +103,6 @@ import eu.kanade.tachiyomi.ui.player.controls.components.VolumeSlider
 import eu.kanade.tachiyomi.ui.player.controls.components.panels.SubtitlesBorderStyle
 import eu.kanade.tachiyomi.ui.player.controls.components.panels.toColorHexString
 import eu.kanade.tachiyomi.ui.player.controls.components.sheets.toFixed
-import eu.kanade.tachiyomi.ui.player.scene.SceneClockDomain
-import eu.kanade.tachiyomi.ui.player.scene.SceneRangeCandidate
-import eu.kanade.tachiyomi.ui.player.scene.SceneRangeProvenance
 import eu.kanade.tachiyomi.ui.player.settings.AudioPreferences
 import eu.kanade.tachiyomi.ui.player.settings.GesturePreferences
 import eu.kanade.tachiyomi.ui.player.settings.PlayerPreferences
@@ -117,10 +112,8 @@ import eu.kanade.tachiyomi.ui.reader.viewer.isLookupStartChar
 import eu.kanade.tachiyomi.util.system.toast
 import `is`.xyz.mpv.MPVLib
 import kotlinx.collections.immutable.toImmutableList
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import tachiyomi.presentation.core.components.material.padding
 import tachiyomi.presentation.core.i18n.stringResource
@@ -166,7 +159,7 @@ fun PlayerControls(
     val subtitlesVisible by viewModel.subtitlesVisible.collectAsState()
     val subtitleCues by viewModel.subtitleHistory.collectAsState()
     val activeSubtitleCueIndex by viewModel.activeSubtitleCueIndex.collectAsState()
-    val sceneMiningProgress by viewModel.sceneMiningProgress.collectAsState()
+    val primarySubtitleDelaySeconds by viewModel.primarySubtitleDelaySeconds.collectAsState()
     val panel by viewModel.panelShown.collectAsState()
     val activeSubtitleCue = remember(subtitleCues, activeSubtitleCueIndex) {
         subtitleCues.firstOrNull { it.index == activeSubtitleCueIndex }
@@ -176,9 +169,7 @@ fun PlayerControls(
     var isSeeking by remember { mutableStateOf(false) }
     var resetControls by remember { mutableStateOf(true) }
     var subtitleLookupRequest by remember { mutableStateOf<SubtitleLookupRequest?>(null) }
-    var subtitleLookupCaptureJob by remember { mutableStateOf<Job?>(null) }
     var wasPlayerAlreadyPause by remember { mutableStateOf(false) }
-    val subtitleLookupScope = rememberCoroutineScope()
     val customButtons by viewModel.customButtons.collectAsState()
     val customButton by viewModel.primaryButton.collectAsState()
 
@@ -200,33 +191,12 @@ fun PlayerControls(
         animationSpec = if (overlayTarget > 0f) playerControlsEnterAnimationSpec() else playerControlsExitAnimationSpec(),
         label = "controls_transparent_overlay",
     )
-    fun releaseSubtitleLookupRequest() {
-        subtitleLookupRequest
-            ?.sceneCaptureRequest
-            ?.let(viewModel::releaseSceneRequest)
-        subtitleLookupRequest = null
-    }
-
-    fun dismissSubtitleLookup() {
-        subtitleLookupCaptureJob?.cancel()
-        subtitleLookupCaptureJob = null
-        releaseSubtitleLookupRequest()
-        if (!wasPlayerAlreadyPause) viewModel.unpause()
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            subtitleLookupCaptureJob?.cancel()
-            releaseSubtitleLookupRequest()
-        }
-    }
-
     val openSubtitleLookup: (SubtitleLookupSelection) -> Unit = openSubtitleLookup@{ subtitleLookup ->
         if (subtitleLookupRequest?.matchesTap(subtitleLookup) == true) {
-            dismissSubtitleLookup()
+            subtitleLookupRequest = null
+            if (!wasPlayerAlreadyPause) viewModel.unpause()
             return@openSubtitleLookup
         }
-        if (subtitleLookupCaptureJob?.isActive == true) return@openSubtitleLookup
         val currentPanel = viewModel.panelShown.value
         if (
             viewModel.sheetShown.value != Sheets.None ||
@@ -237,8 +207,7 @@ fun PlayerControls(
         }
         wasPlayerAlreadyPause = viewModel.paused.value
         viewModel.pause()
-        releaseSubtitleLookupRequest()
-        val baseRequest = SubtitleLookupRequest(
+        subtitleLookupRequest = SubtitleLookupRequest(
             lookupString = subtitleLookup.lookupString,
             fullText = subtitleLookup.fullText,
             charOffset = subtitleLookup.charOffset,
@@ -254,19 +223,9 @@ fun PlayerControls(
             lineTop = subtitleLookup.lineTop,
             lineWidth = subtitleLookup.lineWidth,
             lineHeight = subtitleLookup.lineHeight,
+            cueStartSeconds = subtitleLookup.cueStartSeconds,
+            cueEndSeconds = subtitleLookup.cueEndSeconds,
         )
-        subtitleLookupCaptureJob = subtitleLookupScope.launch {
-            var sceneRequest = viewModel.captureSubtitleSceneRequest(
-                parsedSubtitleCandidate = subtitleLookup.parsedSubtitleCandidate,
-            )
-            if (!isActive) {
-                sceneRequest?.let(viewModel::releaseSceneRequest)
-                return@launch
-            }
-            subtitleLookupRequest = baseRequest.copy(sceneCaptureRequest = sceneRequest)
-            sceneRequest = null
-            subtitleLookupCaptureJob = null
-        }
     }
     val togglePanel: (Panels) -> Unit = { panel ->
         viewModel.showPanel(
@@ -289,15 +248,15 @@ fun PlayerControls(
     )
     Box(Modifier.fillMaxSize()) {
         if (subtitleLookupRequest != null) {
-            Box(
-                Modifier.fillMaxSize().clickable {
-                    dismissSubtitleLookup()
-                },
-            )
+            Box(Modifier.fillMaxSize().clickable {
+                subtitleLookupRequest = null
+                if (!wasPlayerAlreadyPause) viewModel.unpause()
+            })
         }
         PlayerSubtitleTextLayer(
             text = if (subtitlesVisible) currentSubtitleText else "",
             cue = activeSubtitleCue,
+            subtitleDelaySeconds = primarySubtitleDelaySeconds,
             request = subtitleLookupRequest,
             onLookup = openSubtitleLookup,
         )
@@ -848,7 +807,10 @@ fun PlayerControls(
         PlayerSubtitleLookupPopup(
             viewModel = viewModel,
             request = subtitleLookupRequest,
-            onDismiss = ::dismissSubtitleLookup,
+            onDismiss = {
+                subtitleLookupRequest = null
+                if (!wasPlayerAlreadyPause) viewModel.unpause()
+            },
             onTermMatched = { count, offset ->
                 subtitleLookupRequest = subtitleLookupRequest?.copy(
                     matchedCharCount = count,
@@ -861,16 +823,11 @@ fun PlayerControls(
             brightness = currentBrightness,
         )
 
-        val ocrFrame by viewModel.ocrFrame.collectAsState()
+        val ocrScreenshot by viewModel.ocrScreenshot.collectAsState()
         PlayerVideoOcrOverlay(
             viewModel = viewModel,
-            frame = ocrFrame,
+            screenshot = ocrScreenshot,
             onDismiss = dismissVideoOcr,
-        )
-
-        PlayerSceneMiningProgressDialog(
-            progress = sceneMiningProgress,
-            onCancel = viewModel::cancelSceneMiningPreCommit,
         )
     }
 
@@ -887,6 +844,7 @@ fun PlayerControls(
 private fun PlayerSubtitleTextLayer(
     text: String,
     cue: PlayerViewModel.SubtitleCue?,
+    subtitleDelaySeconds: Double,
     request: SubtitleLookupRequest?,
     onLookup: (SubtitleLookupSelection) -> Unit,
     modifier: Modifier = Modifier,
@@ -1010,17 +968,17 @@ private fun PlayerSubtitleTextLayer(
                         )
                     }
                 }
-                .pointerInput(subtitleText, textLayout, textLayerOrigin, cue) {
+                .pointerInput(subtitleText, textLayout, textLayerOrigin, subtitleDelaySeconds) {
                     detectTapGestures(
                         onTap = { position ->
                             val layout = textLayout ?: return@detectTapGestures
-                            layout.subtitleLookupSelectionForTap(subtitleText, position, cue)
+                            layout.subtitleLookupSelectionForTap(subtitleText, position, cue, subtitleDelaySeconds)
                                 ?.offsetBy(textLayerOrigin)
                                 ?.let(onLookup)
                         },
                         onLongPress = { position ->
                             val layout = textLayout ?: return@detectTapGestures
-                            layout.subtitleLookupSelectionForTap(subtitleText, position, cue)
+                            layout.subtitleLookupSelectionForTap(subtitleText, position, cue, subtitleDelaySeconds)
                                 ?.offsetBy(textLayerOrigin)
                                 ?.let(onLookup)
                         },
@@ -1065,7 +1023,8 @@ private data class SubtitleLookupSelection(
     val lineTop: Float,
     val lineWidth: Float,
     val lineHeight: Float,
-    val parsedSubtitleCandidate: SceneRangeCandidate? = null,
+    val cueStartSeconds: Double? = null,
+    val cueEndSeconds: Double? = null,
 )
 
 private fun String.hasLookupCharacters(): Boolean = any { it.isSubtitleLookupChar() }
@@ -1074,6 +1033,7 @@ private fun TextLayoutResult.subtitleLookupSelectionForTap(
     text: String,
     position: Offset,
     cue: PlayerViewModel.SubtitleCue?,
+    subtitleDelaySeconds: Double,
 ): SubtitleLookupSelection? {
     if (text.isBlank()) return null
     val offset = lookupOffsetForPosition(text, position) ?: return null
@@ -1103,14 +1063,8 @@ private fun TextLayoutResult.subtitleLookupSelectionForTap(
         lineTop = lineBounds.top,
         lineWidth = lineBounds.width,
         lineHeight = lineBounds.height,
-        parsedSubtitleCandidate = cue?.sceneTimingCandidate ?: cue?.let {
-            SceneRangeCandidate(
-                startSeconds = it.positionSeconds,
-                endSeconds = it.endPositionSeconds,
-                clockDomain = SceneClockDomain.SUBTITLE,
-                provenance = SceneRangeProvenance.PARSED_SUBTITLE_CUE,
-            )
-        },
+        cueStartSeconds = cue?.positionSeconds?.plus(subtitleDelaySeconds),
+        cueEndSeconds = cue?.endPositionSeconds?.plus(subtitleDelaySeconds),
     )
 }
 

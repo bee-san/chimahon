@@ -349,6 +349,7 @@ dependencies {
     implementation(libs.aniyomi.mpv)
     implementation(libs.seeker)
     implementation(libs.ffmpeg.kit)
+    implementation(libs.libavif)
     implementation(libs.smart.exception.java)
     implementation(libs.mediasession)
     implementation(libs.truetypeparser)
@@ -373,8 +374,6 @@ dependencies {
 
     // NewPipe Extractor for YouTube stream resolution
     implementation(libs.newpipe.extractor)
-    // Match NewPipe dev's protobuf patch while staying on the stable extractor release.
-    implementation(libs.protobuf.javalite)
 }
 
 androidComponents {
