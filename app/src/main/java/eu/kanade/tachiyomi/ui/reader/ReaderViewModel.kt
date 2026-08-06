@@ -1735,7 +1735,7 @@ class ReaderViewModel @JvmOverloads constructor(
             }
         }
 
-        if (ocrSource.usesPersistentCache) {
+        if (ocrSource.persistsOcrResults) {
             loadCachedOcrBlocks(page, ocrSource)?.let { cached ->
                 return cached
             }
@@ -1776,7 +1776,7 @@ class ReaderViewModel @JvmOverloads constructor(
             ocrCache[cacheKey]?.let { return it }
         }
 
-        return if (ocrSource.usesPersistentCache) {
+        return if (ocrSource.persistsOcrResults) {
             loadCachedOcrBlocks(page, ocrSource).orEmpty()
         } else {
             emptyList()
@@ -1793,7 +1793,13 @@ class ReaderViewModel @JvmOverloads constructor(
         val mangaSource = sourceManager.getOrStub(manga.source)
         val cacheKey = OcrCacheKey(chapterId = chapterId, pageIndex = page.index, ocrSource = ocrSource)
 
-        val diskBlocks = ocrCacheManager.loadOcrBlocks(manga, domainChapter, mangaSource, page.index)
+        val diskBlocks = ocrCacheManager.loadOcrBlocks(
+            manga = manga,
+            chapter = domainChapter,
+            source = mangaSource,
+            pageIndex = page.index,
+            cacheVariant = ocrSource.persistentCacheVariant,
+        )
             ?.takeIf { it.isNotEmpty() }
             ?.map { it.toViewerBlock() }
             ?: return null
@@ -2422,8 +2428,14 @@ class ReaderViewModel @JvmOverloads constructor(
 
         if (ocrSource == ReaderOcrSource.MOKURO) return emptyList()
 
-        if (ocrSource.usesPersistentCache) {
-            val diskBlocks = ocrCacheManager.loadOcrBlocks(manga, domainChapter, source, page.index)
+        if (ocrSource.persistsOcrResults) {
+            val diskBlocks = ocrCacheManager.loadOcrBlocks(
+                manga = manga,
+                chapter = domainChapter,
+                source = source,
+                pageIndex = page.index,
+                cacheVariant = ocrSource.persistentCacheVariant,
+            )
             if (diskBlocks != null && diskBlocks.isNotEmpty()) {
                 ocrCacheMutex.withLock {
                     ocrCache[cacheKey] = diskBlocks.map { it.toViewerBlock() }
@@ -2574,8 +2586,16 @@ class ReaderViewModel @JvmOverloads constructor(
         blocks: List<chimahon.ocr.OcrTextBlock>,
         language: String,
     ) {
-        if (!ocrSource.usesPersistentCache) return
-        ocrCacheManager.saveOcrBlocks(manga, chapter, source, pageIndex, blocks, language)
+        if (!ocrSource.persistsOcrResults) return
+        ocrCacheManager.saveOcrBlocks(
+            manga = manga,
+            chapter = chapter,
+            source = source,
+            pageIndex = pageIndex,
+            blocks = blocks,
+            language = language,
+            cacheVariant = ocrSource.persistentCacheVariant,
+        )
     }
 
     private fun trimOcrCacheLocked() {
