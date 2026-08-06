@@ -5,10 +5,15 @@ import android.text.format.Formatter
 import chimahon.ocr.OcrBlockData
 import chimahon.ocr.OcrPageData
 import com.hippo.unifile.UniFile
+import eu.kanade.tachiyomi.data.download.DownloadCache
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.data.download.DownloadProvider
 import eu.kanade.tachiyomi.source.Source
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -39,6 +44,8 @@ class OcrCacheManager(
     private val json: Json,
     private val downloadManager: DownloadManager = Injekt.get(),
     private val downloadProvider: DownloadProvider = Injekt.get(),
+    private val downloadCache: DownloadCache = Injekt.get(),
+    invalidationScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) {
     private val mutex = Mutex()
 
@@ -56,10 +63,27 @@ class OcrCacheManager(
     // The on-disk format stores a whole chapter per file, so a naive per-page read
     // re-resolves the chapter location (SAF IPC round trips) and re-parses every
     // page's blocks just to return one page - O(pages^2) work across a chapter.
-    // Since this class is the single reader/writer of the OCR cache files, a small
-    // memo of the parsed chapters is coherent by construction and turns every read
-    // after the first (including misses for pages with no OCR data yet) into an
-    // in-memory map lookup. All memo access is guarded by [mutex].
+    // The memo keeps that parse so every read after the first (including misses
+    // for pages with no OCR data yet) is an in-memory map lookup.
+    //
+    // Coherence model, per storage side:
+    //  - Internal storage ({filesDir}/ocr_cache) is app-private and only this
+    //    class reads or writes it, so the memoized parse of that side cannot go
+    //    stale while the entry exists.
+    //  - The download side is NOT single-writer: DownloadManager deletes chapter
+    //    directories and .ocr.json sidecars directly, Downloader creates new
+    //    chapter directories, and the user can mutate the downloads tree from
+    //    outside the app entirely. The memo therefore subscribes to
+    //    [DownloadCache.changes] and drops every entry whenever the downloads
+    //    index reports a mutation (download completed, chapter/manga deleted,
+    //    rename, cache renew). App-initiated changes invalidate immediately;
+    //    external changes are picked up when DownloadCache renews - the same
+    //    staleness bound the rest of the app accepts for download state.
+    //
+    // Callers that turn cache state into persisted decisions (the OCR queue's
+    // "already processed?" checks) must not trust the memo at all; they use
+    // [getCachedPageIndexes], which always re-reads disk. All memo access is
+    // guarded by [mutex].
 
     private data class ChapterKey(val sourceId: Long, val mangaId: Long, val chapterId: Long)
 
@@ -86,6 +110,22 @@ class OcrCacheManager(
         ): Boolean = size > MEMO_MAX_CHAPTERS
     }
 
+    init {
+        // Downloaded chapters can be deleted, re-downloaded, or renamed without
+        // this class being involved; any change to the downloads index makes the
+        // memoized download-side parses untrustworthy. The memo holds at most
+        // MEMO_MAX_CHAPTERS entries, so clearing it wholesale is cheap and the
+        // next read simply re-parses from disk.
+        downloadCache.changes
+            .onEach { invalidateMemo() }
+            .launchIn(invalidationScope)
+    }
+
+    /** Drop every memoized chapter so the next read re-parses from disk. */
+    private suspend fun invalidateMemo() {
+        mutex.withLock { chapterMemo.clear() }
+    }
+
     private fun memoKey(manga: Manga, chapter: Chapter, source: Source): ChapterKey {
         return ChapterKey(sourceId = source.id, mangaId = manga.id, chapterId = chapter.id)
     }
@@ -100,6 +140,16 @@ class OcrCacheManager(
         val key = memoKey(manga, chapter, source)
         chapterMemo[key]?.let { return it }
 
+        val memoized = loadChapterLocked(manga, chapter, source)
+        chapterMemo[key] = memoized
+        return memoized
+    }
+
+    /**
+     * Resolve the chapter location and parse both cache files from disk,
+     * ignoring the memo. Must be called with [mutex] held.
+     */
+    private fun loadChapterLocked(manga: Manga, chapter: Chapter, source: Source): MemoizedChapter {
         val location = findChapterLocation(manga, chapter, source)
         val isDownloaded = isChapterDownloaded(manga, chapter, source)
 
@@ -119,9 +169,7 @@ class OcrCacheManager(
             emptyChapterData()
         }
 
-        val memoized = MemoizedChapter(location, isDownloaded, downloadData, internalData)
-        chapterMemo[key] = memoized
-        return memoized
+        return MemoizedChapter(location, isDownloaded, downloadData, internalData)
     }
 
     /** Parse a whole cache file: absent file -> empty data, unreadable file -> null. */
@@ -133,20 +181,30 @@ class OcrCacheManager(
     /**
      * Atomically write JSON to a file by writing to a temp file first, then renaming.
      * If interrupted mid-write, only the .tmp file is corrupted; the original is preserved.
+     *
+     * Returns true only when the data actually reached the target file. Callers
+     * must treat false as "nothing was written" - in particular, nothing may be
+     * recorded as persisted (memo or otherwise) on a false return.
      */
-    private fun atomicWrite(targetFile: UniFile, jsonString: String) {
+    private fun atomicWrite(targetFile: UniFile, jsonString: String): Boolean {
         val tmpFile = targetFile.parentFile?.createFile("${targetFile.name}$TMP_SUFFIX")
             ?: run {
                 logcat(LogPriority.ERROR) { "OcrCache: Failed to create temp file for atomic write" }
-                return
+                return false
             }
         try {
             tmpFile.openOutputStream().bufferedWriter().use {
                 it.write(jsonString)
                 it.flush()
             }
+            val targetName = targetFile.name
+            if (targetName == null) {
+                tmpFile.delete()
+                logcat(LogPriority.ERROR) { "OcrCache: target file has no name, aborting atomic write" }
+                return false
+            }
             targetFile.delete()
-            if (!tmpFile.renameTo(targetFile.name ?: return)) {
+            if (!tmpFile.renameTo(targetName)) {
                 logcat(LogPriority.WARN) { "OcrCache: rename failed, trying fallback" }
                 // Fallback: write directly (some storage backends don't support rename)
                 targetFile.openOutputStream().bufferedWriter().use {
@@ -155,6 +213,7 @@ class OcrCacheManager(
                 }
                 tmpFile.delete()
             }
+            return true
         } catch (e: Exception) {
             tmpFile.delete()
             logcat(LogPriority.ERROR, e) { "OcrCache: atomic write failed" }
@@ -216,7 +275,7 @@ class OcrCacheManager(
                     val knownData = if (
                         memo != null &&
                         memo.isDownloaded &&
-                        memo.location?.uriString() == chapterLocation.uriString()
+                        memo.location?.identity() == chapterLocation.identity()
                     ) {
                         memo.downloadData
                     } else {
@@ -275,7 +334,7 @@ class OcrCacheManager(
             // freshly resolved target; otherwise fall back to the same
             // "not downloaded" default the load path uses.
             val downloadStillValid = old.isDownloaded == isDownloaded &&
-                old.location?.uriString() == location?.uriString()
+                old.location?.identity() == location?.identity()
             MemoizedChapter(
                 location = location,
                 isDownloaded = isDownloaded,
@@ -303,6 +362,33 @@ class OcrCacheManager(
             val pageData = memo.downloadData?.pages?.get(pageIndex)
                 ?: memo.internalData?.pages?.get(pageIndex)
             pageData?.blocks?.map { it.toTextBlock() }
+        }
+    }
+
+    /**
+     * The set of page indexes with OCR data on disk right now, from a fresh
+     * location resolve and parse that bypasses the memo (the fresh parse
+     * re-primes it).
+     *
+     * The OCR queue uses this for its persisted decisions - skipping
+     * already-processed pages and judging a chapter complete - because those
+     * must reflect the actual files, never memoized state: the downloads tree
+     * can be deleted or replaced without this class being told. One call per
+     * chapter replaces the old per-page probes, so the queue stays O(pages)
+     * per chapter.
+     */
+    suspend fun getCachedPageIndexes(
+        manga: Manga,
+        chapter: Chapter,
+        source: Source,
+    ): Set<Int> = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val fresh = loadChapterLocked(manga, chapter, source)
+            chapterMemo[memoKey(manga, chapter, source)] = fresh
+            buildSet {
+                fresh.downloadData?.pages?.keys?.let(::addAll)
+                fresh.internalData?.pages?.keys?.let(::addAll)
+            }
         }
     }
 
@@ -434,10 +520,19 @@ class OcrCacheManager(
         data class Directory(val dir: UniFile) : ChapterLocation()
         data class Cbz(val file: UniFile) : ChapterLocation()
 
-        fun uriString(): String = when (this) {
-            is Directory -> dir.uri.toString()
-            is Cbz -> file.uri.toString()
-        }
+        private val target: UniFile
+            get() = when (this) {
+                is Directory -> dir
+                is Cbz -> file
+            }
+
+        /**
+         * Stable identity of the backing location, used to decide whether a
+         * memoized parse still describes the same target file. Prefers the
+         * plain file path (cheap for raw files, IPC-free for SAF documents)
+         * and falls back to the URI string.
+         */
+        fun identity(): String = target.filePath ?: target.uri.toString()
     }
 
     private fun findChapterLocation(manga: Manga, chapter: Chapter, source: Source): ChapterLocation? {
@@ -481,7 +576,7 @@ class OcrCacheManager(
         updatedPages[pageIndex] = newPage
 
         val newData = chapterData.copy(pages = updatedPages)
-        atomicWrite(cacheFile, json.encodeToString(newData))
+        if (!atomicWrite(cacheFile, json.encodeToString(newData))) return null
         return newData
     }
 
@@ -522,7 +617,7 @@ class OcrCacheManager(
         updatedPages[pageIndex] = newPage
 
         val newData = chapterData.copy(pages = updatedPages)
-        atomicWrite(sidecarFile, json.encodeToString(newData))
+        if (!atomicWrite(sidecarFile, json.encodeToString(newData))) return null
         return newData
     }
 
