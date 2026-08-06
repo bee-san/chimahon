@@ -2529,6 +2529,11 @@ class ReaderViewModel @JvmOverloads constructor(
                 blocks
             }
 
+            ocrCacheMutex.withLock {
+                ocrCache[cacheKey] = finalBlocks
+                trimOcrCacheLocked()
+            }
+
             savePersistentOcrBlocks(
                 ocrSource = ocrSource,
                 manga = manga,
@@ -2552,11 +2557,6 @@ class ReaderViewModel @JvmOverloads constructor(
                 language = ocrLang.bcp47,
             )
 
-            ocrCacheMutex.withLock {
-                ocrCache[cacheKey] = finalBlocks
-                trimOcrCacheLocked()
-            }
-
             val elapsedMs = SystemClock.elapsedRealtime() - startMs
             if (elapsedMs >= 1200) {
                 logcat(LogPriority.WARN) {
@@ -2568,6 +2568,8 @@ class ReaderViewModel @JvmOverloads constructor(
                 }
             }
             finalBlocks
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             val elapsedMs = SystemClock.elapsedRealtime() - startMs
             logcat(LogPriority.WARN, e) {
@@ -2587,15 +2589,23 @@ class ReaderViewModel @JvmOverloads constructor(
         language: String,
     ) {
         if (!ocrSource.persistsOcrResults) return
-        ocrCacheManager.saveOcrBlocks(
-            manga = manga,
-            chapter = chapter,
-            source = source,
-            pageIndex = pageIndex,
-            blocks = blocks,
-            language = language,
-            cacheVariant = ocrSource.persistentCacheVariant,
-        )
+        try {
+            ocrCacheManager.saveOcrBlocks(
+                manga = manga,
+                chapter = chapter,
+                source = source,
+                pageIndex = pageIndex,
+                blocks = blocks,
+                language = language,
+                cacheVariant = ocrSource.persistentCacheVariant,
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logcat(LogPriority.WARN, e) {
+                "OCR cache write failed: chapter=${chapter.id} page=$pageIndex source=$ocrSource"
+            }
+        }
     }
 
     private fun trimOcrCacheLocked() {

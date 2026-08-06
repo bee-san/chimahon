@@ -99,6 +99,11 @@ class OcrCacheManager(
         }
     }
 
+    private fun hasNormalOcrPages(cacheFile: UniFile?): Boolean {
+        if (cacheFile?.exists() != true) return false
+        return readOcrData(cacheFile)?.pages?.isNotEmpty() == true
+    }
+
     /**
      * Save OCR blocks for a single page to the chapter's OCR cache file.
      */
@@ -172,25 +177,22 @@ class OcrCacheManager(
         chapter: Chapter,
         source: Source,
     ): Boolean = withContext(Dispatchers.IO) {
-        val chapterLocation = findChapterLocation(manga, chapter, source)
-        val isDownloaded = isChapterDownloaded(manga, chapter, source)
+        mutex.withLock {
+            val chapterLocation = findChapterLocation(manga, chapter, source)
+            val isDownloaded = isChapterDownloaded(manga, chapter, source)
 
-        val hasDownloadCache = if (chapterLocation != null && isDownloaded) {
-            when (chapterLocation) {
-                is ChapterLocation.Directory -> {
-                    chapterLocation.dir.findFile(OCR_CACHE_FILE)?.exists() == true
+            val downloadCacheFile = if (chapterLocation != null && isDownloaded) {
+                when (chapterLocation) {
+                    is ChapterLocation.Directory -> chapterLocation.dir.findFile(OCR_CACHE_FILE)
+                    is ChapterLocation.Cbz -> findSidecarFile(chapterLocation.file)
                 }
-                is ChapterLocation.Cbz -> {
-                    findSidecarFile(chapterLocation.file)?.exists() == true
-                }
+            } else {
+                null
             }
-        } else {
-            false
+
+            hasNormalOcrPages(downloadCacheFile) ||
+                hasNormalOcrPages(UniFile.fromFile(getInternalCacheFile(manga, chapter, source)))
         }
-
-        val hasInternalCache = getInternalCacheFile(manga, chapter, source).exists()
-
-        hasDownloadCache || hasInternalCache
     }
 
     /**
